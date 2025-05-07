@@ -467,11 +467,7 @@ async fn ann(
         .unwrap_or_else(|_| trace!("ann: unable to send response"));
 }
 
-async fn count(
-    id: Arc<IndexId>,
-    tx: oneshot::Sender<usize>,
-    client: Arc<OpenSearch>,
-) {
+async fn count(id: Arc<IndexId>, tx: oneshot::Sender<usize>, client: Arc<OpenSearch>) {
     let response = client
         .count(opensearch::CountParts::Index(&[&id.0]))
         .send()
