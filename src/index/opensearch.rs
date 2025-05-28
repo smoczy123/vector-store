@@ -14,6 +14,7 @@ use crate::ExpansionSearch;
 use crate::IndexFactory;
 use crate::IndexId;
 use crate::PrimaryKey;
+use crate::SpaceType;
 use crate::index::actor::Index;
 use bimap::BiMap;
 use opensearch::DeleteParts;
@@ -58,6 +59,7 @@ impl IndexFactory for OpenSearchIndexFactory {
         connectivity: Connectivity,
         expansion_add: ExpansionAdd,
         expansion_search: ExpansionSearch,
+        space_type: SpaceType,
     ) -> anyhow::Result<mpsc::Sender<Index>> {
         new(
             id,
@@ -65,6 +67,7 @@ impl IndexFactory for OpenSearchIndexFactory {
             connectivity,
             expansion_add,
             expansion_search,
+            space_type,
             self.client.clone(),
         )
     }
@@ -96,6 +99,7 @@ async fn create_index(
     connectivity: Connectivity,
     expansion_add: ExpansionAdd,
     expansion_search: ExpansionSearch,
+    space_type: SpaceType,
     client: Arc<OpenSearch>,
 ) -> Result<opensearch::http::response::Response, ()> {
     let response: Result<opensearch::http::response::Response, ()> = client
@@ -112,6 +116,7 @@ async fn create_index(
                         "dimension": dimensions.0.get(),
                         "method": {
                             "name": "hnsw",
+                            "space_type": space_type.to_string(),
                             "parameters": {
                                 "ef_search": if expansion_search.0 > 0 {
                                     expansion_search.0
@@ -153,6 +158,7 @@ pub fn new(
     connectivity: Connectivity,
     expansion_add: ExpansionAdd,
     expansion_search: ExpansionSearch,
+    space_type: SpaceType,
     client: Arc<OpenSearch>,
 ) -> anyhow::Result<mpsc::Sender<Index>> {
     info!("Creating new index with id: {id}");
@@ -169,6 +175,7 @@ pub fn new(
                 connectivity,
                 expansion_add,
                 expansion_search,
+                space_type,
                 client.clone(),
             )
             .await;
