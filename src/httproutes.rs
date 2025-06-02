@@ -236,6 +236,18 @@ async fn post_index_ann(
         return (StatusCode::NOT_FOUND, "").into_response();
     };
 
+   
+    let scan_length = db_index.full_scan_progress().await;
+
+    if scan_length != u64::MAX {
+        let msg = format!(
+            "Full scan is in progress, percentage: {:.2}%",
+            (scan_length / u64::MAX) as f64 * 100.0
+        );
+        debug!("post_index_ann: {msg}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+    }
+    
     let search_result = index.ann(request.embedding, request.limit).await;
     // Record duration in Prometheus
     timer.observe_duration();

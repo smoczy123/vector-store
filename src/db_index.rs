@@ -28,6 +28,7 @@ use scylla_cdc::log_reader::CDCLogReaderBuilder;
 use std::iter;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use time::Date;
 use time::OffsetDateTime;
@@ -47,16 +48,28 @@ pub enum DbIndex {
     GetPrimaryKeyColumns {
         tx: oneshot::Sender<GetPrimaryKeyColumnsR>,
     },
+    FullScanProgress {
+        tx: oneshot::Sender<u64>,
+    },
 }
 
 pub(crate) trait DbIndexExt {
     async fn get_primary_key_columns(&self) -> GetPrimaryKeyColumnsR;
+    async fn full_scan_progress(&self) -> u64;
 }
 
 impl DbIndexExt for mpsc::Sender<DbIndex> {
     async fn get_primary_key_columns(&self) -> GetPrimaryKeyColumnsR {
         let (tx, rx) = oneshot::channel();
         self.send(DbIndex::GetPrimaryKeyColumns { tx })
+            .await
+            .expect("internal actor should receive request");
+        rx.await.expect("internal actor should send response")
+    }
+
+    async fn full_scan_progress(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        self.send(DbIndex::FullScanProgress { tx })
             .await
             .expect("internal actor should receive request");
         rx.await.expect("internal actor should send response")
@@ -138,6 +151,14 @@ async fn process(statements: Arc<Statements>, msg: DbIndex) {
             .unwrap_or_else(|_| {
                 trace!("process: Db::GetPrimaryKeyColumns: unable to send response")
             }),
+        DbIndex::FullScanProgress { tx } => {
+            let completed_scan_length = statements
+                .completed_scan_length
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if tx.send(completed_scan_length).is_err() {
+                trace!("process: Db::FullScanProgress: unable to send response");
+            }
+        }
     }
 }
 
@@ -145,6 +166,7 @@ struct Statements {
     session: Arc<Session>,
     primary_key_columns: Vec<ColumnName>,
     st_range_scan: PreparedStatement,
+    completed_scan_length: Arc<AtomicU64>,
 }
 
 impl Statements {
@@ -185,6 +207,7 @@ impl Statements {
                 .context("range_scan_query")?,
 
             session,
+            completed_scan_length: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -224,12 +247,18 @@ impl Statements {
                 warn!("unable to do initial scan for range ({begin:?}, {end:?}): {err}")
             }) {
                 let tx = tx.clone();
+                let scan_length = self.completed_scan_length.clone();
                 tokio::spawn(async move {
                     embeddings
                         .for_each(|embedding| async {
                             _ = tx.send(embedding).await;
                         })
                         .await;
+                    //Safety: end > begin, and the range fits into u64
+                    scan_length.fetch_add(
+                        (end.value() - begin.value() + 1).try_into().unwrap(),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
                     drop(permit);
                 });
             }

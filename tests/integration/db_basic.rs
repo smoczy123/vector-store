@@ -414,5 +414,9 @@ async fn process_db_index(db: &DbBasic, metadata: &IndexMetadata, msg: DbIndex) 
             )
             .map_err(|_| anyhow!("DbIndex::GetPrimaryKeyColumns: unable to send response"))
             .unwrap(),
+        DbIndex::FullScanProgress { tx } => tx
+            .send(u64::MAX)
+            .map_err(|_| anyhow!("DbIndex::GetTargetColumn: unable to send response"))
+            .unwrap(),
     }
 }
