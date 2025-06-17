@@ -439,7 +439,7 @@ pub async fn run(
     addr: HttpServerAddr,
     background_threads: Option<usize>,
     db_actor: Sender<Db>,
-    index_factory: Box<dyn IndexFactory + Send>,
+    index_factory: Box<dyn IndexFactory + Send + Sync>,
 ) -> anyhow::Result<(impl Sized, SocketAddr)> {
     if let Some(background_threads) = background_threads {
         INIT_RAYON.call_once(|| {
@@ -457,11 +457,13 @@ pub async fn new_db(uri: ScyllaDbUri) -> anyhow::Result<Sender<Db>> {
     db::new(uri).await
 }
 
-pub fn new_index_factory_usearch() -> anyhow::Result<Box<dyn IndexFactory + Send>> {
+pub fn new_index_factory_usearch() -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
     Ok(Box::new(index::usearch::new_usearch()?))
 }
 
-pub fn new_index_factory_opensearch(addr: String) -> anyhow::Result<Box<dyn IndexFactory + Send>> {
+pub fn new_index_factory_opensearch(
+    addr: String,
+) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
     Ok(Box::new(index::opensearch::new_opensearch(&addr)?))
 }
 
