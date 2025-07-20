@@ -247,6 +247,20 @@ async fn get_metrics(
     State(state): State<RoutesInnerState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    for (keyspace_str, index_name_str) in state.metrics.take_dirty_indexes() {
+        let keyspace = KeyspaceName::from(keyspace_str);
+        let index_name = IndexName::from(index_name_str);
+        let id = IndexId::new(&keyspace, &index_name);
+        if let Some((index, _)) = state.engine.get_index(id).await {
+            if let Ok(count) = index.count().await {
+                state
+                    .metrics
+                    .size
+                    .with_label_values(&[keyspace.as_ref().as_str(), index_name.as_ref().as_str()])
+                    .set(count as f64);
+            }
+        }
+    }
     let metric_families = state.metrics.registry.gather();
 
     // Decide which encoder and content-type to use

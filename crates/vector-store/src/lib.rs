@@ -452,7 +452,7 @@ pub async fn run(
     httpserver::new(
         addr,
         node_state.clone(),
-        engine::new(db_actor, index_factory, node_state).await?,
+        engine::new(db_actor, index_factory, node_state, metrics.clone()).await?,
         metrics,
     )
     .await
