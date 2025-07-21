@@ -5,11 +5,13 @@
 
 use crate::DbEmbedding;
 use crate::IndexId;
+use crate::Metrics;
 use crate::PrimaryKey;
 use crate::Timestamp;
 use crate::index::Index;
 use crate::index::IndexExt;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -23,10 +25,12 @@ pub(crate) async fn new(
     id: IndexId,
     mut embeddings: Receiver<DbEmbedding>,
     index: Sender<Index>,
+    metrics: Arc<Metrics>,
 ) -> anyhow::Result<Sender<MonitorItems>> {
     // The value was taken from initial benchmarks
     const CHANNEL_SIZE: usize = 10;
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
+    let id_for_span = id.clone();
 
     tokio::spawn(
         async move {
@@ -40,7 +44,7 @@ pub(crate) async fn new(
                         let Some(embedding) = embedding else {
                             break;
                         };
-                        add(&mut timestamps, &index, embedding).await;
+                        add(&mut timestamps, &index, embedding, &metrics, &id).await;
                     }
                     _ = rx.recv() => { }
                 }
@@ -48,7 +52,7 @@ pub(crate) async fn new(
 
             debug!("finished");
         }
-        .instrument(debug_span!("monitor items", "{id}")),
+        .instrument(debug_span!("monitor items", "{id_for_span}")),
     );
     Ok(tx)
 }
@@ -57,6 +61,8 @@ async fn add(
     timestamps: &mut HashMap<PrimaryKey, Timestamp>,
     index: &Sender<Index>,
     embedding: DbEmbedding,
+    metrics: &Metrics,
+    id: &IndexId,
 ) {
     let mut modify = true;
     timestamps
@@ -76,11 +82,17 @@ async fn add(
         } else {
             index.remove(primary_key).await;
         }
+        metrics.mark_dirty(
+            id.keyspace().as_ref().as_str(),
+            id.index().as_ref().as_str(),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::Metrics;
+
     use super::*;
     use scylla::value::CqlValue;
     use time::OffsetDateTime;
@@ -89,10 +101,12 @@ mod tests {
     async fn flow() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
         let (tx_index, mut rx_index) = mpsc::channel(10);
+        let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let _actor = new(
             IndexId::new(&"vector".to_string().into(), &"store".to_string().into()),
             rx_embeddings,
             tx_index,
+            metrics,
         )
         .await
         .unwrap();

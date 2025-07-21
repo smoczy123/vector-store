@@ -5,6 +5,7 @@
 
 use crate::IndexId;
 use crate::IndexMetadata;
+use crate::Metrics;
 use crate::db::Db;
 use crate::db::DbExt;
 use crate::db_index::DbIndex;
@@ -15,6 +16,7 @@ use crate::monitor_items;
 use crate::monitor_items::MonitorItems;
 use crate::node_state::NodeState;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -100,6 +102,7 @@ pub(crate) async fn new(
     db: mpsc::Sender<Db>,
     index_factory: Box<dyn IndexFactory + Send + Sync>,
     node_state: Sender<NodeState>,
+    metrics: Arc<Metrics>,
 ) -> anyhow::Result<mpsc::Sender<Engine>> {
     let (tx, mut rx) = mpsc::channel(10);
 
@@ -115,7 +118,15 @@ pub(crate) async fn new(
                     Engine::GetIndexIds { tx } => get_index_ids(tx, &indexes).await,
 
                     Engine::AddIndex { metadata, tx } => {
-                        add_index(metadata, tx, &db, index_factory.as_ref(), &mut indexes).await
+                        add_index(
+                            metadata,
+                            tx,
+                            &db,
+                            index_factory.as_ref(),
+                            &mut indexes,
+                            metrics.clone(),
+                        )
+                        .await
                     }
 
                     Engine::DelIndex { id } => del_index(id, &mut indexes).await,
@@ -144,6 +155,7 @@ async fn add_index(
     db: &mpsc::Sender<Db>,
     index_factory: &(dyn IndexFactory + Send + Sync),
     indexes: &mut IndexesT,
+    metrics: Arc<Metrics>,
 ) {
     let id = metadata.id();
     if indexes.contains_key(&id) {
@@ -180,17 +192,19 @@ async fn add_index(
         }
     };
 
-    let monitor_actor = match monitor_items::new(id.clone(), embeddings_stream, index_actor.clone())
-        .await
-    {
-        Ok(actor) => actor,
-        Err(err) => {
-            debug!("unable to create a synchronisation task between a db and an index {id}: {err}");
-            tx.send(Err(err))
-                .unwrap_or_else(|_| trace!("add_index: unable to send response"));
-            return;
-        }
-    };
+    let monitor_actor =
+        match monitor_items::new(id.clone(), embeddings_stream, index_actor.clone(), metrics).await
+        {
+            Ok(actor) => actor,
+            Err(err) => {
+                debug!(
+                    "unable to create a synchronisation task between a db and an index {id}: {err}"
+                );
+                tx.send(Err(err))
+                    .unwrap_or_else(|_| trace!("add_index: unable to send response"));
+                return;
+            }
+        };
 
     indexes.insert(id.clone(), (index_actor, monitor_actor, db_index));
     info!("create an index {id}");
