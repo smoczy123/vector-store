@@ -225,3 +225,62 @@ async fn get_index(id: IndexId, tx: oneshot::Sender<GetIndexR>, indexes: &Indexe
     )
     .unwrap_or_else(|_| trace!("get_index: unable to send response"));
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use mockall::automock;
+
+    #[automock]
+    pub(crate) trait SimEngine {
+        fn get_index_ids(
+            &self,
+            tx: oneshot::Sender<GetIndexIdsR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn add_index(
+            &self,
+            metadata: IndexMetadata,
+            tx: oneshot::Sender<AddIndexR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn del_index(&self, id: IndexId) -> impl Future<Output = ()> + Send + 'static;
+
+        fn get_index(
+            &self,
+            id: IndexId,
+            tx: oneshot::Sender<GetIndexR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+    }
+
+    pub(crate) fn new(sim: impl SimEngine + Send + 'static) -> mpsc::Sender<Engine> {
+        with_size(10, sim)
+    }
+
+    pub(crate) fn with_size(
+        size: usize,
+        sim: impl SimEngine + Send + 'static,
+    ) -> mpsc::Sender<Engine> {
+        let (tx, mut rx) = mpsc::channel(size);
+
+        tokio::spawn(
+            async move {
+                debug!("starting");
+
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        Engine::GetIndexIds { tx } => sim.get_index_ids(tx).await,
+                        Engine::AddIndex { metadata, tx } => sim.add_index(metadata, tx).await,
+                        Engine::DelIndex { id } => sim.del_index(id).await,
+                        Engine::GetIndex { id, tx } => sim.get_index(id, tx).await,
+                    }
+                }
+
+                debug!("finished");
+            }
+            .instrument(debug_span!("engine-test")),
+        );
+
+        tx
+    }
+}

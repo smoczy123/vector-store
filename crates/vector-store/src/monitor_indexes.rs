@@ -206,116 +206,96 @@ async fn del_indexes(engine: &Sender<Engine>, idxs: impl Iterator<Item = IndexMe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DbCustomIndex;
+    use crate::IndexId;
+    use crate::IndexName;
+    use crate::db;
+    use crate::db::LatestSchemaVersionR;
+    use crate::db::tests::MockSimDb;
+    use crate::engine;
+    use crate::engine::tests::MockSimEngine;
     use anyhow::anyhow;
+    use futures::FutureExt;
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn schema_version_changed() {
-        let (tx_db, mut rx_db) = mpsc::channel(10);
+        let version1 = CqlTimeuuid::from_bytes([1; 16]);
+        let version2 = CqlTimeuuid::from_bytes([2; 16]);
+        let latest_schema_version: Arc<Mutex<Option<LatestSchemaVersionR>>> =
+            Arc::new(Mutex::new(None));
+        let set_latest_schema_version = |v| {
+            latest_schema_version.lock().unwrap().replace(v);
+        };
 
-        let task_db = tokio::spawn(async move {
-            let version1 = CqlTimeuuid::from_bytes([1; 16]);
-            let version2 = CqlTimeuuid::from_bytes([2; 16]);
-
-            // step 1
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Err(anyhow!("test issue"))).unwrap();
-
-            // step 2
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(None)).unwrap();
-
-            // step 3
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(Some(version1))).unwrap();
-
-            // step 4
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Err(anyhow!("test issue"))).unwrap();
-
-            // step 5
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(Some(version1))).unwrap();
-
-            // step 6
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(None)).unwrap();
-
-            // step 7
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(Some(version1))).unwrap();
-
-            // step 8
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(Some(version1))).unwrap();
-
-            // step 9
-            let Some(Db::LatestSchemaVersion { tx }) = rx_db.recv().await else {
-                unreachable!();
-            };
-            tx.send(Ok(Some(version2))).unwrap();
+        let mut mock_db = MockSimDb::new();
+        mock_db.expect_latest_schema_version().returning({
+            let latest_schema_version = Arc::clone(&latest_schema_version);
+            move |tx| {
+                let latest_schema_version = Arc::clone(&latest_schema_version);
+                async move {
+                    tx.send(
+                        latest_schema_version
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .expect("latest_schema_version should have a value"),
+                    )
+                    .unwrap();
+                }
+                .boxed()
+            }
         });
 
         let mut sv = SchemaVersion::new();
+        let tx_db = db::tests::new(mock_db);
 
         // step 1: Err should not change the schema version
+        set_latest_schema_version(Err(anyhow!("test issue")));
         assert!(!sv.has_changed(&tx_db).await);
 
         // step 2: None should not change the schema version
+        set_latest_schema_version(Ok(None));
         assert!(!sv.has_changed(&tx_db).await);
 
         // step 3: value1 should change the schema version
+        set_latest_schema_version(Ok(Some(version1)));
         assert!(sv.has_changed(&tx_db).await);
 
         // step 4: Err should change the schema version
+        set_latest_schema_version(Err(anyhow!("test issue")));
         assert!(sv.has_changed(&tx_db).await);
 
         // step 5: value1 should change the schema version
+        set_latest_schema_version(Ok(Some(version1)));
         assert!(sv.has_changed(&tx_db).await);
 
         // step 6: None should change the schema version
+        set_latest_schema_version(Ok(None));
         assert!(sv.has_changed(&tx_db).await);
 
         // step 7: value1 should change the schema version
+        set_latest_schema_version(Ok(Some(version1)));
         assert!(sv.has_changed(&tx_db).await);
 
         // step 8: value1 should not change the schema version
+        set_latest_schema_version(Ok(Some(version1)));
         assert!(!sv.has_changed(&tx_db).await);
 
         // step 9: value2 should change the schema version
+        set_latest_schema_version(Ok(Some(version2)));
         assert!(sv.has_changed(&tx_db).await);
-
-        task_db.await.unwrap();
     }
 
     #[tokio::test]
     #[ntest::timeout(5_000)]
     async fn index_metadata_are_removed_once() {
-        use crate::DbCustomIndex;
-        use crate::IndexId;
-        use crate::IndexName;
-        use std::collections::HashMap;
-        use std::collections::HashSet;
-        use std::num::NonZeroUsize;
-        use std::sync::{Arc, Mutex};
-        use tokio::sync::Notify;
-        use uuid::Uuid;
-
         type IndexesT = HashSet<IndexId>;
 
         // Dummy db index for testing
@@ -386,88 +366,118 @@ mod tests {
             }
         }
 
-        // Engine mock
-        async fn new_engine(state: TestState) -> anyhow::Result<mpsc::Sender<Engine>> {
-            let (tx_eng, mut rx_eng) = mpsc::channel(10);
-
-            tokio::spawn(async move {
-                while let Some(msg) = rx_eng.recv().await {
-                    match msg {
-                        Engine::GetIndexIds { .. } => {}
-                        Engine::AddIndex { metadata, tx } => {
-                            state.engine_indexes.lock().unwrap().insert(metadata.id());
-                            tx.send(Ok(())).unwrap();
-                            state.notify.notify_waiters();
-                        }
-                        Engine::DelIndex { id } => {
-                            let mut calls = state.del_calls.lock().unwrap();
-                            *calls.entry(id.clone()).or_insert(0) += 1;
-                            state.engine_indexes.lock().unwrap().remove(&id);
-                            state.notify.notify_waiters();
-                        }
-                        Engine::GetIndex { .. } => {}
-                    }
-                }
-            });
-
-            Ok(tx_eng)
-        }
-
-        // DB mock
-        async fn new_db(state: TestState) -> anyhow::Result<mpsc::Sender<Db>> {
-            let (tx_db, mut rx_db) = mpsc::channel(10);
-            tokio::spawn(async move {
-                while let Some(msg) = rx_db.recv().await {
-                    match msg {
-                        Db::GetDbIndex { tx, .. } => {
-                            // Not needed for this test
-                            let _ = tx.send(Err(anyhow::anyhow!("Not implemented")));
-                        }
-                        Db::LatestSchemaVersion { tx } => {
-                            let version = *state.schema_version.lock().unwrap();
-                            let version_bytes = [version as u8; 16];
-                            tx.send(Ok(Some(CqlTimeuuid::from_bytes(version_bytes))))
-                                .unwrap();
-                        }
-                        Db::GetIndexes { tx } => {
-                            let indexes = state.get_db_indexes();
-                            tx.send(Ok(indexes)).unwrap();
-                        }
-                        Db::GetIndexVersion { index, tx, .. } => {
-                            // Return a version for all indexes
-                            let mut guard = state.index_versions.lock().unwrap();
-                            let version = guard.entry(index).or_insert_with(Uuid::new_v4);
-                            tx.send(Ok(Some((*version).into()))).unwrap();
-                        }
-                        Db::GetIndexTargetType { tx, .. } => {
-                            // Return dimensions for all indexes
-                            tx.send(Ok(Some(NonZeroUsize::new(3).unwrap().into())))
-                                .unwrap();
-                        }
-                        Db::GetIndexParams { tx, .. } => {
-                            // Return default params for all indexes
-                            tx.send(Ok(Some((
-                                Default::default(), // connectivity
-                                Default::default(), // expansion_add
-                                Default::default(), // expansion_search
-                                Default::default(), // space_type
-                            ))))
-                            .unwrap();
-                        }
-                        Db::IsValidIndex { tx, .. } => {
-                            // All indexes are valid for this test
-                            tx.send(true).unwrap();
-                        }
-                    }
-                }
-            });
-            Ok(tx_db)
-        }
-
         let state = TestState::new();
 
-        let tx_db = new_db(state.clone()).await.unwrap();
-        let tx_eng = new_engine(state.clone()).await.unwrap();
+        // Engine mock
+        let mut mock_engine = MockSimEngine::new();
+
+        mock_engine.expect_add_index().returning({
+            let state = state.clone();
+            move |metadata, tx| {
+                let state = state.clone();
+                async move {
+                    state.engine_indexes.lock().unwrap().insert(metadata.id());
+                    tx.send(Ok(())).unwrap();
+                    state.notify.notify_waiters();
+                }
+                .boxed()
+            }
+        });
+
+        mock_engine.expect_del_index().returning({
+            let state = state.clone();
+            move |id| {
+                let state = state.clone();
+                async move {
+                    let mut calls = state.del_calls.lock().unwrap();
+                    *calls.entry(id.clone()).or_insert(0) += 1;
+                    state.engine_indexes.lock().unwrap().remove(&id);
+                    state.notify.notify_waiters();
+                }
+                .boxed()
+            }
+        });
+
+        // DB mock
+        let mut mock_db = MockSimDb::new();
+
+        mock_db.expect_latest_schema_version().returning({
+            let state = state.clone();
+            move |tx| {
+                let state = state.clone();
+                async move {
+                    let version = *state.schema_version.lock().unwrap();
+                    let version_bytes = [version as u8; 16];
+                    tx.send(Ok(Some(CqlTimeuuid::from_bytes(version_bytes))))
+                        .unwrap();
+                }
+                .boxed()
+            }
+        });
+
+        mock_db.expect_get_indexes().returning({
+            let state = state.clone();
+            move |tx| {
+                let state = state.clone();
+                async move {
+                    let indexes = state.get_db_indexes();
+                    tx.send(Ok(indexes)).unwrap();
+                }
+                .boxed()
+            }
+        });
+
+        mock_db.expect_get_index_version().returning({
+            let state = state.clone();
+            move |_, index, tx| {
+                let state = state.clone();
+                async move {
+                    // Return a version for all indexes
+                    let mut guard = state.index_versions.lock().unwrap();
+                    let version = guard.entry(index).or_insert_with(Uuid::new_v4);
+                    tx.send(Ok(Some((*version).into()))).unwrap();
+                }
+                .boxed()
+            }
+        });
+
+        mock_db
+            .expect_get_index_target_type()
+            .returning(move |_, _, _, tx| {
+                async move {
+                    // Return dimensions for all indexes
+                    tx.send(Ok(Some(NonZeroUsize::new(3).unwrap().into())))
+                        .unwrap();
+                }
+                .boxed()
+            });
+
+        mock_db
+            .expect_get_index_params()
+            .returning(move |_, _, _, tx| {
+                async move {
+                    // Return default params for all indexes
+                    tx.send(Ok(Some((
+                        Default::default(), // connectivity
+                        Default::default(), // expansion_add
+                        Default::default(), // expansion_search
+                        Default::default(), // space_type
+                    ))))
+                    .unwrap();
+                }
+                .boxed()
+            });
+
+        mock_db.expect_is_valid_index().returning(move |_, tx| {
+            async move {
+                // All indexes are valid for this test
+                tx.send(true).unwrap();
+            }
+            .boxed()
+        });
+
+        let tx_db = db::tests::new(mock_db);
+        let tx_eng = engine::tests::new(mock_engine);
         let (tx_ns, _rx_ns) = mpsc::channel(10);
 
         // Start the monitor

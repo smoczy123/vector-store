@@ -51,4 +51,5 @@ utoipa-swagger-ui.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+mockall.workspace = true
 reqwest.workspace = true
