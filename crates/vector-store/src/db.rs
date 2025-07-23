@@ -43,7 +43,7 @@ use tracing::trace;
 use uuid::Uuid;
 
 type GetDbIndexR = anyhow::Result<(mpsc::Sender<DbIndex>, mpsc::Receiver<DbEmbedding>)>;
-type LatestSchemaVersionR = anyhow::Result<Option<CqlTimeuuid>>;
+pub(crate) type LatestSchemaVersionR = anyhow::Result<Option<CqlTimeuuid>>;
 type GetIndexesR = anyhow::Result<Vec<DbCustomIndex>>;
 type GetIndexVersionR = anyhow::Result<Option<IndexVersion>>;
 type GetIndexTargetTypeR = anyhow::Result<Option<Dimensions>>;
@@ -513,5 +513,114 @@ impl Statements {
             return false;
         };
         version_begin == version_end
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use mockall::automock;
+    use tracing::debug;
+
+    #[automock]
+    pub(crate) trait SimDb {
+        fn get_db_index(
+            &self,
+            metadata: IndexMetadata,
+            tx: oneshot::Sender<GetDbIndexR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn latest_schema_version(
+            &self,
+            tx: oneshot::Sender<LatestSchemaVersionR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn get_indexes(
+            &self,
+            tx: oneshot::Sender<GetIndexesR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn get_index_version(
+            &self,
+            keyspace: KeyspaceName,
+            index: IndexName,
+            tx: oneshot::Sender<GetIndexVersionR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn get_index_target_type(
+            &self,
+            keyspace: KeyspaceName,
+            table: TableName,
+            target_column: ColumnName,
+            tx: oneshot::Sender<GetIndexTargetTypeR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn get_index_params(
+            &self,
+            keyspace: KeyspaceName,
+            table: TableName,
+            index: IndexName,
+            tx: oneshot::Sender<GetIndexParamsR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+
+        fn is_valid_index(
+            &self,
+            metadata: IndexMetadata,
+            tx: oneshot::Sender<IsValidIndexR>,
+        ) -> impl Future<Output = ()> + Send + 'static;
+    }
+
+    pub(crate) fn new(sim: impl SimDb + Send + 'static) -> mpsc::Sender<Db> {
+        with_size(10, sim)
+    }
+
+    pub(crate) fn with_size(size: usize, sim: impl SimDb + Send + 'static) -> mpsc::Sender<Db> {
+        let (tx, mut rx) = mpsc::channel(size);
+
+        tokio::spawn(
+            async move {
+                debug!("starting");
+
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        Db::GetDbIndex { metadata, tx } => sim.get_db_index(metadata, tx).await,
+
+                        Db::LatestSchemaVersion { tx } => sim.latest_schema_version(tx).await,
+
+                        Db::GetIndexes { tx } => sim.get_indexes(tx).await,
+
+                        Db::GetIndexVersion {
+                            keyspace,
+                            index,
+                            tx,
+                        } => sim.get_index_version(keyspace, index, tx).await,
+
+                        Db::GetIndexTargetType {
+                            keyspace,
+                            table,
+                            target_column,
+                            tx,
+                        } => {
+                            sim.get_index_target_type(keyspace, table, target_column, tx)
+                                .await
+                        }
+
+                        Db::GetIndexParams {
+                            keyspace,
+                            table,
+                            index,
+                            tx,
+                        } => sim.get_index_params(keyspace, table, index, tx).await,
+
+                        Db::IsValidIndex { metadata, tx } => sim.is_valid_index(metadata, tx).await,
+                    }
+                }
+
+                debug!("finished");
+            }
+            .instrument(debug_span!("engine-test")),
+        );
+
+        tx
     }
 }
