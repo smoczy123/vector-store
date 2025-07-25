@@ -6,10 +6,10 @@ Thank you for your interest in contributing! To help us maintain a high-quality 
 
 Before submitting a pull request (PR), ensure your contribution meets these requirements:
 
-- **Single Commit:** PR should consist of a single commit. If patch requires multiple logical changes, split them into separate PRs.
-- **Commit Quality:** Each commit should introduce one logically coherent change. Commit messages must clearly describe what is being changed and why.
-- **Commit Issue Closing Reference** If commit fixes/closes an issue, add a `Fixes: #XYZ` line at the end of commit message.
-- **Commit Issue References:** For related issues or discussions that are not directly fixed by the commit, add a `Reference: #XYZ` line at the end of commit message.
+- **Single Change:** PR should consist of a single business change. If implementation requires multiple logical changes, split them into separate PRs. Each PR can contain multiple commits, but they should all relate to the same single logical change.
+- **Change Quality:** Each PR should introduce one logically coherent change. PR and commit messages must clearly describe what is being changed and why.
+- **Issue Closing Reference** If PR fixes/closes an issue, add a `Fixes: #XYZ` line at the end of PR. If you need you can also add it to the commit message.
+- **Issue References:** For related issues or discussions that are not directly fixed by the PR, add a `Reference: #XYZ` line at the end of PR message. If you need you can also add it to the commit message.
 - **Testing:** All new features and bug fixes must include appropriate tests.
 - **PR Checks:** Every PR must pass all CI checks, including compilation, test execution, formatting, and static code analysis.
 - **PR Description:** Clearly explain the motivation and reasoning behind your changes in the PR description.
