@@ -38,7 +38,7 @@
         "tags": [
           "scylla-vector-store-index"
         ],
-        "description": "Performs an Approximate Nearest Neighbor (ANN) search using the specified index. Returns the vectors most similar to the provided embedding. The maximum number of results is controlled by the optional 'limit' parameter in the payload. The similarity metric is determined at index creation and cannot be changed per query.",
+        "description": "Performs an Approximate Nearest Neighbor (ANN) search using the specified index. Returns the vectors most similar to the provided vector. The maximum number of results is controlled by the optional 'limit' parameter in the payload. The similarity metric is determined at index creation and cannot be changed per query.",
         "operationId": "post_index_ann",
         "parameters": [
           {
@@ -82,7 +82,7 @@
             }
           },
           "400": {
-            "description": "Bad request. Possible causes: invalid embedding size, malformed input, or missing required fields.",
+            "description": "Bad request. Possible causes: invalid vector size, malformed input, or missing required fields.",
             "content": {
               "application/json": {
                 "schema": {
@@ -102,7 +102,7 @@
             }
           },
           "500": {
-            "description": "Error while searching embeddings. Possible causes: internal error, or search engine issues.",
+            "description": "Error while searching vectors. Possible causes: internal error, or search engine issues.",
             "content": {
               "application/json": {
                 "schema": {
@@ -129,7 +129,7 @@
         "tags": [
           "scylla-vector-store-index"
         ],
-        "description": "Returns the number of embeddings indexed by a specific vector index. Reflects only available embeddings and excludes any 'tombstones' (elements marked for deletion but still present in the index structure).",
+        "description": "Returns the number of vectors indexed by a specific vector index. Reflects only available vectors and excludes any 'tombstones' (elements marked for deletion but still present in the index structure).",
         "operationId": "get_index_count",
         "parameters": [
           {
@@ -144,7 +144,7 @@
           {
             "name": "index",
             "in": "path",
-            "description": "The name of the ScyllaDB vector index within the specified keyspace to count embeddings for.",
+            "description": "The name of the ScyllaDB vector index within the specified keyspace to count vectors for.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/IndexName"
@@ -153,7 +153,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful count operation. Returns the total number of embeddings currently stored in the index.",
+            "description": "Successful count operation. Returns the total number of vectors currently stored in the index.",
             "content": {
               "application/json": {
                 "schema": {
@@ -174,7 +174,7 @@
             }
           },
           "500": {
-            "description": "Error while counting embeddings. Possible causes: internal error, or issues accessing the database.",
+            "description": "Error while counting vectors. Possible causes: internal error, or issues accessing the database.",
             "content": {
               "application/json": {
                 "schema": {
@@ -241,15 +241,7 @@
       "Distance": {
         "type": "number",
         "format": "float",
-        "description": "Distance between embedding vectors measured using the distance function defined while creating the index."
-      },
-      "Embedding": {
-        "type": "array",
-        "items": {
-          "type": "number",
-          "format": "float"
-        },
-        "description": "The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index."
+        "description": "Distance between vectors measured using the distance function defined while creating the index."
       },
       "ErrorMessage": {
         "type": "string",
@@ -305,14 +297,14 @@
       "PostIndexAnnRequest": {
         "type": "object",
         "required": [
-          "embedding"
+          "vector"
         ],
         "properties": {
-          "embedding": {
-            "$ref": "#/components/schemas/Embedding"
-          },
           "limit": {
             "$ref": "#/components/schemas/Limit"
+          },
+          "vector": {
+            "$ref": "#/components/schemas/Vector"
           }
         }
       },
@@ -349,16 +341,24 @@
           "INITIALIZING",
           "CONNECTING_TO_DB",
           "DISCOVERING_INDEXES",
-          "INDEXING_EMBEDDINGS",
+          "INDEXING_VECTORS",
           "SERVING"
         ],
         "x-enum-descriptions": [
           "The node is starting up.",
           "The node is establishing a connection to ScyllaDB.",
           "The node is discovering available vector indexes in ScyllaDB.",
-          "The node is indexing embeddings into the discovered vector indexes.",
+          "The node is indexing vectors into the discovered vector indexes.",
           "The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes."
         ]
+      },
+      "Vector": {
+        "type": "array",
+        "items": {
+          "type": "number",
+          "format": "float"
+        },
+        "description": "The vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index."
       }
     }
   },

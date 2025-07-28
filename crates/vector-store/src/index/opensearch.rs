@@ -6,7 +6,6 @@
 use crate::Connectivity;
 use crate::Dimensions;
 use crate::Distance;
-use crate::Embedding;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
 use crate::IndexFactory;
@@ -14,6 +13,7 @@ use crate::IndexId;
 use crate::Limit;
 use crate::PrimaryKey;
 use crate::SpaceType;
+use crate::Vector;
 use crate::index::actor::Index;
 use crate::index::validator;
 use anyhow::anyhow;
@@ -269,7 +269,7 @@ async fn add_or_replace(
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
     opensearch_key: Arc<AtomicU64>,
     primary_key: PrimaryKey,
-    embeddings: Embedding,
+    embeddings: Vector,
     client: Arc<OpenSearch>,
 ) {
     let key = opensearch_key.fetch_add(1, Ordering::Relaxed).into();
@@ -356,7 +356,7 @@ async fn ann(
     id: Arc<IndexId>,
     tx_ann: oneshot::Sender<AnnR>,
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
-    embedding: Embedding,
+    embedding: Vector,
     dimensions: Dimensions,
     limit: Limit,
     client: Arc<OpenSearch>,

@@ -205,7 +205,7 @@ impl Eq for PrimaryKey {}
 #[derive(
     Clone, Debug, serde::Serialize, serde::Deserialize, derive_more::From, utoipa::ToSchema,
 )]
-/// Distance between embedding vectors measured using the distance function defined while creating the index.
+/// Distance between vectors measured using the distance function defined while creating the index.
 pub struct Distance(f32);
 
 impl SerializeValue for Distance {
@@ -345,8 +345,8 @@ struct ParamM(usize);
     derive_more::From,
     utoipa::ToSchema,
 )]
-/// The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
-pub struct Embedding(Vec<f32>);
+/// The vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
+pub struct Vector(Vec<f32>);
 
 #[derive(
     Clone,
@@ -424,7 +424,7 @@ pub struct Timestamp(OffsetDateTime);
 #[derive(Debug)]
 pub struct DbEmbedding {
     pub primary_key: PrimaryKey,
-    pub embedding: Option<Embedding>,
+    pub embedding: Option<Vector>,
     pub timestamp: Timestamp,
 }
 

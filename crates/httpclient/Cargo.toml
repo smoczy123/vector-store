@@ -10,3 +10,4 @@ edition.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 vector-store.workspace = true
+serde.workspace = true

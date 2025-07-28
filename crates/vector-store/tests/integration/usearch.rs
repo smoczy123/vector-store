@@ -18,6 +18,7 @@ use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 use vector_store::IndexMetadata;
 use vector_store::Percentage;
+use vector_store::Vector;
 use vector_store::node_state::NodeState;
 
 async fn setup_store() -> (
@@ -347,4 +348,26 @@ async fn status_is_serving_after_creation() {
 
     let result = client.status().await;
     assert_eq!(result, vector_store::httproutes::Status::Serving);
+}
+
+#[tokio::test]
+async fn ann_works_with_embedding_field_name() {
+    // Ensure backward compatibility with the old field name "embedding".
+    crate::enable_tracing();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
+    #[derive(serde::Serialize)]
+    struct EmbeddingRequest {
+        embedding: Vector,
+    }
+
+    let response = client
+        .post_ann_data(
+            &index,
+            &EmbeddingRequest {
+                embedding: vec![1.0, 2.0, 3.0].into(),
+            },
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
