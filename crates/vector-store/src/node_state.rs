@@ -7,8 +7,7 @@ use crate::IndexMetadata;
 use std::collections::HashSet;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Initializing,
     ConnectingToDb,

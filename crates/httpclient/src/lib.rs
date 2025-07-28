@@ -16,7 +16,7 @@ use vector_store::Limit;
 use vector_store::httproutes::InfoResponse;
 use vector_store::httproutes::PostIndexAnnRequest;
 use vector_store::httproutes::PostIndexAnnResponse;
-use vector_store::node_state::Status;
+use vector_store::httproutes::Status;
 
 pub struct HttpClient {
     client: Client,

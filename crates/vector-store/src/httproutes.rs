@@ -517,10 +517,10 @@ async fn get_info() -> response::Json<InfoResponse> {
     })
 }
 
-#[derive(ToEnumSchema, serde::Deserialize, serde::Serialize)]
+#[derive(ToEnumSchema, serde::Deserialize, serde::Serialize, PartialEq, Debug)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")] // This line makes all variants uppercase in the schema
 /// Operational status of the Vector Store node.
-enum Status {
+pub enum Status {
     /// The node is starting up.
     Initializing,
     /// The node is establishing a connection to ScyllaDB.
