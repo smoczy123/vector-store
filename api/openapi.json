@@ -92,7 +92,7 @@
             }
           },
           "404": {
-            "description": "Index not found. Possible causes: index does not exist, or is not built yet.",
+            "description": "Index not found. Possible causes: index does not exist, or is not discovered yet.",
             "content": {
               "application/json": {
                 "schema": {
@@ -164,7 +164,7 @@
             }
           },
           "404": {
-            "description": "Index not found. Possible causes: index does not exist, or is not built yet.",
+            "description": "Index not found. Possible causes: index does not exist, or is not discovered yet.",
             "content": {
               "application/json": {
                 "schema": {

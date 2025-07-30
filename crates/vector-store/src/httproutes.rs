@@ -207,7 +207,7 @@ struct ErrorMessage(#[allow(dead_code)] String);
         ),
         (
             status = 404,
-            description = "Index not found. Possible causes: index does not exist, or is not built yet.",
+            description = "Index not found. Possible causes: index does not exist, or is not discovered yet.",
             content_type = "application/json",
             body = ErrorMessage
         ),
@@ -330,7 +330,7 @@ The similarity metric is determined at index creation and cannot be changed per 
         ),
         (
             status = 404,
-            description = "Index not found. Possible causes: index does not exist, or is not built yet.",
+            description = "Index not found. Possible causes: index does not exist, or is not discovered yet.",
             content_type = "application/json",
             body = ErrorMessage
         ),
