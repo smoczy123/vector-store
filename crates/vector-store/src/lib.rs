@@ -18,8 +18,8 @@ pub mod node_state;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
 use db::Db;
+pub use httproutes::DataType;
 pub use httproutes::IndexInfo;
-pub use httproutes::Quantization;
 use index::factory;
 use index::factory::IndexFactory;
 use scylla::cluster::metadata::ColumnType;
@@ -345,7 +345,7 @@ struct ParamM(usize);
     derive_more::From,
     utoipa::ToSchema,
 )]
-/// The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the quantization of the index.
+/// The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
 pub struct Embedding(Vec<f32>);
 
 #[derive(
