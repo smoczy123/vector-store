@@ -263,7 +263,7 @@ async fn process(statements: Arc<Statements>, msg: Db, node_state: Sender<NodeSt
                     .get_index_target_type(keyspace, table, target_column)
                     .await,
             )
-            .unwrap_or_else(|_| trace!("process: Db::GetIndexVersion: unable to send response")),
+            .unwrap_or_else(|_| trace!("process: Db::GetIndexTargetType: unable to send response")),
 
         Db::GetIndexParams {
             keyspace,
