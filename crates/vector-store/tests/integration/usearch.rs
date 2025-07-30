@@ -346,5 +346,5 @@ async fn status_is_serving_after_creation() {
     let (_index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
 
     let result = client.status().await;
-    assert_eq!(result, vector_store::node_state::Status::Serving);
+    assert_eq!(result, vector_store::httproutes::Status::Serving);
 }
