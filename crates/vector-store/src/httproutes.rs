@@ -130,17 +130,17 @@ fn new_open_api_router() -> (Router<RoutesInnerState>, utoipa::openapi::OpenApi)
 }
 
 #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema, PartialEq, Debug)]
-/// Data type and precision used for storing and processing embedding vectors in the index.
-pub enum Quantization {
+/// Data type and precision used for storing and processing vectors in the index.
+pub enum DataType {
     F32,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema, PartialEq, Debug)]
-/// Information about a vector index, such as keyspace, name and quantization.
+/// Information about a vector index, such as keyspace, name and data type.
 pub struct IndexInfo {
     pub keyspace: KeyspaceName,
     pub index: IndexName,
-    pub quantization: Quantization,
+    pub data_type: DataType,
 }
 
 impl IndexInfo {
@@ -148,7 +148,7 @@ impl IndexInfo {
         IndexInfo {
             keyspace: String::from(keyspace).into(),
             index: String::from(index).into(),
-            quantization: Quantization::F32,
+            data_type: DataType::F32,
         }
     }
 }
@@ -177,7 +177,7 @@ async fn get_indexes(State(state): State<RoutesInnerState>) -> Response {
         .map(|id| IndexInfo {
             keyspace: id.keyspace(),
             index: id.index(),
-            quantization: Quantization::F32, // currently the only supported quantization by Vector Store
+            data_type: DataType::F32, // currently the only supported data type by Vector Store
         })
         .collect();
     (StatusCode::OK, response::Json(indexes)).into_response()

@@ -231,6 +231,13 @@
   },
   "components": {
     "schemas": {
+      "DataType": {
+        "type": "string",
+        "description": "Data type and precision used for storing and processing vectors in the index.",
+        "enum": [
+          "F32"
+        ]
+      },
       "Distance": {
         "type": "number",
         "format": "float",
@@ -242,7 +249,7 @@
           "type": "number",
           "format": "float"
         },
-        "description": "The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the quantization of the index."
+        "description": "The embedding vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index."
       },
       "ErrorMessage": {
         "type": "string",
@@ -250,21 +257,21 @@
       },
       "IndexInfo": {
         "type": "object",
-        "description": "Information about a vector index, such as keyspace, name and quantization.",
+        "description": "Information about a vector index, such as keyspace, name and data type.",
         "required": [
           "keyspace",
           "index",
-          "quantization"
+          "data_type"
         ],
         "properties": {
+          "data_type": {
+            "$ref": "#/components/schemas/DataType"
+          },
           "index": {
             "$ref": "#/components/schemas/IndexName"
           },
           "keyspace": {
             "$ref": "#/components/schemas/KeyspaceName"
-          },
-          "quantization": {
-            "$ref": "#/components/schemas/Quantization"
           }
         }
       },
@@ -334,13 +341,6 @@
             }
           }
         }
-      },
-      "Quantization": {
-        "type": "string",
-        "description": "Data type and precision used for storing and processing embedding vectors in the index.",
-        "enum": [
-          "F32"
-        ]
       },
       "Status": {
         "type": "string",
