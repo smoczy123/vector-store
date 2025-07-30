@@ -1,5 +1,5 @@
 use crate::Dimensions;
-use crate::Embedding;
+use crate::Vector;
 use anyhow::bail;
 use thiserror::Error;
 
@@ -9,7 +9,7 @@ pub enum Error {
     WrongEmbeddingDimension { expected: usize, actual: usize },
 }
 
-pub fn embedding_dimensions(embedding: &Embedding, dimensions: Dimensions) -> anyhow::Result<()> {
+pub fn embedding_dimensions(embedding: &Vector, dimensions: Dimensions) -> anyhow::Result<()> {
     let Some(embedding_len) = std::num::NonZeroUsize::new(embedding.0.len()) else {
         bail!(Error::WrongEmbeddingDimension {
             expected: dimensions.0.get(),
@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_empty() {
-        let embedding = Embedding(vec![]);
+        let embedding = Vector(vec![]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_too_short() {
-        let embedding = Embedding(vec![0.1, 0.2]);
+        let embedding = Vector(vec![0.1, 0.2]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_too_long() {
-        let embedding = Embedding(vec![0.1, 0.2, 0.3, 0.4]);
+        let embedding = Vector(vec![0.1, 0.2, 0.3, 0.4]);
         let dimensions = dims(3);
         let result = embedding_dimensions(&embedding, dimensions);
         assert!(matches!(
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_ok() {
-        let embedding = Embedding(vec![0.1, 0.2, 0.3]);
+        let embedding = Vector(vec![0.1, 0.2, 0.3]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);

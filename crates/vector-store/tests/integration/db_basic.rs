@@ -21,7 +21,6 @@ use vector_store::Connectivity;
 use vector_store::DbCustomIndex;
 use vector_store::DbEmbedding;
 use vector_store::Dimensions;
-use vector_store::Embedding;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::IndexMetadata;
@@ -32,6 +31,7 @@ use vector_store::Progress;
 use vector_store::SpaceType;
 use vector_store::TableName;
 use vector_store::Timestamp;
+use vector_store::Vector;
 use vector_store::db::Db;
 use vector_store::db_index::DbIndex;
 use vector_store::node_state::Event;
@@ -56,7 +56,7 @@ pub(crate) fn new(node_state: Sender<NodeState>) -> (mpsc::Sender<Db>, DbBasic) 
 
 struct TableStore {
     table: Table,
-    embeddings: HashMap<ColumnName, HashMap<PrimaryKey, (Option<Embedding>, Timestamp)>>,
+    embeddings: HashMap<ColumnName, HashMap<PrimaryKey, (Option<Vector>, Timestamp)>>,
 }
 
 impl TableStore {
@@ -213,7 +213,7 @@ impl DbBasic {
         keyspace_name: &KeyspaceName,
         table_name: &TableName,
         target_column: &ColumnName,
-        values: impl IntoIterator<Item = (PrimaryKey, Option<Embedding>, Timestamp)>,
+        values: impl IntoIterator<Item = (PrimaryKey, Option<Vector>, Timestamp)>,
     ) -> anyhow::Result<()> {
         let mut db = self.0.write().unwrap();
 

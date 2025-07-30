@@ -5,12 +5,12 @@
 
 use crate::ColumnName;
 use crate::Distance;
-use crate::Embedding;
 use crate::IndexId;
 use crate::IndexName;
 use crate::KeyspaceName;
 use crate::Limit;
 use crate::Progress;
+use crate::Vector;
 use crate::db_index::DbIndexExt;
 use crate::engine::Engine;
 use crate::engine::EngineExt;
@@ -191,17 +191,17 @@ struct ErrorMessage(#[allow(dead_code)] String);
     get,
     path = "/api/v1/indexes/{keyspace}/{index}/count",
     tag = "scylla-vector-store-index",
-    description = "Returns the number of embeddings indexed by a specific vector index. \
-    Reflects only available embeddings and excludes any 'tombstones' \
+    description = "Returns the number of vectors indexed by a specific vector index. \
+    Reflects only available vectors and excludes any 'tombstones' \
     (elements marked for deletion but still present in the index structure).",
     params(
         ("keyspace" = KeyspaceName, Path, description = "The name of the ScyllaDB keyspace containing the vector index."),
-        ("index" = IndexName, Path, description = "The name of the ScyllaDB vector index within the specified keyspace to count embeddings for.")
+        ("index" = IndexName, Path, description = "The name of the ScyllaDB vector index within the specified keyspace to count vectors for.")
     ),
     responses(
         (
             status = 200,
-            description = "Successful count operation. Returns the total number of embeddings currently stored in the index.",
+            description = "Successful count operation. Returns the total number of vectors currently stored in the index.",
             body = usize,
             content_type = "application/json"
         ),
@@ -213,7 +213,7 @@ struct ErrorMessage(#[allow(dead_code)] String);
         ),
         (
             status = 500,
-            description = "Error while counting embeddings. Possible causes: internal error, or issues accessing the database.",
+            description = "Error while counting vectors. Possible causes: internal error, or issues accessing the database.",
             content_type = "application/json",
             body = ErrorMessage
         )
@@ -292,7 +292,8 @@ async fn get_metrics(
 
 #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
 pub struct PostIndexAnnRequest {
-    pub embedding: Embedding,
+    #[serde(alias = "embedding")]
+    pub vector: Vector,
     #[serde(default)]
     pub limit: Limit,
 }
@@ -308,7 +309,7 @@ pub struct PostIndexAnnResponse {
     path = "/api/v1/indexes/{keyspace}/{index}/ann",
     tag = "scylla-vector-store-index",
     description = "Performs an Approximate Nearest Neighbor (ANN) search using the specified index. \
-Returns the vectors most similar to the provided embedding. \
+Returns the vectors most similar to the provided vector. \
 The maximum number of results is controlled by the optional 'limit' parameter in the payload. \
 The similarity metric is determined at index creation and cannot be changed per query.",
     params(
@@ -324,7 +325,7 @@ The similarity metric is determined at index creation and cannot be changed per 
         ),
         (
             status = 400,
-            description = "Bad request. Possible causes: invalid embedding size, malformed input, or missing required fields.",
+            description = "Bad request. Possible causes: invalid vector size, malformed input, or missing required fields.",
             content_type = "application/json",
             body = ErrorMessage
         ),
@@ -336,7 +337,7 @@ The similarity metric is determined at index creation and cannot be changed per 
         ),
         (
             status = 500,
-            description = "Error while searching embeddings. Possible causes: internal error, or search engine issues.",
+            description = "Error while searching vectors. Possible causes: internal error, or search engine issues.",
             content_type = "application/json",
             body = ErrorMessage
         ),
@@ -382,7 +383,7 @@ async fn post_index_ann(
         return (StatusCode::SERVICE_UNAVAILABLE, msg).into_response();
     }
 
-    let search_result = index.ann(request.embedding, request.limit).await;
+    let search_result = index.ann(request.vector, request.limit).await;
     // Record duration in Prometheus
     timer.observe_duration();
 
@@ -527,8 +528,8 @@ pub enum Status {
     ConnectingToDb,
     /// The node is discovering available vector indexes in ScyllaDB.
     DiscoveringIndexes,
-    /// The node is indexing embeddings into the discovered vector indexes.
-    IndexingEmbeddings,
+    /// The node is indexing vectors into the discovered vector indexes.
+    IndexingVectors,
     /// The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes.
     Serving,
 }
@@ -539,7 +540,7 @@ impl From<crate::node_state::Status> for Status {
             crate::node_state::Status::Initializing => Status::Initializing,
             crate::node_state::Status::ConnectingToDb => Status::ConnectingToDb,
             crate::node_state::Status::DiscoveringIndexes => Status::DiscoveringIndexes,
-            crate::node_state::Status::IndexingEmbeddings => Status::IndexingEmbeddings,
+            crate::node_state::Status::IndexingEmbeddings => Status::IndexingVectors,
             crate::node_state::Status::Serving => Status::Serving,
         }
     }
@@ -551,7 +552,7 @@ impl From<Status> for crate::node_state::Status {
             Status::Initializing => crate::node_state::Status::Initializing,
             Status::ConnectingToDb => crate::node_state::Status::ConnectingToDb,
             Status::DiscoveringIndexes => crate::node_state::Status::DiscoveringIndexes,
-            Status::IndexingEmbeddings => crate::node_state::Status::IndexingEmbeddings,
+            Status::IndexingVectors => crate::node_state::Status::IndexingEmbeddings,
             Status::Serving => crate::node_state::Status::Serving,
         }
     }

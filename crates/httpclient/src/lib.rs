@@ -4,15 +4,16 @@
  */
 
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use vector_store::ColumnName;
 use vector_store::Distance;
-use vector_store::Embedding;
 use vector_store::IndexInfo;
 use vector_store::IndexMetadata;
 use vector_store::Limit;
+use vector_store::Vector;
 use vector_store::httproutes::InfoResponse;
 use vector_store::httproutes::PostIndexAnnRequest;
 use vector_store::httproutes::PostIndexAnnResponse;
@@ -45,7 +46,7 @@ impl HttpClient {
     pub async fn ann(
         &self,
         index: &IndexMetadata,
-        embedding: Embedding,
+        embedding: Vector,
         limit: Limit,
     ) -> (HashMap<ColumnName, Vec<Value>>, Vec<Distance>) {
         let resp = self
@@ -60,15 +61,27 @@ impl HttpClient {
     pub async fn post_ann(
         &self,
         index: &IndexMetadata,
-        embedding: Embedding,
+        embedding: Vector,
         limit: Limit,
+    ) -> reqwest::Response {
+        let request = PostIndexAnnRequest {
+            vector: embedding,
+            limit,
+        };
+        self.post_ann_data(index, &request).await
+    }
+
+    pub async fn post_ann_data<T: Serialize>(
+        &self,
+        index: &IndexMetadata,
+        data: &T,
     ) -> reqwest::Response {
         self.client
             .post(format!(
                 "{}/indexes/{}/{}/ann",
                 self.url_api, index.keyspace_name, index.index_name
             ))
-            .json(&PostIndexAnnRequest { embedding, limit })
+            .json(data)
             .send()
             .await
             .unwrap()
