@@ -121,6 +121,7 @@ struct DbMock {
     keyspaces: HashMap<KeyspaceName, Keyspace>,
     next_get_db_index_failed: bool,
     next_full_scan_progress: Progress,
+    simulate_endless_get_indexes_processing: bool,
 }
 
 impl DbMock {
@@ -136,6 +137,7 @@ impl DbBasic {
             keyspaces: HashMap::new(),
             next_get_db_index_failed: false,
             next_full_scan_progress: Progress::Done,
+            simulate_endless_get_indexes_processing: false,
         })))
     }
 
@@ -251,6 +253,13 @@ impl DbBasic {
     pub(crate) fn set_next_full_scan_progress(&self, progress: Progress) {
         self.0.write().unwrap().next_full_scan_progress = progress;
     }
+
+    pub(crate) fn simulate_endless_get_indexes_processing(&self) {
+        self.0
+            .write()
+            .unwrap()
+            .simulate_endless_get_indexes_processing = true;
+    }
 }
 
 fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
@@ -265,28 +274,35 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
             .map_err(|_| anyhow!("Db::LatestSchemaVersion: unable to send response"))
             .unwrap(),
 
-        Db::GetIndexes { tx } => tx
-            .send(Ok(db
-                .0
-                .read()
-                .unwrap()
-                .keyspaces
-                .iter()
-                .flat_map(|(keyspace_name, keyspace)| {
-                    keyspace
-                        .indexes
-                        .iter()
-                        .map(|(index_name, index)| DbCustomIndex {
-                            keyspace: keyspace_name.clone(),
-                            index: index_name.clone(),
-                            table: index.index.table_name.clone(),
-                            target_column: index.index.target_column.clone(),
-                        })
-                })
-                .collect()))
-            .map_err(|_| anyhow!("Db::GetIndexes: unable to send response"))
-            .unwrap(),
-
+        Db::GetIndexes { tx } => {
+            if db.0.read().unwrap().simulate_endless_get_indexes_processing {
+                tokio::spawn(async move {
+                    let _ = tx;
+                    tokio::time::sleep(std::time::Duration::MAX).await;
+                });
+            } else {
+                tx.send(Ok(db
+                    .0
+                    .read()
+                    .unwrap()
+                    .keyspaces
+                    .iter()
+                    .flat_map(|(keyspace_name, keyspace)| {
+                        keyspace
+                            .indexes
+                            .iter()
+                            .map(|(index_name, index)| DbCustomIndex {
+                                keyspace: keyspace_name.clone(),
+                                index: index_name.clone(),
+                                table: index.index.table_name.clone(),
+                                target_column: index.index.target_column.clone(),
+                            })
+                    })
+                    .collect()))
+                    .map_err(|_| anyhow!("Db::GetIndexes: unable to send response"))
+                    .unwrap()
+            }
+        }
         Db::GetIndexVersion {
             keyspace,
             index,
