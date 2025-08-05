@@ -23,10 +23,9 @@ use vector_store::httproutes::Status;
 use vector_store::node_state::NodeState;
 
 async fn setup_store() -> (
+    impl std::future::Future<Output = (HttpClient, impl Sized)>,
     IndexMetadata,
-    HttpClient,
     DbBasic,
-    impl Sized,
     Sender<NodeState>,
 ) {
     let node_state = vector_store::new_node_state().await;
@@ -73,17 +72,24 @@ async fn setup_store() -> (
 
     let index_factory = vector_store::new_index_factory_usearch().unwrap();
 
-    let (server, addr) = vector_store::run(
-        SocketAddr::from(([127, 0, 0, 1], 0)).into(),
-        Some(1),
-        node_state.clone(),
-        db_actor,
-        index_factory,
-    )
-    .await
-    .unwrap();
+    let run = {
+        let node_state = node_state.clone();
+        async move {
+            let (server, addr) = vector_store::run(
+                SocketAddr::from(([127, 0, 0, 1], 0)).into(),
+                Some(1),
+                node_state,
+                db_actor,
+                index_factory,
+            )
+            .await
+            .unwrap();
 
-    (index, HttpClient::new(addr), db, server, node_state)
+            (HttpClient::new(addr), server)
+        }
+    };
+
+    (run, index, db, node_state)
 }
 
 async fn setup_store_and_wait_for_index() -> (
@@ -93,7 +99,8 @@ async fn setup_store_and_wait_for_index() -> (
     impl Sized,
     Sender<NodeState>,
 ) {
-    let (index, client, db, server, node_state) = setup_store().await;
+    let (run, index, db, node_state) = setup_store().await;
+    let (client, server) = run.await;
 
     wait_for(
         || async { !client.indexes().await.is_empty() },
@@ -108,7 +115,8 @@ async fn setup_store_and_wait_for_index() -> (
 async fn simple_create_search_delete_index() {
     crate::enable_tracing();
 
-    let (index, client, db, _server, _node_state) = setup_store().await;
+    let (run, index, db, _node_state) = setup_store().await;
+    let (client, _server) = run.await;
 
     db.insert_values(
         &index.keyspace_name,
@@ -321,11 +329,11 @@ async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimen
 #[tokio::test]
 async fn ann_fail_while_building() {
     crate::enable_tracing();
-    let (index, client, db, _server, _node_state) = setup_store_and_wait_for_index().await;
-
+    let (run, index, db, _node_state) = setup_store().await;
     db.set_next_full_scan_progress(vector_store::Progress::InProgress(
         Percentage::try_from(33.33).unwrap(),
     ));
+    let (client, _server) = run.await;
 
     let result = client
         .post_ann(
