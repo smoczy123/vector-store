@@ -19,7 +19,6 @@ use uuid::Uuid;
 use vector_store::IndexMetadata;
 use vector_store::Percentage;
 use vector_store::Vector;
-use vector_store::httproutes::Status;
 use vector_store::node_state::NodeState;
 
 async fn setup_store() -> (
@@ -86,7 +85,7 @@ async fn setup_store() -> (
     (index, HttpClient::new(addr), db, server, node_state)
 }
 
-async fn setup_store_and_wait_for_index() -> (
+pub(crate) async fn setup_store_and_wait_for_index() -> (
     IndexMetadata,
     HttpClient,
     DbBasic,
@@ -340,15 +339,6 @@ async fn ann_fail_while_building() {
         result.text().await.unwrap(),
         "Full scan is in progress, percentage: 33.33%"
     );
-}
-
-#[tokio::test]
-async fn status_is_serving_after_creation() {
-    crate::enable_tracing();
-    let (_index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
-
-    let result = client.status().await;
-    assert_eq!(result.unwrap(), Status::Serving);
 }
 
 #[tokio::test]
