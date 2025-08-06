@@ -285,7 +285,6 @@ struct Statements {
     session: Arc<Session>,
     st_latest_schema_version: PreparedStatement,
     st_get_indexes: PreparedStatement,
-    st_get_index_version: PreparedStatement,
     st_get_index_target_type: PreparedStatement,
     st_get_index_options: PreparedStatement,
     re_get_index_target_type: Regex,
@@ -309,11 +308,6 @@ impl Statements {
                 .prepare(Self::ST_GET_INDEXES)
                 .await
                 .context("ST_GET_INDEXES")?,
-
-            st_get_index_version: session
-                .prepare(Self::ST_GET_INDEX_VERSION)
-                .await
-                .context("ST_GET_INDEX_VERSION")?,
 
             st_get_index_target_type: session
                 .prepare(Self::ST_GET_INDEX_TARGET_TYPE)
@@ -384,28 +378,12 @@ impl Statements {
             .await?)
     }
 
-    const ST_GET_INDEX_VERSION: &str = "
-        SELECT version
-        FROM system_schema.scylla_tables
-        WHERE keyspace_name = ? AND table_name = ?
-        ";
-
     async fn get_index_version(
         &self,
-        keyspace: KeyspaceName,
-        index: IndexName,
+        _keyspace: KeyspaceName,
+        _index: IndexName,
     ) -> GetIndexVersionR {
-        Ok(self
-            .session
-            .execute_iter(
-                self.st_get_index_version.clone(),
-                (keyspace, format!("{}_index", index.0)),
-            )
-            .await?
-            .rows_stream::<(Uuid,)>()?
-            .try_next()
-            .await?
-            .map(|(version,)| version.into()))
+        Ok(Some(Uuid::from_u128(0).into()))
     }
 
     const ST_GET_INDEX_TARGET_TYPE: &str = "
