@@ -527,10 +527,8 @@ pub enum Status {
     /// The node is establishing a connection to ScyllaDB.
     ConnectingToDb,
     /// The node is discovering available vector indexes in ScyllaDB.
-    DiscoveringIndexes,
-    /// The node is indexing vectors into the discovered vector indexes.
-    IndexingVectors,
-    /// The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes.
+    Bootstrapping,
+    /// The node is making initial indexes discovering and vector data indexing.
     Serving,
 }
 
@@ -539,21 +537,9 @@ impl From<crate::node_state::Status> for Status {
         match status {
             crate::node_state::Status::Initializing => Status::Initializing,
             crate::node_state::Status::ConnectingToDb => Status::ConnectingToDb,
-            crate::node_state::Status::DiscoveringIndexes => Status::DiscoveringIndexes,
-            crate::node_state::Status::IndexingEmbeddings => Status::IndexingVectors,
+            crate::node_state::Status::IndexingEmbeddings => Status::Bootstrapping,
+            crate::node_state::Status::DiscoveringIndexes => Status::Bootstrapping,
             crate::node_state::Status::Serving => Status::Serving,
-        }
-    }
-}
-
-impl From<Status> for crate::node_state::Status {
-    fn from(status: Status) -> Self {
-        match status {
-            Status::Initializing => crate::node_state::Status::Initializing,
-            Status::ConnectingToDb => crate::node_state::Status::ConnectingToDb,
-            Status::DiscoveringIndexes => crate::node_state::Status::DiscoveringIndexes,
-            Status::IndexingVectors => crate::node_state::Status::IndexingEmbeddings,
-            Status::Serving => crate::node_state::Status::Serving,
         }
     }
 }
@@ -633,6 +619,30 @@ mod tests {
                     .format(&Iso8601::DEFAULT)
                     .unwrap()
             )
+        );
+    }
+
+    #[test]
+    fn status_conversion() {
+        assert_eq!(
+            Status::from(crate::node_state::Status::Initializing),
+            Status::Initializing
+        );
+        assert_eq!(
+            Status::from(crate::node_state::Status::ConnectingToDb),
+            Status::ConnectingToDb
+        );
+        assert_eq!(
+            Status::from(crate::node_state::Status::IndexingEmbeddings),
+            Status::Bootstrapping
+        );
+        assert_eq!(
+            Status::from(crate::node_state::Status::DiscoveringIndexes),
+            Status::Bootstrapping
+        );
+        assert_eq!(
+            Status::from(crate::node_state::Status::Serving),
+            Status::Serving
         );
     }
 }
