@@ -8,6 +8,7 @@ mod info;
 mod mock_opensearch;
 mod openapi;
 mod opensearch;
+mod status;
 mod usearch;
 
 use std::sync::Once;
