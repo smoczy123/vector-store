@@ -8,12 +8,14 @@ use crate::engine::Engine;
 use crate::httproutes;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
+use axum::serve::ListenerExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
+use tracing::error;
 
 pub(crate) enum HttpServer {}
 
@@ -25,6 +27,11 @@ pub(crate) async fn new(
 ) -> anyhow::Result<(Sender<HttpServer>, SocketAddr)> {
     let listener = TcpListener::bind(addr.0).await?;
     let addr = listener.local_addr()?;
+    let listener = listener.tap_io(|socket| {
+        if let Err(err) = socket.set_nodelay(true) {
+            error!("Failed to set TCP_NODELAY on HTTP server socket: {err}");
+        }
+    });
 
     // minimal size as channel is used as a lifetime guard
     const CHANNEL_SIZE: usize = 1;
