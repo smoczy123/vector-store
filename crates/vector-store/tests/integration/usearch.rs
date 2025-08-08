@@ -21,7 +21,7 @@ use vector_store::Percentage;
 use vector_store::Vector;
 use vector_store::node_state::NodeState;
 
-async fn setup_store() -> (
+pub(crate) async fn setup_store() -> (
     impl std::future::Future<Output = (HttpClient, impl Sized)>,
     IndexMetadata,
     DbBasic,
