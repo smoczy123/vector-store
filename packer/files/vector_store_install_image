@@ -48,6 +48,21 @@ def install_vector_store(version):
     run('sudo -u {_USER} tar -xvf {_HOME}/vector-store.tar.gz -C {_HOME}/')
     run('sudo -u {_USER} {_COPY_OR_MOVE} {_HOME}/{NAME} {_HOME}/vector-store'.format(NAME=name, _HOME=HOME_DIR, _USER=USER, _COPY_OR_MOVE=COPY_OR_MOVE))
 
+def install_node_exporter():
+    try:
+        run('{_HOME}/node_exporter_install')
+    except Exception as e:
+        print("node_exporter_install failed" + str(e))
+        print(e.output)
+    try:
+        run('cp {_HOME}/node-exporter.service /usr/lib/systemd/system/')
+    except Exception as e:
+        print("could not place node-exporter file in user/lib/systemd" + str(e))
+        print(e.output)
+    run('systemctl daemon-reload')
+    run('systemctl enable node-exporter.service')
+    run('systemctl start node-exporter.service')
+
 def install_service():
     run('cp {_HOME}/vector-store.service /etc/systemd/system/')
     try:
@@ -76,3 +91,4 @@ if __name__ == '__main__':
         COPY_OR_MOVE='cp'
     install_vector_store(args.version)
     install_service()
+    install_node_exporter()
