@@ -42,11 +42,15 @@ use scylla::value::CqlValue;
 use serde_json::Number;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::sync::Arc;
 use time::Date;
 use time::OffsetDateTime;
 use time::Time;
 use time::format_description::well_known::Iso8601;
+use time::format_description::well_known::iso8601::Config;
+use time::format_description::well_known::iso8601::FormattedComponents;
+use time::format_description::well_known::iso8601::TimePrecision;
 use tokio::sync::mpsc::Sender;
 use tower_http::trace::TraceLayer;
 use tracing::debug;
@@ -476,19 +480,42 @@ fn to_json(value: CqlValue) -> Value {
         CqlValue::Date(value) => Value::String(
             TryInto::<Date>::try_into(value)
                 .expect("CqlValue::Date should be correct")
-                .format(&Iso8601::DATE)
+                .format({
+                    const CONFIG: u128 = Config::DEFAULT
+                        .set_formatted_components(FormattedComponents::Date)
+                        .set_time_precision(TimePrecision::Second {
+                            decimal_digits: NonZero::new(3),
+                        })
+                        .encode();
+                    &Iso8601::<CONFIG>
+                })
                 .expect("Date should be correct"),
         ),
         CqlValue::Time(value) => Value::String(
             TryInto::<Time>::try_into(value)
                 .expect("CqlValue::Time should be correct")
-                .format(&Iso8601::TIME)
+                .format({
+                    const CONFIG: u128 = Config::DEFAULT
+                        .set_formatted_components(FormattedComponents::Time)
+                        .set_time_precision(TimePrecision::Second {
+                            decimal_digits: NonZero::new(3),
+                        })
+                        .encode();
+                    &Iso8601::<CONFIG>
+                })
                 .expect("Time should be correct"),
         ),
         CqlValue::Timestamp(value) => Value::String(
             TryInto::<OffsetDateTime>::try_into(value)
                 .expect("CqlValue::Timestamp should be correct")
-                .format(&Iso8601::DEFAULT)
+                .format({
+                    const CONFIG: u128 = Config::DEFAULT
+                        .set_time_precision(TimePrecision::Second {
+                            decimal_digits: NonZero::new(3),
+                        })
+                        .encode();
+                    &Iso8601::<CONFIG>
+                })
                 .expect("OffsetDateTime should be correct"),
         ),
 
