@@ -519,7 +519,7 @@ async fn get_info() -> response::Json<InfoResponse> {
 }
 
 #[derive(ToEnumSchema, serde::Deserialize, serde::Serialize, PartialEq, Debug)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")] // This line makes all variants uppercase in the schema
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 /// Operational status of the Vector Store node.
 pub enum Status {
     /// The node is starting up.
