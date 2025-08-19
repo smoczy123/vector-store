@@ -254,6 +254,7 @@ impl Statements {
             WHERE
                 token({st_partition_key_list}) >= ?
                 AND token({st_partition_key_list}) <= ?
+            BYPASS CACHE
             "
         )
     }
