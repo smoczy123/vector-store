@@ -35,7 +35,8 @@ use usearch::IndexOptions;
 use usearch::MetricKind;
 use usearch::ScalarKind;
 
-pub struct UsearchIndexFactory;
+pub struct UsearchIndexFactory(Arc<Semaphore>);
+
 impl IndexFactory for UsearchIndexFactory {
     fn create_index(
         &self,
@@ -53,6 +54,7 @@ impl IndexFactory for UsearchIndexFactory {
             expansion_add,
             expansion_search,
             space_type,
+            Arc::clone(&self.0),
         )
     }
 
@@ -61,8 +63,8 @@ impl IndexFactory for UsearchIndexFactory {
     }
 }
 
-pub fn new_usearch() -> anyhow::Result<UsearchIndexFactory> {
-    Ok(UsearchIndexFactory {})
+pub fn new_usearch(semaphore: Arc<Semaphore>) -> anyhow::Result<UsearchIndexFactory> {
+    Ok(UsearchIndexFactory(semaphore))
 }
 
 // Initial and incremental number for the index vectors reservation.
@@ -104,6 +106,7 @@ pub(crate) fn new(
     expansion_add: ExpansionAdd,
     expansion_search: ExpansionSearch,
     space_type: SpaceType,
+    semaphore: Arc<Semaphore>,
 ) -> anyhow::Result<mpsc::Sender<Index>> {
     let options = IndexOptions {
         dimensions: dimensions.0.get(),
@@ -132,11 +135,6 @@ pub(crate) fn new(
             // Incremental key for a usearch index
             let usearch_key = Arc::new(AtomicU64::new(0));
 
-            // This semaphore decides how many tasks are queued for an usearch process. It is
-            // calculated as a number of threads multiply 2, to be sure that there is always a new
-            // task waiting in the queue.
-            let semaphore = Arc::new(Semaphore::new(rayon::current_num_threads() * 2));
-
             while let Some(msg) = rx.recv().await {
                 let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
                 tokio::spawn({
@@ -144,7 +142,8 @@ pub(crate) fn new(
                     let keys = Arc::clone(&keys);
                     let usearch_key = Arc::clone(&usearch_key);
                     async move {
-                        process(msg, dimensions, idx, keys, usearch_key).await;
+                        crate::move_to_the_end_of_async_runtime_queue().await;
+                        process(msg, dimensions, idx, keys, usearch_key);
                         drop(permit);
                     }
                 });
@@ -158,7 +157,7 @@ pub(crate) fn new(
     Ok(tx)
 }
 
-async fn process(
+fn process(
     msg: Index,
     dimensions: Dimensions,
     idx: Arc<RwLock<usearch::Index>>,
@@ -170,11 +169,11 @@ async fn process(
             primary_key,
             embedding,
         } => {
-            add_or_replace(idx, keys, usearch_key, primary_key, embedding).await;
+            add_or_replace(idx, keys, usearch_key, primary_key, embedding);
         }
 
         Index::Remove { primary_key } => {
-            remove(idx, keys, primary_key).await;
+            remove(idx, keys, primary_key);
         }
 
         Index::Ann {
@@ -182,7 +181,7 @@ async fn process(
             limit,
             tx,
         } => {
-            ann(idx, tx, keys, embedding, dimensions, limit).await;
+            ann(idx, tx, keys, embedding, dimensions, limit);
         }
 
         Index::Count { tx } => {
@@ -191,7 +190,7 @@ async fn process(
     }
 }
 
-async fn add_or_replace(
+fn add_or_replace(
     idx: Arc<RwLock<usearch::Index>>,
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
     usearch_key: Arc<AtomicU64>,
@@ -215,44 +214,36 @@ async fn add_or_replace(
         )
     };
 
-    let (tx, rx) = oneshot::channel();
+    let remove_key_from_bimap = |key: &Key| {
+        keys.write().unwrap().remove_by_right(key);
+    };
 
-    rayon::spawn(move || {
-        let capacity = idx.read().unwrap().capacity();
-        let free_space = capacity - idx.read().unwrap().size();
-        if free_space < RESERVE_THRESHOLD {
-            // free space below threshold, reserve more space
-            let capacity = capacity + RESERVE_INCREMENT;
-            if let Err(err) = idx.write().unwrap().reserve(capacity) {
-                error!("unable to reserve index capacity for {capacity} in usearch: {err}");
-                _ = tx.send(false);
-                return;
-            }
-            debug!("add_or_replace: reserved index capacity for {capacity}");
+    let capacity = idx.read().unwrap().capacity();
+    let free_space = capacity - idx.read().unwrap().size();
+    if free_space < RESERVE_THRESHOLD {
+        // free space below threshold, reserve more space
+        let capacity = capacity + RESERVE_INCREMENT;
+        if let Err(err) = idx.write().unwrap().reserve(capacity) {
+            error!("unable to reserve index capacity for {capacity} in usearch: {err}");
+            remove_key_from_bimap(&key);
+            return;
         }
+        debug!("add_or_replace: reserved index capacity for {capacity}");
+    }
 
-        if remove {
-            if let Err(err) = idx.read().unwrap().remove(key.0) {
-                debug!("add_or_replace: unable to remove embedding for key {key}: {err}");
-                _ = tx.send(true); // don't remove a key from a bimap
-                return;
-            };
-        }
-        if let Err(err) = idx.read().unwrap().add(key.0, &embedding.0) {
-            debug!("add_or_replace: unable to add embedding for key {key}: {err}");
-            _ = tx.send(false);
+    if remove {
+        if let Err(err) = idx.read().unwrap().remove(key.0) {
+            debug!("add_or_replace: unable to remove embedding for key {key}: {err}");
             return;
         };
-
-        _ = tx.send(true);
-    });
-
-    if let Ok(false) = rx.await {
-        keys.write().unwrap().remove_by_right(&key);
     }
+    if let Err(err) = idx.read().unwrap().add(key.0, &embedding.0) {
+        debug!("add_or_replace: unable to add embedding for key {key}: {err}");
+        remove_key_from_bimap(&key);
+    };
 }
 
-async fn remove(
+fn remove(
     idx: Arc<RwLock<usearch::Index>>,
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
     primary_key: PrimaryKey,
@@ -261,14 +252,12 @@ async fn remove(
         return;
     };
 
-    rayon::spawn(move || {
-        if let Err(err) = idx.read().unwrap().remove(key.0) {
-            debug!("add_or_replace: unable to remove embeddings for key {key}: {err}");
-        };
-    });
+    if let Err(err) = idx.read().unwrap().remove(key.0) {
+        debug!("remove: unable to remove embeddings for key {key}: {err}");
+    };
 }
 
-async fn ann(
+fn ann(
     idx: Arc<RwLock<usearch::Index>>,
     tx_ann: oneshot::Sender<AnnR>,
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
@@ -282,16 +271,12 @@ async fn ann(
             .unwrap_or_else(|_| trace!("ann: unable to send response"));
     }
 
-    let (tx, rx) = oneshot::channel();
-    rayon::spawn(move || {
-        _ = tx.send(idx.read().unwrap().search(&embedding.0, limit.0.get()));
-    });
-
     tx_ann
         .send(
-            rx.await
-                .map_err(|err| anyhow!("ann: unable to recv matches: {err}"))
-                .and_then(|matches| matches.map_err(|err| anyhow!("ann: search failed: {err}")))
+            idx.read()
+                .unwrap()
+                .search(&embedding.0, limit.0.get())
+                .map_err(|err| anyhow!("ann: search failed: {err}"))
                 .and_then(|matches| {
                     let primary_keys = {
                         let keys = keys.read().unwrap();
@@ -340,6 +325,7 @@ mod tests {
             ExpansionAdd::default(),
             ExpansionSearch::default(),
             SpaceType::default(),
+            Arc::new(Semaphore::new(4)),
         )
         .unwrap();
 

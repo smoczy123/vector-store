@@ -14,7 +14,6 @@ async fn run_vs(
     let (db_actor, _) = db_basic::new(node_state.clone());
     let (server, addr) = vector_store::run(
         SocketAddr::from(([127, 0, 0, 1], 0)).into(),
-        Some(1),
         node_state,
         db_actor,
         index_factory,

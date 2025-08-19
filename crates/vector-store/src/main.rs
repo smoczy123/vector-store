@@ -50,8 +50,7 @@ where
 // Index creating/querying is CPU bound task, so that vector-store uses rayon ThreadPool for them.
 // From the start there was no need (network traffic seems to be not so high) to support more than
 // one thread per network IO bound tasks.
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     _ = dotenvy::dotenv();
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?)
@@ -77,40 +76,39 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or("127.0.0.1:9042".to_string())
         .into();
 
-    let background_threads = dotenvy::var("VECTOR_STORE_THREADS")
+    let threads = dotenvy::var("VECTOR_STORE_THREADS")
         .ok()
-        .and_then(|v| v.parse().ok());
+        .map(|v| v.parse())
+        .transpose()?;
 
-    let node_state = vector_store::new_node_state().await;
+    vector_store::block_on(threads, async move || {
+        let node_state = vector_store::new_node_state().await;
 
-    let opensearch_addr = dotenvy::var("VECTOR_STORE_OPENSEARCH_URI").ok();
+        let opensearch_addr = dotenvy::var("VECTOR_STORE_OPENSEARCH_URI").ok();
 
-    let index_factory = if let Some(addr) = opensearch_addr {
-        tracing::info!("Using OpenSearch index factory at {addr}");
-        vector_store::new_index_factory_opensearch(addr)?
-    } else {
-        tracing::info!("Using Usearch index factory");
-        vector_store::new_index_factory_usearch()?
-    };
+        let index_factory = if let Some(addr) = opensearch_addr {
+            tracing::info!("Using OpenSearch index factory at {addr}");
+            vector_store::new_index_factory_opensearch(addr)?
+        } else {
+            tracing::info!("Using Usearch index factory");
+            vector_store::new_index_factory_usearch()?
+        };
 
-    let db_actor = vector_store::new_db(
-        scylladb_uri,
-        node_state.clone(),
-        credentials(std::env::var).await?,
-    )
-    .await?;
+        let db_actor = vector_store::new_db(
+            scylladb_uri,
+            node_state.clone(),
+            credentials(std::env::var).await?,
+        )
+        .await?;
 
-    let (_server_actor, addr) = vector_store::run(
-        vector_store_addr,
-        background_threads,
-        node_state,
-        db_actor,
-        index_factory,
-    )
-    .await?;
-    tracing::info!("listening on {addr}");
+        let (_server_actor, addr) =
+            vector_store::run(vector_store_addr, node_state, db_actor, index_factory).await?;
+        tracing::info!("listening on {addr}");
 
-    vector_store::wait_for_shutdown().await;
+        vector_store::wait_for_shutdown().await;
+
+        anyhow::Ok(())
+    })?;
 
     Ok(())
 }
