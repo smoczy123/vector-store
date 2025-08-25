@@ -42,7 +42,9 @@ use tokio::time::sleep;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::info;
 use tracing::trace;
+use tracing::warn;
 use uuid::Uuid;
 
 type GetDbIndexR = anyhow::Result<(mpsc::Sender<DbIndex>, mpsc::Receiver<DbEmbedding>)>;
@@ -301,6 +303,31 @@ impl Statements {
         }
 
         let session = Arc::new(builder.build().await?);
+
+        let cluster_state = session.get_cluster_state();
+
+        let node = &cluster_state.get_nodes_info()[0];
+
+        if !node.is_enabled() {
+            return Err(anyhow::anyhow!("Node is not enabled"));
+        }
+        // From docs: If the node is enabled and does not have a sharder, this means it's not a ScyllaDB node.
+        let connected_to_scylla = node.sharder().is_some();
+
+        if connected_to_scylla {
+            let version: (String,) = session
+                .query_unpaged(
+                    "SELECT version FROM system.versions WHERE key = 'local'",
+                    &[],
+                )
+                .await?
+                .into_rows_result()?
+                .single_row()?;
+            info!("Connected to ScyllaDB {} at {}", version.0, uri.0);
+        } else {
+            warn!("No ScyllaDB node at {}, please verify the URI", uri.0);
+        }
+
         Ok(Self {
             st_latest_schema_version: session
                 .prepare(Self::ST_LATEST_SCHEMA_VERSION)
