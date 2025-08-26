@@ -231,7 +231,7 @@ async fn get_index_count(
         .get_index(IndexId::new(&keyspace, &index))
         .await
     else {
-        let msg = format!("missing index: {keyspace}/{index}");
+        let msg = format!("missing index: {keyspace}.{index}");
         debug!("get_index_count: {msg}");
         return (StatusCode::NOT_FOUND, msg).into_response();
     };
@@ -354,23 +354,23 @@ The similarity metric is determined at index creation and cannot be changed per 
 )]
 async fn post_index_ann(
     State(state): State<RoutesInnerState>,
-    Path((keyspace, index)): Path<(KeyspaceName, IndexName)>,
+    Path((keyspace, index_name)): Path<(KeyspaceName, IndexName)>,
     extract::Json(request): extract::Json<PostIndexAnnRequest>,
 ) -> Response {
     // Start timing
     let timer = state
         .metrics
         .latency
-        .with_label_values(&[keyspace.as_ref().as_str(), index.as_ref().as_str()])
+        .with_label_values(&[keyspace.as_ref().as_str(), index_name.as_ref().as_str()])
         .start_timer();
 
     let Some((index, db_index)) = state
         .engine
-        .get_index(IndexId::new(&keyspace, &index))
+        .get_index(IndexId::new(&keyspace, &index_name))
         .await
     else {
         timer.observe_duration();
-        let msg = format!("missing index: {keyspace}/{index}");
+        let msg = format!("missing index: {keyspace}.{index_name}");
         debug!("post_index_ann: {msg}");
         return (StatusCode::NOT_FOUND, msg).into_response();
     };
@@ -379,7 +379,7 @@ async fn post_index_ann(
 
     if let Progress::InProgress(percentage) = scan_progress {
         let msg = format!(
-            "Full scan is in progress, percentage: {:.2}%",
+            "Index {keyspace}.{index_name} is not available yet as it is still being constructed, progress: {:.3}%",
             percentage.get()
         );
         debug!("post_index_ann: {msg}");
