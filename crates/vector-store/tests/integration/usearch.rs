@@ -330,7 +330,7 @@ async fn ann_fail_while_building() {
     crate::enable_tracing();
     let (run, index, db, _node_state) = setup_store().await;
     db.set_next_full_scan_progress(vector_store::Progress::InProgress(
-        Percentage::try_from(33.33).unwrap(),
+        Percentage::try_from(33.333).unwrap(),
     ));
     let (client, _server) = run.await;
 
@@ -345,7 +345,7 @@ async fn ann_fail_while_building() {
     assert_eq!(result.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         result.text().await.unwrap(),
-        "Full scan is in progress, percentage: 33.33%"
+        "Index vector.ann is not available yet as it is still being constructed, progress: 33.333%"
     );
 }
 
