@@ -62,8 +62,8 @@ use utoipa_swagger_ui::SwaggerUi;
 #[openapi(
      info(
         title = "ScyllaDB Vector Store API",
-        description = "REST API for ScyllaDB Vector Store nodes. Provides capabilities for executing vector search queries, \
-        managing indexes, and checking status of Vector Store nodes.",
+        description = "REST API for ScyllaDB Vector Store indexing service. Provides capabilities for executing vector search queries, \
+        managing indexes, and checking service status.",
         license(
             name = "LicenseRef-ScyllaDB-Source-Available-1.0"
         ),
@@ -75,7 +75,7 @@ use utoipa_swagger_ui::SwaggerUi;
         ),
         (
             name = "scylla-vector-store-info",
-            description = "Endpoints providing general information and status about the ScyllaDB Vector Store service."
+            description = "Endpoints providing general information and status about the ScyllaDB Vector Store indexing service."
         )
 
     ),
@@ -160,7 +160,7 @@ impl IndexInfo {
     get,
     path = "/api/v1/indexes",
     tag = "scylla-vector-store-index",
-    description = "Returns the list of indexes managed by the Vector Store node. \
+    description = "Returns the list of indexes managed by the Vector Store indexing service. \
     The list includes indexes in any state (initializing, available/built, destroying). \
     Due to synchronization delays, it may temporarily differ from the list of vector indexes inside ScyllaDB.",
     responses(
@@ -508,9 +508,9 @@ fn to_json(value: CqlValue) -> Value {
 
 #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
 pub struct InfoResponse {
-    /// The version of the Vector Store service.
+    /// The version of the Vector Store indexing service.
     pub version: String,
-    /// The name of the Vector Store service.
+    /// The name of the Vector Store indexing service.
     pub service: String,
 }
 
@@ -518,9 +518,9 @@ pub struct InfoResponse {
     get,
     path = "/api/v1/info",
     tag = "scylla-vector-store-info",
-    description = "Returns information about the Vector Store service serving this API.",
+    description = "Returns information about the Vector Store indexing service serving this API.",
     responses(
-        (status = 200, description = "Vector Store service information.", body = InfoResponse)
+        (status = 200, description = "Vector Store indexing service information.", body = InfoResponse)
     )
 )]
 async fn get_info() -> response::Json<InfoResponse> {
@@ -532,7 +532,7 @@ async fn get_info() -> response::Json<InfoResponse> {
 
 #[derive(ToEnumSchema, serde::Deserialize, serde::Serialize, PartialEq, Debug)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-/// Operational status of the Vector Store node.
+/// Operational status of the Vector Store indexing service.
 pub enum Status {
     /// The node is starting up.
     Initializing,
@@ -560,9 +560,9 @@ impl From<crate::node_state::Status> for Status {
     get,
     path = "/api/v1/status",
     tag = "scylla-vector-store-info",
-    description = "Returns the current operational status of the Vector Store node.",
+    description = "Returns the current operational status of the Vector Store indexing service.",
     responses(
-        (status = 200, description = "Successful operation. Returns the current operational status of the Vector Store node.", body = Status),
+        (status = 200, description = "Successful operation. Returns the current operational status of the Vector Store indexing service.", body = Status),
     )
 )]
 async fn get_status(State(state): State<RoutesInnerState>) -> Response {
