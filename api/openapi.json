@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ScyllaDB Vector Store API",
-    "description": "REST API for ScyllaDB Vector Store nodes. Provides capabilities for executing vector search queries, managing indexes, and checking status of Vector Store nodes.",
+    "description": "REST API for ScyllaDB Vector Store indexing service. Provides capabilities for executing vector search queries, managing indexes, and checking service status.",
     "license": {
       "name": "LicenseRef-ScyllaDB-Source-Available-1.0"
     },
@@ -14,7 +14,7 @@
         "tags": [
           "scylla-vector-store-index"
         ],
-        "description": "Returns the list of indexes managed by the Vector Store node. The list includes indexes in any state (initializing, available/built, destroying). Due to synchronization delays, it may temporarily differ from the list of vector indexes inside ScyllaDB.",
+        "description": "Returns the list of indexes managed by the Vector Store indexing service. The list includes indexes in any state (initializing, available/built, destroying). Due to synchronization delays, it may temporarily differ from the list of vector indexes inside ScyllaDB.",
         "operationId": "get_indexes",
         "responses": {
           "200": {
@@ -191,11 +191,11 @@
         "tags": [
           "scylla-vector-store-info"
         ],
-        "description": "Returns information about the Vector Store service serving this API.",
+        "description": "Returns information about the Vector Store indexing service serving this API.",
         "operationId": "get_info",
         "responses": {
           "200": {
-            "description": "Vector Store service information.",
+            "description": "Vector Store indexing service information.",
             "content": {
               "application/json": {
                 "schema": {
@@ -212,11 +212,11 @@
         "tags": [
           "scylla-vector-store-info"
         ],
-        "description": "Returns the current operational status of the Vector Store node.",
+        "description": "Returns the current operational status of the Vector Store indexing service.",
         "operationId": "get_status",
         "responses": {
           "200": {
-            "description": "Successful operation. Returns the current operational status of the Vector Store node.",
+            "description": "Successful operation. Returns the current operational status of the Vector Store indexing service.",
             "content": {
               "application/json": {
                 "schema": {
@@ -279,10 +279,12 @@
         ],
         "properties": {
           "service": {
-            "type": "string"
+            "type": "string",
+            "description": "The name of the Vector Store indexing service."
           },
           "version": {
-            "type": "string"
+            "type": "string",
+            "description": "The version of the Vector Store indexing service."
           }
         }
       },
@@ -336,7 +338,7 @@
       },
       "Status": {
         "type": "string",
-        "description": "Operational status of the Vector Store node.",
+        "description": "Operational status of the Vector Store indexing service.",
         "enum": [
           "INITIALIZING",
           "CONNECTING_TO_DB",
@@ -367,7 +369,7 @@
     },
     {
       "name": "scylla-vector-store-info",
-      "description": "Endpoints providing general information and status about the ScyllaDB Vector Store service."
+      "description": "Endpoints providing general information and status about the ScyllaDB Vector Store indexing service."
     }
   ]
 }
