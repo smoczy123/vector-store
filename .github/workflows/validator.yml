@@ -32,5 +32,5 @@ jobs:
       run: ./run-with-release-toolchain cargo build --release --workspace
 
     - name: Run the Validator tests
-      run: ./run-validator-with-scylla-docker scylladb/scylladb-releng:2025.4.0-dev-0.20250718.d36c9b3119b7-x86_64 target/release/vector-store target/release/vector-search-validator --verbose
+      run: ./run-validator-with-scylla-docker scylladb/scylla-nightly target/release/vector-store target/release/vector-search-validator --verbose
 
