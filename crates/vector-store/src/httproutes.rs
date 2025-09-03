@@ -549,7 +549,7 @@ pub enum Status {
     ConnectingToDb,
     /// The node is discovering available vector indexes in ScyllaDB.
     Bootstrapping,
-    /// The node is making initial indexes discovering and vector data indexing.
+    /// The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes.
     Serving,
 }
 
