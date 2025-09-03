@@ -74,7 +74,9 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
                         }
                         Event::ConnectedToDb => {}
                         Event::DiscoveringIndexes => {
-                            status = Status::DiscoveringIndexes;
+                            if status != Status::Serving {
+                                status = Status::DiscoveringIndexes;
+                            }
                         }
                         Event::IndexesDiscovered(indexes) => {
                             if indexes.is_empty() {
