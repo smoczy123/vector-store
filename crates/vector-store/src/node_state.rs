@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::info;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -79,8 +80,9 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
                             }
                         }
                         Event::IndexesDiscovered(indexes) => {
-                            if indexes.is_empty() {
+                            if indexes.is_empty() && status != Status::Serving {
                                 status = Status::Serving;
+                                info!("Service is running, no indexes to build");
                                 continue;
                             }
                             if status == Status::DiscoveringIndexes {
@@ -90,8 +92,9 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
                         }
                         Event::FullScanFinished(metadata) => {
                             idxs.remove(&metadata);
-                            if idxs.is_empty() {
+                            if idxs.is_empty() && status != Status::Serving {
                                 status = Status::Serving;
+                                info!("Service is running, finished building indexes");
                             }
                         }
                     },
