@@ -7,6 +7,9 @@ use crate::IndexMetadata;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::Instrument;
+use tracing::debug;
+use tracing::debug_span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -57,44 +60,50 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
     const CHANNEL_SIZE: usize = 10;
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
 
-    tokio::spawn(async move {
-        let mut status = Status::Initializing;
-        let mut idxs = HashSet::new();
-        while let Some(msg) = rx.recv().await {
-            match msg {
-                NodeState::SendEvent(event) => match event {
-                    Event::ConnectingToDb => {
-                        status = Status::ConnectingToDb;
-                    }
-                    Event::ConnectedToDb => {}
-                    Event::DiscoveringIndexes => {
-                        status = Status::DiscoveringIndexes;
-                    }
-                    Event::IndexesDiscovered(indexes) => {
-                        if indexes.is_empty() {
-                            status = Status::Serving;
-                            continue;
+    tokio::spawn(
+        async move {
+            debug!("starting");
+
+            let mut status = Status::Initializing;
+            let mut idxs = HashSet::new();
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    NodeState::SendEvent(event) => match event {
+                        Event::ConnectingToDb => {
+                            status = Status::ConnectingToDb;
                         }
-                        if status == Status::DiscoveringIndexes {
-                            status = Status::IndexingEmbeddings;
-                            idxs = indexes;
+                        Event::ConnectedToDb => {}
+                        Event::DiscoveringIndexes => {
+                            status = Status::DiscoveringIndexes;
                         }
-                    }
-                    Event::FullScanFinished(metadata) => {
-                        idxs.remove(&metadata);
-                        if idxs.is_empty() {
-                            status = Status::Serving;
+                        Event::IndexesDiscovered(indexes) => {
+                            if indexes.is_empty() {
+                                status = Status::Serving;
+                                continue;
+                            }
+                            if status == Status::DiscoveringIndexes {
+                                status = Status::IndexingEmbeddings;
+                                idxs = indexes;
+                            }
                         }
+                        Event::FullScanFinished(metadata) => {
+                            idxs.remove(&metadata);
+                            if idxs.is_empty() {
+                                status = Status::Serving;
+                            }
+                        }
+                    },
+                    NodeState::GetStatus(tx) => {
+                        tx.send(status).unwrap_or_else(|_| {
+                            tracing::debug!("Failed to send current state");
+                        });
                     }
-                },
-                NodeState::GetStatus(tx) => {
-                    tx.send(status).unwrap_or_else(|_| {
-                        tracing::debug!("Failed to send current state");
-                    });
                 }
             }
+            debug!("finished");
         }
-    });
+        .instrument(debug_span!("node_state")),
+    );
 
     tx
 }
