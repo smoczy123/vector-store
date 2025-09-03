@@ -489,7 +489,10 @@ fn to_json(value: CqlValue) -> Value {
             TryInto::<Time>::try_into(value)
                 .expect("CqlValue::Time should be correct")
                 .format(&Iso8601::TIME)
-                .expect("Time should be correct"),
+                .expect("Time should be correct")
+                .strip_prefix("T")
+                .unwrap() // Safe to unwrap as format always adds 'T' prefix
+                .to_string(), // remove 'T' prefix added by time crate
         ),
         CqlValue::Timestamp(value) => Value::String(
             TryInto::<OffsetDateTime>::try_into(value)
@@ -619,28 +622,37 @@ mod tests {
             Value::String(uuid.into())
         );
 
-        let now = OffsetDateTime::now_utc();
         assert_eq!(
-            to_json(CqlValue::Date(now.date().into())),
-            Value::String(now.date().format(&Iso8601::DATE).unwrap())
+            to_json(CqlValue::Date(
+                Date::from_calendar_date(2025, time::Month::September, 1)
+                    .unwrap()
+                    .into()
+            )),
+            Value::String("2025-09-01".to_string())
         );
         assert_eq!(
-            to_json(CqlValue::Time(now.time().into())),
-            Value::String(now.format(&Iso8601::TIME).unwrap())
+            to_json(CqlValue::Time(Time::from_hms(12, 10, 10).unwrap().into())),
+            Value::String("12:10:10.000000000".to_string())
         );
         assert_eq!(
-            to_json(CqlValue::Timestamp(now.into())),
+            to_json(CqlValue::Timestamp(
+                OffsetDateTime::from_unix_timestamp(123456789)
+                    .unwrap()
+                    .into()
+            )),
             Value::String(
                 // truncate microseconds
-                now.format({
-                    const CONFIG: u128 = Config::DEFAULT
-                        .set_time_precision(TimePrecision::Second {
-                            decimal_digits: NonZero::new(3),
-                        })
-                        .encode();
-                    &Iso8601::<CONFIG>
-                })
-                .unwrap()
+                OffsetDateTime::from_unix_timestamp(123456789)
+                    .unwrap()
+                    .format({
+                        const CONFIG: u128 = Config::DEFAULT
+                            .set_time_precision(TimePrecision::Second {
+                                decimal_digits: NonZero::new(3),
+                            })
+                            .encode();
+                        &Iso8601::<CONFIG>
+                    })
+                    .unwrap()
             )
         );
     }
