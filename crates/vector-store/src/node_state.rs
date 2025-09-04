@@ -191,4 +191,43 @@ mod tests {
             .await;
         assert_eq!(node_state.get_status().await, Status::Serving);
     }
+
+    #[tokio::test]
+    async fn status_remains_serving_when_discovering_indexes() {
+        let node_state = new().await;
+        // Move to Serving status
+        node_state.send_event(Event::ConnectingToDb).await;
+        node_state.send_event(Event::DiscoveringIndexes).await;
+        node_state
+            .send_event(Event::IndexesDiscovered(HashSet::new()))
+            .await;
+        assert_eq!(node_state.get_status().await, Status::Serving);
+
+        // Try to trigger DiscoveringIndexes again
+        node_state.send_event(Event::DiscoveringIndexes).await;
+        // Status should remain Serving
+        let status = node_state.get_status().await;
+        assert_eq!(status, Status::Serving);
+
+        let idx = IndexMetadata {
+            keyspace_name: KeyspaceName("test_keyspace".to_string()),
+            index_name: IndexName("test_index".to_string()),
+            table_name: TableName("test_table".to_string()),
+            target_column: ColumnName("test_column".to_string()),
+            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            version: Uuid::new_v4().into(),
+        };
+
+        // Simulate discovering an index
+        node_state
+            .send_event(Event::IndexesDiscovered(HashSet::from([idx])))
+            .await;
+        // Status should remain Serving
+        let status = node_state.get_status().await;
+        assert_eq!(status, Status::Serving);
+    }
 }
