@@ -45,6 +45,7 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
@@ -151,7 +152,7 @@ pub(crate) async fn new(
                 tokio::select! {
                     _ = &mut initial_scan => {
                         node_state
-                            .send_event(Event::FullScanFinished(metadata))
+                            .send_event(Event::FullScanFinished(metadata.clone()))
                             .await;
                         break;
                     }
@@ -161,7 +162,7 @@ pub(crate) async fn new(
                 }
             }
 
-            debug!("finished initial load");
+            info!("finished full scan on {}", metadata.id());
 
             while let Some(msg) = rx_index.recv().await {
                 tokio::spawn(process(Arc::clone(&statements), msg, completed_scan_length.clone()));

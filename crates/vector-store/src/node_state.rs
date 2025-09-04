@@ -7,6 +7,10 @@ use crate::IndexMetadata;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::Instrument;
+use tracing::debug;
+use tracing::debug_span;
+use tracing::info;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -57,44 +61,54 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
     const CHANNEL_SIZE: usize = 10;
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
 
-    tokio::spawn(async move {
-        let mut status = Status::Initializing;
-        let mut idxs = HashSet::new();
-        while let Some(msg) = rx.recv().await {
-            match msg {
-                NodeState::SendEvent(event) => match event {
-                    Event::ConnectingToDb => {
-                        status = Status::ConnectingToDb;
-                    }
-                    Event::ConnectedToDb => {}
-                    Event::DiscoveringIndexes => {
-                        status = Status::DiscoveringIndexes;
-                    }
-                    Event::IndexesDiscovered(indexes) => {
-                        if indexes.is_empty() {
-                            status = Status::Serving;
-                            continue;
+    tokio::spawn(
+        async move {
+            debug!("starting");
+
+            let mut status = Status::Initializing;
+            let mut idxs = HashSet::new();
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    NodeState::SendEvent(event) => match event {
+                        Event::ConnectingToDb => {
+                            status = Status::ConnectingToDb;
                         }
-                        if status == Status::DiscoveringIndexes {
-                            status = Status::IndexingEmbeddings;
-                            idxs = indexes;
+                        Event::ConnectedToDb => {}
+                        Event::DiscoveringIndexes => {
+                            if status != Status::Serving {
+                                status = Status::DiscoveringIndexes;
+                            }
                         }
-                    }
-                    Event::FullScanFinished(metadata) => {
-                        idxs.remove(&metadata);
-                        if idxs.is_empty() {
-                            status = Status::Serving;
+                        Event::IndexesDiscovered(indexes) => {
+                            if indexes.is_empty() && status != Status::Serving {
+                                status = Status::Serving;
+                                info!("Service is running, no indexes to build");
+                                continue;
+                            }
+                            if status == Status::DiscoveringIndexes {
+                                status = Status::IndexingEmbeddings;
+                                idxs = indexes;
+                            }
                         }
+                        Event::FullScanFinished(metadata) => {
+                            idxs.remove(&metadata);
+                            if idxs.is_empty() && status != Status::Serving {
+                                status = Status::Serving;
+                                info!("Service is running, finished building indexes");
+                            }
+                        }
+                    },
+                    NodeState::GetStatus(tx) => {
+                        tx.send(status).unwrap_or_else(|_| {
+                            tracing::debug!("Failed to send current state");
+                        });
                     }
-                },
-                NodeState::GetStatus(tx) => {
-                    tx.send(status).unwrap_or_else(|_| {
-                        tracing::debug!("Failed to send current state");
-                    });
                 }
             }
+            debug!("finished");
         }
-    });
+        .instrument(debug_span!("node_state")),
+    );
 
     tx
 }
@@ -176,5 +190,44 @@ mod tests {
             .send_event(Event::IndexesDiscovered(HashSet::new()))
             .await;
         assert_eq!(node_state.get_status().await, Status::Serving);
+    }
+
+    #[tokio::test]
+    async fn status_remains_serving_when_discovering_indexes() {
+        let node_state = new().await;
+        // Move to Serving status
+        node_state.send_event(Event::ConnectingToDb).await;
+        node_state.send_event(Event::DiscoveringIndexes).await;
+        node_state
+            .send_event(Event::IndexesDiscovered(HashSet::new()))
+            .await;
+        assert_eq!(node_state.get_status().await, Status::Serving);
+
+        // Try to trigger DiscoveringIndexes again
+        node_state.send_event(Event::DiscoveringIndexes).await;
+        // Status should remain Serving
+        let status = node_state.get_status().await;
+        assert_eq!(status, Status::Serving);
+
+        let idx = IndexMetadata {
+            keyspace_name: KeyspaceName("test_keyspace".to_string()),
+            index_name: IndexName("test_index".to_string()),
+            table_name: TableName("test_table".to_string()),
+            target_column: ColumnName("test_column".to_string()),
+            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            version: Uuid::new_v4().into(),
+        };
+
+        // Simulate discovering an index
+        node_state
+            .send_event(Event::IndexesDiscovered(HashSet::from([idx])))
+            .await;
+        // Status should remain Serving
+        let status = node_state.get_status().await;
+        assert_eq!(status, Status::Serving);
     }
 }
