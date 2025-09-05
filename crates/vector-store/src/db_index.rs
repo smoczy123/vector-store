@@ -17,11 +17,13 @@ use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
 use async_trait::async_trait;
+use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream::BoxStream;
 use itertools::Itertools;
 use scylla::client::session::Session;
+use scylla::errors::PagerExecutionError;
 use scylla::routing::Token;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlValue;
@@ -32,6 +34,7 @@ use scylla_cdc::consumer::ConsumerFactory;
 use scylla_cdc::log_reader::CDCLogReaderBuilder;
 use std::iter;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
@@ -45,11 +48,17 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
 type GetPrimaryKeyColumnsR = Vec<ColumnName>;
+type RangeScanResult =
+    anyhow::Result<Pin<Box<dyn Stream<Item = DbEmbedding> + std::marker::Send>>, anyhow::Error>;
+const START_RETRY_TIMEOUT: Duration = Duration::from_millis(100);
+const RETRY_TIMEOUT_LIMIT: Duration = Duration::from_secs(16);
+const INCREASE_RATE: u32 = 2;
 
 impl From<u64> for Percentage {
     fn from(value: u64) -> Self {
@@ -265,6 +274,34 @@ impl Statements {
         )
     }
 
+    async fn preform_range_scan(&self, begin: Token, end: Token) -> RangeScanResult {
+        let mut range_scan = self.range_scan_stream(begin, end).await;
+        let mut retry_timeout = START_RETRY_TIMEOUT;
+        while let Err(err) = &range_scan {
+            let connection_error = err.downcast_ref::<PagerExecutionError>();
+            if connection_error.is_none()
+                || !matches!(
+                    connection_error.unwrap(),
+                    PagerExecutionError::NextPageError(_)
+                )
+            {
+                error!("Fatal error during scan of the range ({begin:?}, {end:?}): {err}");
+                break;
+            }
+            warn!("Lost connection during scan of the range ({begin:?}, {end:?}), retrying");
+            tokio::time::sleep(retry_timeout).await;
+            range_scan = self.range_scan_stream(begin, end).await;
+
+            // We exponentially increase the timeout in case of repeating errors
+            // to decrease the amount of failed connection retries until a limit
+            // is reached
+            if retry_timeout < RETRY_TIMEOUT_LIMIT {
+                retry_timeout *= INCREASE_RATE;
+            }
+        }
+        range_scan
+    }
+
     /// The initial full scan of embeddings stored in a ScyllaDB table. It scans concurrently using
     /// token ranges read from a rust driver. At first it prepares ranges, limits concurrent scans
     /// using semaphore, and runs each scan in separate concurrent task using cloned mpsc channel
@@ -279,9 +316,8 @@ impl Statements {
         for (begin, end) in self.fullscan_ranges() {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
 
-            if let Ok(embeddings) = self.range_scan_stream(begin, end).await.inspect_err(|err| {
-                warn!("unable to do initial scan for range ({begin:?}, {end:?}): {err}")
-            }) {
+            let range_scan = self.preform_range_scan(begin, end).await;
+            if let Ok(embeddings) = range_scan {
                 let tx: Sender<DbEmbedding> = tx.clone();
                 let scan_length = completed_scan_length.clone();
                 tokio::spawn(async move {
@@ -297,6 +333,8 @@ impl Statements {
                     );
                     drop(permit);
                 });
+            } else {
+                drop(permit);
             }
         }
     }
