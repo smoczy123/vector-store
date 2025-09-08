@@ -56,6 +56,8 @@ type GetIndexParamsR =
     anyhow::Result<Option<(Connectivity, ExpansionAdd, ExpansionSearch, SpaceType)>>;
 type IsValidIndexR = bool;
 
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+
 pub enum Db {
     GetDbIndex {
         metadata: IndexMetadata,
@@ -219,8 +221,13 @@ pub(crate) async fn new(
             node_state.send_event(Event::ConnectingToDb).await;
             let mut statements = Statements::new(uri.clone(), credentials.clone()).await;
             while statements.is_err() {
-                tracing::error!("Failed to create statements, retrying");
-                sleep(Duration::from_secs(1)).await;
+                tracing::error!(
+                    "Failed to connect to ScyllaDB (error: {}) at {}, retrying in {}s",
+                    statements.err().unwrap(),
+                    uri.0,
+                    RECONNECT_TIMEOUT.as_secs()
+                );
+                sleep(RECONNECT_TIMEOUT).await;
                 statements = Statements::new(uri.clone(), credentials.clone()).await;
             }
             node_state.send_event(Event::ConnectedToDb).await;
