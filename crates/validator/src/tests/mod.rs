@@ -85,6 +85,11 @@ impl TestCase {
         }
     }
 
+    /// Returns a reference to the tests in this test case.
+    pub(crate) fn tests(&self) -> &Vec<(String, Duration, TestFn)> {
+        &self.tests
+    }
+
     /// Add an initialization function to the test case.
     fn with_init<F, R>(mut self, timeout: Duration, test_fn: F) -> Self
     where
@@ -117,7 +122,7 @@ impl TestCase {
     }
 
     /// Run initialization, all tests, and cleanup functions in the test case.
-    async fn run(&self, actors: TestActors, filter: &HashSet<String>) -> Statistics {
+    async fn run(&self, actors: TestActors, test_cases: &HashSet<String>) -> Statistics {
         let mut stats = Statistics::new(
             self.tests.len() + self.init.is_some() as usize + self.cleanup.is_some() as usize,
         );
@@ -132,7 +137,9 @@ impl TestCase {
         }
 
         stream::iter(self.tests.iter())
-            .filter(|(name, _, _)| future::ready(filter.is_empty() || filter.contains(name)))
+            .filter(|(name, _, _)| {
+                future::ready(test_cases.is_empty() || test_cases.contains(name))
+            })
             .then(|(name, timeout, test)| {
                 let actors = actors.clone();
                 stats.launched += 1;
@@ -158,6 +165,19 @@ impl TestCase {
         }
 
         stats
+    }
+
+    #[cfg(test)]
+    pub(crate) fn make_dummy_test_cases(test_names: &[&str]) -> Self {
+        let mut tc = TestCase::empty();
+        for &name in test_names {
+            tc = tc.with_test(
+                name.to_string(),
+                std::time::Duration::ZERO,
+                |_actors| async {},
+            );
+        }
+        tc
     }
 }
 
@@ -209,20 +229,20 @@ pub(crate) async fn register() -> Vec<(String, TestCase)> {
 pub(crate) async fn run(
     actors: TestActors,
     test_cases: Vec<(String, TestCase)>,
-    filter: Arc<HashMap<String, HashSet<String>>>,
+    filter_map: Arc<HashMap<String, HashSet<String>>>,
 ) -> bool {
     let stats = stream::iter(test_cases.into_iter())
-        .filter(|(name, _)| {
-            let process = filter.is_empty() || filter.contains_key(name);
+        .filter(|(file_name, _)| {
+            let process = filter_map.is_empty() || filter_map.contains_key(file_name);
             async move { process }
         })
         .then(|(name, test_case)| {
             let actors = actors.clone();
-            let filter = filter.clone();
-            let filter_name = name.clone();
+            let filter = filter_map.clone();
+            let file_name = name.clone();
             async move {
                 let stats = test_case
-                    .run(actors, filter.get(&filter_name).unwrap_or(&HashSet::new()))
+                    .run(actors, filter.get(&file_name).unwrap_or(&HashSet::new()))
                     .instrument(info_span!("test-case", name))
                     .await;
                 if stats.failed > 0 {
