@@ -20,6 +20,7 @@ use crate::info::Info;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
 use crate::node_state::NodeStateExt;
+use anyhow::anyhow;
 use anyhow::bail;
 use axum::Router;
 use axum::extract;
@@ -431,7 +432,8 @@ async fn post_index_ann(
                                 Ok(primary_key)
                             })
                             .map_ok(|primary_key| primary_key.0[idx_column].clone())
-                            .map_ok(to_json)
+                            .map_ok(try_to_json)
+                            .flatten()
                             .collect();
                         primary_keys.map(|primary_keys| (column, primary_keys))
                     })
@@ -457,56 +459,51 @@ async fn post_index_ann(
     }
 }
 
-fn to_json(value: CqlValue) -> Value {
+fn try_to_json(value: CqlValue) -> anyhow::Result<Value> {
     match value {
-        CqlValue::Ascii(value) => Value::String(value),
-        CqlValue::Text(value) => Value::String(value),
+        CqlValue::Ascii(value) => Ok(Value::String(value)),
+        CqlValue::Text(value) => Ok(Value::String(value)),
 
-        CqlValue::Boolean(value) => Value::Bool(value),
+        CqlValue::Boolean(value) => Ok(Value::Bool(value)),
 
         CqlValue::Double(value) => {
-            Value::Number(Number::from_f64(value).expect("CqlValue::Double should be finite"))
+            Ok(Value::Number(Number::from_f64(value).ok_or_else(|| {
+                anyhow!("CqlValue::Double should be finite")
+            })?))
         }
-        CqlValue::Float(value) => {
-            Value::Number(Number::from_f64(value.into()).expect("CqlValue::Float should be finite"))
-        }
+        CqlValue::Float(value) => Ok(Value::Number(
+            Number::from_f64(value.into())
+                .ok_or_else(|| anyhow!("CqlValue::Float should be finite"))?,
+        )),
 
-        CqlValue::Int(value) => Value::Number(value.into()),
-        CqlValue::BigInt(value) => Value::Number(value.into()),
-        CqlValue::SmallInt(value) => Value::Number(value.into()),
-        CqlValue::TinyInt(value) => Value::Number(value.into()),
+        CqlValue::Int(value) => Ok(Value::Number(value.into())),
+        CqlValue::BigInt(value) => Ok(Value::Number(value.into())),
+        CqlValue::SmallInt(value) => Ok(Value::Number(value.into())),
+        CqlValue::TinyInt(value) => Ok(Value::Number(value.into())),
 
-        CqlValue::Uuid(value) => Value::String(value.into()),
-        CqlValue::Timeuuid(value) => Value::String((*value.as_ref()).into()),
+        CqlValue::Uuid(value) => Ok(Value::String(value.into())),
+        CqlValue::Timeuuid(value) => Ok(Value::String((*value.as_ref()).into())),
 
-        CqlValue::Date(value) => Value::String(
-            TryInto::<Date>::try_into(value)
-                .expect("CqlValue::Date should be correct")
-                .format(&Iso8601::DATE)
-                .expect("Date should be correct"),
-        ),
-        CqlValue::Time(value) => Value::String(
-            TryInto::<Time>::try_into(value)
-                .expect("CqlValue::Time should be correct")
-                .format(&Iso8601::TIME)
-                .expect("Time should be correct")
+        CqlValue::Date(value) => Ok(Value::String(
+            TryInto::<Date>::try_into(value)?.format(&Iso8601::DATE)?,
+        )),
+        CqlValue::Time(value) => Ok(Value::String(
+            TryInto::<Time>::try_into(value)?
+                .format(&Iso8601::TIME)?
                 .strip_prefix("T")
-                .unwrap() // Safe to unwrap as format always adds 'T' prefix
+                .ok_or_else(|| anyhow!("CqlValue::Time: wrong formatting detected"))?
                 .to_string(), // remove 'T' prefix added by time crate
-        ),
-        CqlValue::Timestamp(value) => Value::String(
-            TryInto::<OffsetDateTime>::try_into(value)
-                .expect("CqlValue::Timestamp should be correct")
-                .format({
-                    const CONFIG: u128 = Config::DEFAULT
-                        .set_time_precision(TimePrecision::Second {
-                            decimal_digits: NonZero::new(3),
-                        })
-                        .encode();
-                    &Iso8601::<CONFIG>
-                })
-                .expect("OffsetDateTime should be correct"),
-        ),
+        )),
+        CqlValue::Timestamp(value) => Ok(Value::String(
+            TryInto::<OffsetDateTime>::try_into(value)?.format({
+                const CONFIG: u128 = Config::DEFAULT
+                    .set_time_precision(TimePrecision::Second {
+                        decimal_digits: NonZero::new(3),
+                    })
+                    .encode();
+                &Iso8601::<CONFIG>
+            })?,
+        )),
 
         _ => unimplemented!(),
     }
@@ -584,62 +581,83 @@ async fn get_status(State(state): State<RoutesInnerState>) -> Response {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use uuid::Uuid;
 
     #[test]
-    fn to_json_conversion() {
+    fn try_to_json_conversion() {
         assert_eq!(
-            to_json(CqlValue::Ascii("ascii".to_string())),
+            try_to_json(CqlValue::Ascii("ascii".to_string())).unwrap(),
             Value::String("ascii".to_string())
         );
         assert_eq!(
-            to_json(CqlValue::Text("text".to_string())),
+            try_to_json(CqlValue::Text("text".to_string())).unwrap(),
             Value::String("text".to_string())
         );
 
-        assert_eq!(to_json(CqlValue::Boolean(true)), Value::Bool(true));
+        assert_eq!(
+            try_to_json(CqlValue::Boolean(true)).unwrap(),
+            Value::Bool(true)
+        );
 
         assert_eq!(
-            to_json(CqlValue::Double(101.)),
+            try_to_json(CqlValue::Double(101.)).unwrap(),
             Value::Number(Number::from_f64(101.).unwrap())
         );
         assert_eq!(
-            to_json(CqlValue::Float(201.)),
+            try_to_json(CqlValue::Float(201.)).unwrap(),
             Value::Number(Number::from_f64(201.).unwrap())
         );
 
-        assert_eq!(to_json(CqlValue::Int(10)), Value::Number(10.into()));
-        assert_eq!(to_json(CqlValue::BigInt(20)), Value::Number(20.into()));
-        assert_eq!(to_json(CqlValue::SmallInt(30)), Value::Number(30.into()));
-        assert_eq!(to_json(CqlValue::TinyInt(40)), Value::Number(40.into()));
+        assert_eq!(
+            try_to_json(CqlValue::Int(10)).unwrap(),
+            Value::Number(10.into())
+        );
+        assert_eq!(
+            try_to_json(CqlValue::BigInt(20)).unwrap(),
+            Value::Number(20.into())
+        );
+        assert_eq!(
+            try_to_json(CqlValue::SmallInt(30)).unwrap(),
+            Value::Number(30.into())
+        );
+        assert_eq!(
+            try_to_json(CqlValue::TinyInt(40)).unwrap(),
+            Value::Number(40.into())
+        );
 
         let uuid = Uuid::new_v4();
-        assert_eq!(to_json(CqlValue::Uuid(uuid)), Value::String(uuid.into()));
+        assert_eq!(
+            try_to_json(CqlValue::Uuid(uuid)).unwrap(),
+            Value::String(uuid.into())
+        );
         let uuid = Uuid::new_v4();
         assert_eq!(
-            to_json(CqlValue::Timeuuid(uuid.into())),
+            try_to_json(CqlValue::Timeuuid(uuid.into())).unwrap(),
             Value::String(uuid.into())
         );
 
         assert_eq!(
-            to_json(CqlValue::Date(
+            try_to_json(CqlValue::Date(
                 Date::from_calendar_date(2025, time::Month::September, 1)
                     .unwrap()
                     .into()
-            )),
+            ))
+            .unwrap(),
             Value::String("2025-09-01".to_string())
         );
         assert_eq!(
-            to_json(CqlValue::Time(Time::from_hms(12, 10, 10).unwrap().into())),
+            try_to_json(CqlValue::Time(Time::from_hms(12, 10, 10).unwrap().into())).unwrap(),
             Value::String("12:10:10.000000000".to_string())
         );
         assert_eq!(
-            to_json(CqlValue::Timestamp(
+            try_to_json(CqlValue::Timestamp(
                 OffsetDateTime::from_unix_timestamp(123456789)
                     .unwrap()
                     .into()
-            )),
+            ))
+            .unwrap(),
             Value::String(
                 // truncate microseconds
                 OffsetDateTime::from_unix_timestamp(123456789)
@@ -655,6 +673,8 @@ mod tests {
                     .unwrap()
             )
         );
+        assert!(try_to_json(CqlValue::Float(f32::NAN)).is_err());
+        assert!(try_to_json(CqlValue::Double(f64::NAN)).is_err());
     }
 
     #[test]
