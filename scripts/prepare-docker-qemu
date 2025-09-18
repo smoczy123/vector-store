@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# This script prepares the Docker environment for running QEMU emulation.
+#
+# From https://docs.docker.com/build/building/multi-platform/
+# It installs the QEMU binaries and registers them with binfmt_misc, enabling
+# QEMU to execute non-native file formats for emulation.
+
+docker run --privileged --rm tonistiigi/binfmt --install all

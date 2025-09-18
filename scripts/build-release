@@ -7,7 +7,6 @@ repo=$(realpath $repo/..)
 
 cd $repo
 
-vector_store_version=$(./run-with-release-toolchain cargo info vector-store | grep ^version: | cut -d ' ' -f 2)
 vector_store_version=$(./scripts/run-with-release-toolchain cargo info vector-store | grep ^version: | cut -d ' ' -f 2)
 
 # ensure the git repository is clean
@@ -16,21 +15,32 @@ git status --porcelain | grep -q . && echo "git repository is not clean." && exi
 # ensure the git repository is on the tag with the version
 [[ -z $(git tag --points-at HEAD | grep "^$vector_store_version\$") ]] && echo "git repository is not on tag $vector_store_version." && exit 1
 
-echo rebuild the release version $vector_store_version
-./scripts/run-with-release-toolchain cargo clean --release
-./scripts/run-with-release-toolchain cargo build --release
+archs="amd64 arm64"
 
-echo build the tar archive
-vector_store_dir=vector-store-$vector_store_version
-vector_store_tarball=$vector_store_dir.tar.gz
-(cd target/release && tar -czf $vector_store_tarball --transform "s,^,$vector_store_dir/," vector-store)
-ls -lh target/release/$vector_store_tarball
+for arch in $archs ; do
+    echo rebuild the release version $vector_store_version for $arch
+    TARGETARCH=$arch ./scripts/run-with-release-toolchain cargo clean --release
+    TARGETARCH=$arch ./scripts/run-with-release-toolchain cargo build --release
+done
 
-echo build the docker image
+for arch in $archs ; do
+    echo build the tar archive for $arch
+    vector_store_dir=vector-store-$vector_store_version-$arch
+    vector_store_tarball=$vector_store_dir.tar.gz
+    (cd target/$arch/release && tar -czf $vector_store_tarball --transform "s,^,$vector_store_dir/," vector-store)
+    ls -lh target/$arch/release/$vector_store_tarball
+done
+
+for arch in $archs ; do
+    [[ -z $platform ]] && platform="linux/$arch" || platform="$platform,linux/$arch"
+done
+
+echo build the docker image for platforms $platform
 docker_tag=scylladb/vector-store:$vector_store_version
-docker build --tag $docker_tag -f- . <<EOF
+docker build --platform $platform --tag $docker_tag -f- . <<EOF
 FROM redhat/ubi9-minimal
+ARG TARGETARCH
 RUN mkdir /opt/vector-store
-COPY target/release/vector-store /opt/vector-store
+COPY target/\$TARGETARCH/release/vector-store /opt/vector-store
 CMD ["/opt/vector-store/vector-store"]
 EOF
