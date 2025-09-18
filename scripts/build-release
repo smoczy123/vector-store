@@ -3,11 +3,12 @@
 set -e
 
 repo=$(dirname "${BASH_SOURCE[0]}")
-repo=$(realpath $repo)
+repo=$(realpath $repo/..)
 
 cd $repo
 
 vector_store_version=$(./run-with-release-toolchain cargo info vector-store | grep ^version: | cut -d ' ' -f 2)
+vector_store_version=$(./scripts/run-with-release-toolchain cargo info vector-store | grep ^version: | cut -d ' ' -f 2)
 
 # ensure the git repository is clean
 git status --porcelain | grep -q . && echo "git repository is not clean." && exit 1
@@ -16,8 +17,8 @@ git status --porcelain | grep -q . && echo "git repository is not clean." && exi
 [[ -z $(git tag --points-at HEAD | grep "^$vector_store_version\$") ]] && echo "git repository is not on tag $vector_store_version." && exit 1
 
 echo rebuild the release version $vector_store_version
-./run-with-release-toolchain cargo clean --release
-./run-with-release-toolchain cargo build --release
+./scripts/run-with-release-toolchain cargo clean --release
+./scripts/run-with-release-toolchain cargo build --release
 
 echo build the tar archive
 vector_store_dir=vector-store-$vector_store_version
