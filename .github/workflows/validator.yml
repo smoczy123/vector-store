@@ -26,11 +26,11 @@ jobs:
       uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: Print release toolchain rustc version
-      run: ./run-with-release-toolchain rustc --version
+      run: ./scripts/run-with-release-toolchain rustc --version
 
     - name: Build release
-      run: ./run-with-release-toolchain cargo build --release --workspace
+      run: ./scripts/run-with-release-toolchain cargo build --release --workspace
 
     - name: Run the Validator tests
-      run: ./run-validator-with-scylla-docker scylladb/scylla-nightly target/release/vector-store target/release/vector-search-validator --verbose
+      run: ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly target/amd64/release/vector-store target/amd64/release/vector-search-validator --verbose
 

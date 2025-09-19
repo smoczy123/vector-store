@@ -3,7 +3,9 @@
 set -e
 
 repo=$(dirname "${BASH_SOURCE[0]}")
-repo=$(realpath $repo)
+repo=$(realpath $repo/..)
+
+TARGETARCH="${TARGETARCH:-amd64}"
 
 rust_version=$(grep channel $repo/rust-toolchain.toml | cut -d '"' -f 2)
 
@@ -16,7 +18,9 @@ tmp_rust_toolchain=$(mktemp /tmp/rust-toolchain.XXXXXX)
 grep -v components $repo/rust-toolchain.toml > $tmp_rust_toolchain
 
 docker run --rm \
+    --platform linux/$TARGETARCH \
     --user "$(id -u)":"$(id -g)" \
+    -e CARGO_TARGET_DIR="./target/$TARGETARCH" \
     -v "$repo":"$repo" \
     -v "$user_cargo_home/git":"$docker_cargo_home/git" \
     -v "$user_cargo_home/registry":"$docker_cargo_home/registry" \
