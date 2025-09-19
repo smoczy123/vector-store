@@ -33,7 +33,6 @@ macros.workspace = true
 ntest.workspace = true
 opensearch.workspace = true
 prometheus.workspace = true
-rayon.workspace = true
 regex.workspace = true
 scylla.workspace = true
 scylla-cdc.workspace = true

@@ -40,7 +40,6 @@ async fn simple_create_search_delete_index() {
 
     let (_server_actor, addr) = vector_store::run(
         SocketAddr::from(([127, 0, 0, 1], 0)).into(),
-        Some(1),
         node_state,
         db_actor,
         index_factory,

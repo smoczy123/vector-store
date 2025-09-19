@@ -35,10 +35,13 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Once;
 use time::OffsetDateTime;
+use tokio::runtime::Builder;
+use tokio::runtime::Handle;
 use tokio::signal;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
+use tokio::task;
 use utoipa::PartialSchema;
 use utoipa::ToSchema;
 use utoipa::openapi::KnownFormat;
@@ -437,23 +440,29 @@ pub struct DbEmbedding {
 #[derive(derive_more::From)]
 pub struct HttpServerAddr(SocketAddr);
 
-static INIT_RAYON: Once = Once::new();
+pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output) -> Output {
+    let mut builder = match threads {
+        Some(0) | None => Builder::new_multi_thread(),
+        Some(1) => Builder::new_current_thread(),
+        Some(threads) => {
+            let mut builder = Builder::new_multi_thread();
+            builder.worker_threads(threads);
+            builder
+        }
+    };
+    builder
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move { f().await })
+}
 
 pub async fn run(
     addr: HttpServerAddr,
-    background_threads: Option<usize>,
     node_state: Sender<NodeState>,
     db_actor: Sender<Db>,
     index_factory: Box<dyn IndexFactory + Send + Sync>,
 ) -> anyhow::Result<(impl Sized, SocketAddr)> {
-    if let Some(background_threads) = background_threads {
-        INIT_RAYON.call_once(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(background_threads)
-                .build_global()
-                .expect("Failed to initialize Rayon global thread pool");
-        });
-    }
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
     httpserver::new(
@@ -478,8 +487,19 @@ pub async fn new_node_state() -> Sender<NodeState> {
     node_state::new().await
 }
 
+// yield to let other tasks run before cpu-intensive processing, as it is CPU intensive and can
+// block other tasks (increase tail latency)
+async fn move_to_the_end_of_async_runtime_queue() {
+    task::yield_now().await;
+}
+
 pub fn new_index_factory_usearch() -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::usearch::new_usearch()?))
+    // This semaphore decides how many tasks are queued for an usearch process. It is
+    // calculated as a number of threads, to be sure that there is always a new
+    // task waiting in the queue.
+    let semaphore = Arc::new(Semaphore::new(Handle::current().metrics().num_workers()));
+
+    Ok(Box::new(index::usearch::new_usearch(semaphore)?))
 }
 
 pub fn new_index_factory_opensearch(
