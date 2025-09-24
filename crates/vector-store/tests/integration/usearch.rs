@@ -16,8 +16,12 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
+use vector_store::Connectivity;
+use vector_store::ExpansionAdd;
+use vector_store::ExpansionSearch;
 use vector_store::IndexMetadata;
 use vector_store::Percentage;
+use vector_store::SpaceType;
 use vector_store::Vector;
 use vector_store::node_state::NodeState;
 
@@ -37,10 +41,10 @@ pub(crate) async fn setup_store() -> (
         index_name: "ann".to_string().into(),
         target_column: "embedding".to_string().into(),
         dimensions: NonZeroUsize::new(3).unwrap().into(),
-        connectivity: Default::default(),
-        expansion_add: Default::default(),
-        expansion_search: Default::default(),
-        space_type: Default::default(),
+        connectivity: Connectivity::default(),
+        expansion_add: ExpansionAdd::default(),
+        expansion_search: ExpansionSearch::default(),
+        space_type: SpaceType::default(),
         version: Uuid::new_v4().into(),
     };
 

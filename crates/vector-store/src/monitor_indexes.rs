@@ -3,6 +3,9 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::Connectivity;
+use crate::ExpansionAdd;
+use crate::ExpansionSearch;
 use crate::IndexMetadata;
 use crate::SpaceType;
 use crate::db::Db;
@@ -143,7 +146,12 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
             params
         } else {
             debug!("get_indexes: no params for index {idx:?}");
-            (0.into(), 0.into(), 0.into(), SpaceType::default())
+            (
+                Connectivity::default(),
+                ExpansionAdd::default(),
+                ExpansionSearch::default(),
+                SpaceType::default(),
+            )
         };
 
         let metadata = IndexMetadata {
