@@ -247,7 +247,6 @@ pub struct Dimensions(NonZeroUsize);
     Copy,
     Clone,
     Debug,
-    Default,
     PartialEq,
     Eq,
     Hash,
@@ -260,11 +259,16 @@ pub struct Dimensions(NonZeroUsize);
 /// Limit number of neighbors per graph node
 pub struct Connectivity(usize);
 
+impl Default for Connectivity {
+    fn default() -> Self {
+        Self(16)
+    }
+}
+
 #[derive(
     Copy,
     Clone,
     Debug,
-    Default,
     PartialEq,
     Eq,
     Hash,
@@ -278,11 +282,16 @@ pub struct Connectivity(usize);
 /// Control the recall of indexing
 pub struct ExpansionAdd(usize);
 
+impl Default for ExpansionAdd {
+    fn default() -> Self {
+        Self(128)
+    }
+}
+
 #[derive(
     Copy,
     Clone,
     Debug,
-    Default,
     PartialEq,
     Eq,
     Hash,
@@ -295,6 +304,12 @@ pub struct ExpansionAdd(usize);
 )]
 /// Control the quality of the search
 pub struct ExpansionSearch(usize);
+
+impl Default for ExpansionSearch {
+    fn default() -> Self {
+        Self(64)
+    }
+}
 
 #[derive(
     Copy,
