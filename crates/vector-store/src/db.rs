@@ -518,7 +518,7 @@ impl Statements {
                 .unwrap_or_default();
             let space_type = options
                 .remove("similarity_function")
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| s.to_ascii_uppercase().parse().ok())
                 .unwrap_or_default();
             (connectivity, expansion_add, expansion_search, space_type)
         }))
