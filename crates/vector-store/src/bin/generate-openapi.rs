@@ -9,7 +9,8 @@ fn main() -> anyhow::Result<()> {
 
     let json = serde_json::to_string_pretty(&vector_store::httproutes::api())?;
 
-    fs::File::create(pathname)?.write(json.as_bytes())?;
+    let mut file = fs::File::create(pathname)?;
+    writeln!(file, "{}", json)?;
 
     println!("OpenAPI specification written to {}", pathname);
     Ok(())
