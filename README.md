@@ -29,11 +29,10 @@ $ cargo b [-r]
 $ cargo r [-r]
 ```
 
-## Docker image
+## Subdirectories
 
-`Dockerfile` for the image is located in main directory of the repository. It
-builds release version of the Vector Store. Sample command for building the
-image:
+- [scripts](./scripts/README.md) - helper scripts for development, release,
+  deployment, and testing
 
 ```
 $ docker build -t vector-store .
