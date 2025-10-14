@@ -3417,7 +3417,6 @@ name = "vector-search-validator-engine"
 version = "0.6.0"
 dependencies = [
  "clap",
- "futures",
  "hickory-server",
  "httpclient",
  "scylla",
@@ -3425,7 +3424,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "vector-search-validator-scylla",
  "vector-search-validator-tests",
  "vector-search-validator-vector-store",
@@ -3443,6 +3441,7 @@ dependencies = [
 name = "vector-search-validator-tests"
 version = "0.6.0"
 dependencies = [
+ "futures",
  "httpclient",
  "scylla",
  "tokio",
