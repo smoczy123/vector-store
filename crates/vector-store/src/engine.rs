@@ -207,14 +207,14 @@ async fn add_index(
         };
 
     indexes.insert(id.clone(), (index_actor, monitor_actor, db_index));
-    info!("create an index {id}");
+    info!("creating the index {id}");
     tx.send(Ok(()))
         .unwrap_or_else(|_| trace!("add_index: unable to send response"));
 }
 
 async fn del_index(id: IndexId, indexes: &mut IndexesT) {
     indexes.remove(&id);
-    info!("remove an index {id}");
+    info!("removing the index {id}");
 }
 
 async fn get_index(id: IndexId, tx: oneshot::Sender<GetIndexR>, indexes: &IndexesT) {
