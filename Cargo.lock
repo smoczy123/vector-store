@@ -3419,7 +3419,6 @@ dependencies = [
  "clap",
  "hickory-server",
  "httpclient",
- "scylla",
  "tempfile",
  "tokio",
  "tracing",
@@ -3454,6 +3453,9 @@ dependencies = [
 name = "vector-search-validator-vector-store"
 version = "0.6.0"
 dependencies = [
+ "scylla",
+ "tokio",
+ "tracing",
  "vector-search-validator-tests",
 ]
 
