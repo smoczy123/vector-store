@@ -3442,6 +3442,10 @@ dependencies = [
 [[package]]
 name = "vector-search-validator-tests"
 version = "0.6.0"
+dependencies = [
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "vector-search-validator-vector-store"
