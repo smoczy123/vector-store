@@ -34,6 +34,10 @@ impl HttpClient {
         }
     }
 
+    pub fn url(&self) -> &str {
+        self.url_api.as_str()
+    }
+
     pub async fn indexes(&self) -> Vec<IndexInfo> {
         self.client
             .get(format!("{}/indexes", self.url_api))
