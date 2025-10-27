@@ -29,4 +29,4 @@ docker run --rm \
     --network=none \
     --entrypoint=/vector-search-validator \
     $scylla_tag \
-    --dns-ip $dns_ip --base-ip $base_ip --scylla-default-conf /etc/scylla/scylla.yaml /usr/bin/scylla /vector-store $@
+    run --dns-ip $dns_ip --base-ip $base_ip --scylla-default-conf /etc/scylla/scylla.yaml /usr/bin/scylla /vector-store $@
