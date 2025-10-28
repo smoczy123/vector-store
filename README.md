@@ -29,6 +29,12 @@ $ cargo b [-r]
 $ cargo r [-r]
 ```
 
+To install all cargo tools used in the CI:
+
+```
+$ scripts/install-cargo-tools
+```
+
 ## Subdirectories
 
 - [scripts](./scripts/README.md) - helper scripts for development, release,
