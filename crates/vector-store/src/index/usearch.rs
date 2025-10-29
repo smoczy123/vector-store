@@ -324,7 +324,7 @@ mod tests {
             Connectivity::default(),
             ExpansionAdd::default(),
             ExpansionSearch::default(),
-            SpaceType::default(),
+            SpaceType::Euclidean,
             Arc::new(Semaphore::new(4)),
         )
         .unwrap();
