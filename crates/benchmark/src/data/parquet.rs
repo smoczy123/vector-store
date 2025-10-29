@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::data::Query;
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
@@ -11,18 +12,17 @@ use arrow_array::types::Int64Type;
 use futures::Stream;
 use futures::StreamExt;
 use futures::stream;
+use futures::stream::BoxStream;
 use itertools::Itertools;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::fs::File;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::info;
 
 const PATH_PARQUET: &str = "parquet";
 const PATH_TRAIN: &str = "train";
@@ -32,12 +32,13 @@ const ID: &str = "id";
 const EMBEDDING: &str = "emb";
 const NEIGHBORS_ID: &str = "neighbors_id";
 
-pub(crate) async fn dimension(path: &Path) -> usize {
+pub(crate) async fn dimension(path: Arc<PathBuf>) -> usize {
     let builder =
         ParquetRecordBatchStreamBuilder::new(File::open(path.join(PATH_TEST)).await.unwrap())
             .await
             .unwrap();
     let mask = ProjectionMask::columns(builder.parquet_schema(), [EMBEDDING].into_iter());
+
     let mut stream = builder.with_projection(mask).build().unwrap();
     let batch = stream.next().await.unwrap().unwrap();
     let data = batch
@@ -45,17 +46,15 @@ pub(crate) async fn dimension(path: &Path) -> usize {
         .unwrap()
         .as_list::<i64>()
         .value(0);
-    let dim = if let Some(data) = data.as_primitive_opt::<Float64Type>() {
+    if let Some(data) = data.as_primitive_opt::<Float64Type>() {
         data.len()
     } else {
         data.as_primitive::<Float32Type>().len()
-    };
-    info!("Found dimension {dim} for dataset at {path:?}");
-    dim
+    }
 }
 
-async fn train_files(path: &Path) -> impl Stream<Item = PathBuf> {
-    let readdirs = if let Ok(readdir) = fs::read_dir(path).await {
+async fn train_files(path: Arc<PathBuf>) -> impl Stream<Item = PathBuf> {
+    let readdirs = if let Ok(readdir) = fs::read_dir(&*path).await {
         vec![ReadDirStream::new(readdir)]
     } else {
         vec![]
@@ -93,7 +92,7 @@ fn extract_embedding(
     ids.zip(embs).collect_vec()
 }
 
-pub(crate) async fn vector_stream(path: &Path) -> impl Stream<Item = (i64, Vec<f32>)> {
+pub(crate) async fn vector_stream(path: Arc<PathBuf>) -> BoxStream<'static, (i64, Vec<f32>)> {
     train_files(path)
         .await
         .then(|path| async move {
@@ -132,14 +131,10 @@ pub(crate) async fn vector_stream(path: &Path) -> impl Stream<Item = (i64, Vec<f
             stream::iter(ids_embs)
         })
         .flatten()
+        .boxed()
 }
 
-pub(crate) struct Query {
-    pub(crate) query: Vec<f32>,
-    pub(crate) neighbors: HashSet<i64>,
-}
-
-pub(crate) async fn queries(path: &Path, limit: usize) -> Vec<Query> {
+pub(crate) async fn queries(path: Arc<PathBuf>, limit: usize) -> Vec<Query> {
     let stream =
         ParquetRecordBatchStreamBuilder::new(File::open(path.join(PATH_TEST)).await.unwrap())
             .await

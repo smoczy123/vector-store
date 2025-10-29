@@ -8,16 +8,15 @@ use crate::KEYSPACE;
 use crate::MetricType;
 use crate::Query;
 use crate::TABLE;
-use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use futures::stream::BoxStream;
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
 use std::net::SocketAddr;
-use std::pin::pin;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -141,7 +140,7 @@ impl Scylla {
 
     pub(crate) async fn upload_vectors(
         &self,
-        stream: impl Stream<Item = (i64, Vec<f32>)>,
+        mut stream: BoxStream<'static, (i64, Vec<f32>)>,
         concurrency: usize,
     ) {
         let mut st_insert = self
@@ -156,7 +155,6 @@ impl Scylla {
 
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
-        let mut stream = pin!(stream);
         while let Some((vector_id, vector)) = stream.next().await {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let scylla = Arc::clone(&self.0);
