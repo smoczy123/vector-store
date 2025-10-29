@@ -50,9 +50,7 @@ impl TestOpenSearchServer {
             .route("/{index}/_search", post(search))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:9200")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
