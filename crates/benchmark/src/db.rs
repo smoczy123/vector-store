@@ -19,6 +19,7 @@ use scylla::statement::prepared::PreparedStatement;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+use tracing::info;
 use uuid::Uuid;
 
 const ID: &str = "id";
@@ -64,7 +65,6 @@ impl Scylla {
                 "
                 CREATE KEYSPACE {KEYSPACE}
                 WITH replication = {{'class': 'NetworkTopologyStrategy' , 'replication_factor': '3'}}
-                AND tablets = {{'enabled': 'false'}}
                 "
             ),
             &[],
@@ -155,10 +155,17 @@ impl Scylla {
 
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
+        let mut count = 0;
         while let Some((vector_id, vector)) = stream.next().await {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let scylla = Arc::clone(&self.0);
             let st_insert = st_insert.clone();
+
+            count += 1;
+            if count % 1_000_000 == 0 {
+                info!("Uploading vector {}M", count / 1_000_000);
+            }
+
             tokio::spawn(async move {
                 scylla
                     .session
