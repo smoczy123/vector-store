@@ -3407,19 +3407,56 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator"
-version = "0.1.0"
+version = "0.6.0"
+dependencies = [
+ "vector-search-validator-engine",
+]
+
+[[package]]
+name = "vector-search-validator-engine"
+version = "0.6.0"
 dependencies = [
  "clap",
- "futures",
  "hickory-server",
  "httpclient",
- "scylla",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vector-search-validator-scylla",
+ "vector-search-validator-tests",
+ "vector-search-validator-vector-store",
+ "vector-store",
+]
+
+[[package]]
+name = "vector-search-validator-scylla"
+version = "0.6.0"
+dependencies = [
+ "vector-search-validator-tests",
+]
+
+[[package]]
+name = "vector-search-validator-tests"
+version = "0.6.0"
+dependencies = [
+ "futures",
+ "httpclient",
+ "scylla",
+ "tokio",
+ "tracing",
  "uuid",
  "vector-store",
+]
+
+[[package]]
+name = "vector-search-validator-vector-store"
+version = "0.6.0"
+dependencies = [
+ "scylla",
+ "tokio",
+ "tracing",
+ "vector-search-validator-tests",
 ]
 
 [[package]]

@@ -52,9 +52,18 @@ where
 // one thread per network IO bound tasks.
 fn main() -> anyhow::Result<()> {
     _ = dotenvy::dotenv();
+
+    let disable_colors: bool = dotenvy::var("VECTOR_STORE_DISABLE_COLORS")
+        .unwrap_or("false".to_string())
+        .trim()
+        .parse()
+        .or(Err(anyhow!(
+            "Unable to parse VECTOR_STORE_DISABLE_COLORS env (true/false)"
+        )))?;
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?)
-        .with(fmt::layer().with_target(false))
+        .with(fmt::layer().with_target(false).with_ansi(!disable_colors))
         .init();
 
     _ = Args::parse();
