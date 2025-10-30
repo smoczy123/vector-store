@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+mod fbin;
 mod parquet;
 
 use futures::stream::BoxStream;
@@ -27,6 +28,7 @@ pub(crate) struct Data {
 
 enum Format {
     Parquet(Arc<parquet::Config>),
+    Fbin(Arc<fbin::Config>),
 }
 
 impl Data {
@@ -34,6 +36,9 @@ impl Data {
         let dim = match &self.format {
             Format::Parquet(config) => {
                 parquet::dimension(Arc::clone(&self.path), Arc::clone(config)).await
+            }
+            Format::Fbin(config) => {
+                fbin::dimension(Arc::clone(&self.path), Arc::clone(config)).await
             }
         };
         info!("Found dimension {dim} for dataset at {:?}", self.path);
@@ -45,6 +50,9 @@ impl Data {
             Format::Parquet(config) => {
                 parquet::queries(Arc::clone(&self.path), Arc::clone(config), limit).await
             }
+            Format::Fbin(config) => {
+                fbin::queries(Arc::clone(&self.path), Arc::clone(config), limit).await
+            }
         }
     }
 
@@ -53,6 +61,9 @@ impl Data {
             Format::Parquet(config) => {
                 parquet::vector_stream(Arc::clone(&self.path), Arc::clone(config)).await
             }
+            Format::Fbin(config) => {
+                fbin::vector_stream(Arc::clone(&self.path), Arc::clone(config)).await
+            }
         }
     }
 }
@@ -60,19 +71,35 @@ impl Data {
 #[derive(Deserialize)]
 struct Config {
     parquet: Option<parquet::Config>,
+    fbin: Option<fbin::Config>,
 }
 
 pub(crate) async fn new(path: PathBuf) -> Data {
     let toml_path = path.join(DATASET_FILENAME);
-    let config = fs::read(&toml_path)
-        .await
-        .expect("Failed to read {toml_path}");
-    let config: Config = toml::from_slice(&config).expect("Failed to parse {toml_path}");
-    let Some(config) = config.parquet else {
-        panic!("Missing 'parquet' section in {toml_path:?}");
+    let Ok(config) = fs::read(&toml_path).await else {
+        info!("Not found {DATASET_FILENAME} in {path:?}. Using default parquet format.");
+        return Data {
+            path: Arc::new(path),
+            format: Format::Parquet(Arc::new(parquet::Config::default())),
+        };
     };
+    let config: Config = toml::from_slice(&config)
+        .unwrap_or_else(|err| panic!("Failed to parse {toml_path:?}: {err}"));
+    if let Some(config) = config.parquet {
+        return Data {
+            path: Arc::new(path),
+            format: Format::Parquet(Arc::new(config)),
+        };
+    }
+    if let Some(config) = config.fbin {
+        return Data {
+            path: Arc::new(path),
+            format: Format::Fbin(Arc::new(config)),
+        };
+    }
+    info!("Not found format type in {DATASET_FILENAME} in {path:?}. Using default parquet format.");
     Data {
         path: Arc::new(path),
-        format: Format::Parquet(Arc::new(config)),
+        format: Format::Parquet(Arc::new(parquet::Config::default())),
     }
 }

@@ -49,6 +49,20 @@ pub(crate) struct Config {
     neighbors_id_column: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ext: default_ext(),
+            train_file_pattern: default_train_file_pattern(),
+            test_file_name: default_test_file_name(),
+            neighbors_file_name: default_neigbors_file_name(),
+            id_column: default_id_column(),
+            embedding_column: default_embedding_column(),
+            neighbors_id_column: default_neighbors_id_column(),
+        }
+    }
+}
+
 fn default_ext() -> String {
     "parquet".to_string()
 }
