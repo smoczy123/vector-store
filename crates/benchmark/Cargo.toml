@@ -16,6 +16,7 @@ humantime.workspace = true
 itertools.workspace = true
 parquet.workspace = true
 rand.workspace = true
+serde.workspace = true
 scylla.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

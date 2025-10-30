@@ -16,6 +16,7 @@ use futures::stream::BoxStream;
 use itertools::Itertools;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -24,25 +25,72 @@ use tokio::fs;
 use tokio::fs::File;
 use tokio_stream::wrappers::ReadDirStream;
 
-const PATH_PARQUET: &str = "parquet";
-const PATH_TRAIN: &str = "train";
-const PATH_TEST: &str = "test.parquet";
-const PATH_NEIGHBORS: &str = "neighbors.parquet";
-const ID: &str = "id";
-const EMBEDDING: &str = "emb";
-const NEIGHBORS_ID: &str = "neighbors_id";
+#[derive(Deserialize)]
+pub(crate) struct Config {
+    #[serde(default = "default_ext")]
+    ext: String,
 
-pub(crate) async fn dimension(path: Arc<PathBuf>) -> usize {
-    let builder =
-        ParquetRecordBatchStreamBuilder::new(File::open(path.join(PATH_TEST)).await.unwrap())
-            .await
-            .unwrap();
-    let mask = ProjectionMask::columns(builder.parquet_schema(), [EMBEDDING].into_iter());
+    #[serde(default = "default_train_file_pattern")]
+    train_file_pattern: String,
 
+    #[serde(default = "default_test_file_name")]
+    test_file_name: String,
+
+    #[serde(default = "default_neigbors_file_name")]
+    neighbors_file_name: String,
+
+    #[serde(default = "default_id_column")]
+    id_column: String,
+
+    #[serde(default = "default_embedding_column")]
+    embedding_column: String,
+
+    #[serde(default = "default_neighbors_id_column")]
+    neighbors_id_column: String,
+}
+
+fn default_ext() -> String {
+    "parquet".to_string()
+}
+
+fn default_train_file_pattern() -> String {
+    "train".to_string()
+}
+
+fn default_test_file_name() -> String {
+    "test.parquet".to_string()
+}
+
+fn default_neigbors_file_name() -> String {
+    "neighbors.parquet".to_string()
+}
+
+fn default_id_column() -> String {
+    "id".to_string()
+}
+
+fn default_embedding_column() -> String {
+    "emb".to_string()
+}
+
+fn default_neighbors_id_column() -> String {
+    "neighbors_id".to_string()
+}
+
+pub(crate) async fn dimension(path: Arc<PathBuf>, config: Arc<Config>) -> usize {
+    let builder = ParquetRecordBatchStreamBuilder::new(
+        File::open(path.join(&config.test_file_name)).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    let mask = ProjectionMask::columns(
+        builder.parquet_schema(),
+        [&*config.embedding_column].into_iter(),
+    );
     let mut stream = builder.with_projection(mask).build().unwrap();
     let batch = stream.next().await.unwrap().unwrap();
     let data = batch
-        .column_by_name(EMBEDDING)
+        .column_by_name(&config.embedding_column)
         .unwrap()
         .as_list::<i64>()
         .value(0);
@@ -53,7 +101,7 @@ pub(crate) async fn dimension(path: Arc<PathBuf>) -> usize {
     }
 }
 
-async fn train_files(path: Arc<PathBuf>) -> impl Stream<Item = PathBuf> {
+async fn train_files(path: Arc<PathBuf>, config: Arc<Config>) -> impl Stream<Item = PathBuf> {
     let readdirs = if let Ok(readdir) = fs::read_dir(&*path).await {
         vec![ReadDirStream::new(readdir)]
     } else {
@@ -70,10 +118,13 @@ async fn train_files(path: Arc<PathBuf>) -> impl Stream<Item = PathBuf> {
                 .unwrap_or(false)
                 .then_some(entry.path())
         })
-        .filter_map(|path| async move {
-            let name = path.file_name().and_then(|name| name.to_str())?;
-            let ext = path.extension().and_then(|ext| ext.to_str())?;
-            (name.contains(PATH_TRAIN) && ext == PATH_PARQUET).then_some(path)
+        .filter_map(move |path| {
+            let config = Arc::clone(&config);
+            async move {
+                let name = path.file_name().and_then(|name| name.to_str())?;
+                let ext = path.extension().and_then(|ext| ext.to_str())?;
+                (name.contains(&config.train_file_pattern) && ext == config.ext).then_some(path)
+            }
         })
 }
 
@@ -92,8 +143,11 @@ fn extract_embedding(
     ids.zip(embs).collect_vec()
 }
 
-pub(crate) async fn vector_stream(path: Arc<PathBuf>) -> BoxStream<'static, (i64, Vec<f32>)> {
-    train_files(path)
+pub(crate) async fn vector_stream(
+    path: Arc<PathBuf>,
+    config: Arc<Config>,
+) -> BoxStream<'static, (i64, Vec<f32>)> {
+    train_files(path, Arc::clone(&config))
         .await
         .then(|path| async move {
             ParquetRecordBatchStreamBuilder::new(File::open(path).await.unwrap())
@@ -106,13 +160,13 @@ pub(crate) async fn vector_stream(path: Arc<PathBuf>) -> BoxStream<'static, (i64
         .map(move |batch| batch.unwrap())
         .map(move |batch| {
             let ids = batch
-                .column_by_name(ID)
+                .column_by_name(&config.id_column)
                 .unwrap()
                 .as_primitive::<Int64Type>();
             let ids = ids.iter().map(|id| id.unwrap());
 
             let ids_embs = if let Some(embs) = batch
-                .column_by_name(EMBEDDING)
+                .column_by_name(&config.embedding_column)
                 .unwrap()
                 .as_list_opt::<i32>()
             {
@@ -121,7 +175,7 @@ pub(crate) async fn vector_stream(path: Arc<PathBuf>) -> BoxStream<'static, (i64
                 extract_embedding(
                     ids,
                     batch
-                        .column_by_name(EMBEDDING)
+                        .column_by_name(&config.embedding_column)
                         .unwrap()
                         .as_list::<i64>()
                         .iter(),
@@ -134,55 +188,68 @@ pub(crate) async fn vector_stream(path: Arc<PathBuf>) -> BoxStream<'static, (i64
         .boxed()
 }
 
-pub(crate) async fn queries(path: Arc<PathBuf>, limit: usize) -> Vec<Query> {
-    let stream =
-        ParquetRecordBatchStreamBuilder::new(File::open(path.join(PATH_TEST)).await.unwrap())
-            .await
-            .unwrap()
-            .build()
-            .unwrap();
+pub(crate) async fn queries(path: Arc<PathBuf>, config: Arc<Config>, limit: usize) -> Vec<Query> {
+    let stream = ParquetRecordBatchStreamBuilder::new(
+        File::open(path.join(&config.test_file_name)).await.unwrap(),
+    )
+    .await
+    .unwrap()
+    .build()
+    .unwrap();
     let ids_queries = stream
         .map(move |batch| batch.unwrap())
-        .map(move |batch| {
-            let ids = batch
-                .column_by_name(ID)
-                .unwrap()
-                .as_primitive::<Int64Type>();
-            let ids = ids.iter().map(|id| id.unwrap());
+        .map({
+            let config = Arc::clone(&config);
+            move |batch| {
+                let ids = batch
+                    .column_by_name(&config.id_column)
+                    .unwrap()
+                    .as_primitive::<Int64Type>();
+                let ids = ids.iter().map(|id| id.unwrap());
 
-            let queries = batch.column_by_name(EMBEDDING).unwrap().as_list::<i64>();
-            let queries = queries.iter().map(|query| query.unwrap()).map(|query| {
-                if let Some(query) = query.as_primitive_opt::<Float64Type>() {
-                    query.iter().map(|v| v.unwrap() as f32).collect_vec()
-                } else {
-                    let query = query.as_primitive::<Float32Type>();
-                    query.iter().map(|v| v.unwrap()).collect_vec()
-                }
-            });
+                let queries = batch
+                    .column_by_name(&config.embedding_column)
+                    .unwrap()
+                    .as_list::<i64>();
+                let queries = queries.iter().map(|query| query.unwrap()).map(|query| {
+                    if let Some(query) = query.as_primitive_opt::<Float64Type>() {
+                        query.iter().map(|v| v.unwrap() as f32).collect_vec()
+                    } else {
+                        let query = query.as_primitive::<Float32Type>();
+                        query.iter().map(|v| v.unwrap()).collect_vec()
+                    }
+                });
 
-            let ids_queries = ids.zip(queries).collect_vec();
-            stream::iter(ids_queries)
+                let ids_queries = ids.zip(queries).collect_vec();
+                stream::iter(ids_queries)
+            }
         })
         .flatten()
         .collect::<HashMap<_, _>>()
         .await;
 
-    let stream =
-        ParquetRecordBatchStreamBuilder::new(File::open(path.join(PATH_NEIGHBORS)).await.unwrap())
+    let stream = ParquetRecordBatchStreamBuilder::new(
+        File::open(path.join(&config.neighbors_file_name))
             .await
-            .unwrap()
-            .build()
-            .unwrap();
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .build()
+    .unwrap();
     let ids_neighbors = stream
         .map(move |batch| batch.unwrap())
         .map(move |batch| {
             let ids = batch
-                .column_by_name(ID)
+                .column_by_name(&config.id_column)
                 .unwrap()
                 .as_primitive::<Int64Type>();
             let ids = ids.iter().map(|id| id.unwrap());
 
-            let neighbors = batch.column_by_name(NEIGHBORS_ID).unwrap().as_list::<i64>();
+            let neighbors = batch
+                .column_by_name(&config.neighbors_id_column)
+                .unwrap()
+                .as_list::<i64>();
             let neighbors = neighbors
                 .iter()
                 .map(|neighbor| neighbor.unwrap())

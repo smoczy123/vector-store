@@ -3710,6 +3710,7 @@ dependencies = [
  "parquet",
  "rand",
  "scylla",
+ "serde",
  "tokio",
  "tokio-stream",
  "toml",

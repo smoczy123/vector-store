@@ -131,7 +131,7 @@ async fn main() {
             scylla,
             concurrency,
         } => {
-            let dataset = data::new(data_dir);
+            let dataset = data::new(data_dir).await;
             let dimension = dataset.dimension().await;
             let stream = dataset.vector_stream().await;
             let scylla = Scylla::new(scylla).await;
@@ -190,7 +190,7 @@ async fn main() {
             concurrency,
             from,
         } => {
-            let dataset = data::new(data_dir);
+            let dataset = data::new(data_dir).await;
             let queries = Arc::new(dataset.queries(limit as usize).await);
             let notify = Arc::new(Notify::new());
             let scylla = Scylla::new(scylla).await;
