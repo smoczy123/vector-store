@@ -539,7 +539,7 @@ async fn get_info(State(state): State<RoutesInnerState>) -> response::Json<InfoR
 #[derive(ToEnumSchema, serde::Deserialize, serde::Serialize, PartialEq, Debug)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 /// Operational status of the Vector Store indexing service.
-pub enum Status {
+pub enum NodeStatus {
     /// The node is starting up.
     Initializing,
     /// The node is establishing a connection to ScyllaDB.
@@ -550,14 +550,14 @@ pub enum Status {
     Serving,
 }
 
-impl From<crate::node_state::Status> for Status {
-    fn from(status: crate::node_state::Status) -> Self {
+impl From<crate::node_state::NodeStatus> for NodeStatus {
+    fn from(status: crate::node_state::NodeStatus) -> Self {
         match status {
-            crate::node_state::Status::Initializing => Status::Initializing,
-            crate::node_state::Status::ConnectingToDb => Status::ConnectingToDb,
-            crate::node_state::Status::IndexingEmbeddings => Status::Bootstrapping,
-            crate::node_state::Status::DiscoveringIndexes => Status::Bootstrapping,
-            crate::node_state::Status::Serving => Status::Serving,
+            crate::node_state::NodeStatus::Initializing => NodeStatus::Initializing,
+            crate::node_state::NodeStatus::ConnectingToDb => NodeStatus::ConnectingToDb,
+            crate::node_state::NodeStatus::IndexingEmbeddings => NodeStatus::Bootstrapping,
+            crate::node_state::NodeStatus::DiscoveringIndexes => NodeStatus::Bootstrapping,
+            crate::node_state::NodeStatus::Serving => NodeStatus::Serving,
         }
     }
 }
@@ -568,13 +568,13 @@ impl From<crate::node_state::Status> for Status {
     tag = "scylla-vector-store-info",
     description = "Returns the current operational status of the Vector Store indexing service.",
     responses(
-        (status = 200, description = "Successful operation. Returns the current operational status of the Vector Store indexing service.", body = Status),
+        (status = 200, description = "Successful operation. Returns the current operational status of the Vector Store indexing service.", body = NodeStatus),
     )
 )]
 async fn get_status(State(state): State<RoutesInnerState>) -> Response {
     (
         StatusCode::OK,
-        response::Json(Status::from(state.node_state.get_status().await)),
+        response::Json(NodeStatus::from(state.node_state.get_status().await)),
     )
         .into_response()
 }
@@ -680,24 +680,24 @@ mod tests {
     #[test]
     fn status_conversion() {
         assert_eq!(
-            Status::from(crate::node_state::Status::Initializing),
-            Status::Initializing
+            NodeStatus::from(crate::node_state::NodeStatus::Initializing),
+            NodeStatus::Initializing
         );
         assert_eq!(
-            Status::from(crate::node_state::Status::ConnectingToDb),
-            Status::ConnectingToDb
+            NodeStatus::from(crate::node_state::NodeStatus::ConnectingToDb),
+            NodeStatus::ConnectingToDb
         );
         assert_eq!(
-            Status::from(crate::node_state::Status::IndexingEmbeddings),
-            Status::Bootstrapping
+            NodeStatus::from(crate::node_state::NodeStatus::IndexingEmbeddings),
+            NodeStatus::Bootstrapping
         );
         assert_eq!(
-            Status::from(crate::node_state::Status::DiscoveringIndexes),
-            Status::Bootstrapping
+            NodeStatus::from(crate::node_state::NodeStatus::DiscoveringIndexes),
+            NodeStatus::Bootstrapping
         );
         assert_eq!(
-            Status::from(crate::node_state::Status::Serving),
-            Status::Serving
+            NodeStatus::from(crate::node_state::NodeStatus::Serving),
+            NodeStatus::Serving
         );
     }
 }

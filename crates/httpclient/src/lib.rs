@@ -16,9 +16,9 @@ use vector_store::KeyspaceName;
 use vector_store::Limit;
 use vector_store::Vector;
 use vector_store::httproutes::InfoResponse;
+use vector_store::httproutes::NodeStatus;
 use vector_store::httproutes::PostIndexAnnRequest;
 use vector_store::httproutes::PostIndexAnnResponse;
-use vector_store::httproutes::Status;
 
 pub struct HttpClient {
     client: Client,
@@ -122,7 +122,7 @@ impl HttpClient {
             .unwrap()
     }
 
-    pub async fn status(&self) -> anyhow::Result<Status> {
+    pub async fn status(&self) -> anyhow::Result<NodeStatus> {
         Ok(self
             .client
             .get(format!("{}/status", self.url_api))

@@ -13,7 +13,7 @@ use tracing::debug_span;
 use tracing::info;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
+pub enum NodeStatus {
     Initializing,
     ConnectingToDb,
     DiscoveringIndexes,
@@ -31,12 +31,12 @@ pub enum Event {
 
 pub enum NodeState {
     SendEvent(Event),
-    GetStatus(oneshot::Sender<Status>),
+    GetStatus(oneshot::Sender<NodeStatus>),
 }
 
 pub(crate) trait NodeStateExt {
     async fn send_event(&self, event: Event);
-    async fn get_status(&self) -> Status;
+    async fn get_status(&self) -> NodeStatus;
 }
 
 impl NodeStateExt for mpsc::Sender<NodeState> {
@@ -47,7 +47,7 @@ impl NodeStateExt for mpsc::Sender<NodeState> {
             .expect("NodeStateExt::send_event: internal actor should receive event");
     }
 
-    async fn get_status(&self) -> Status {
+    async fn get_status(&self) -> NodeStatus {
         let (tx, rx) = oneshot::channel();
         self.send(NodeState::GetStatus(tx))
             .await
@@ -65,35 +65,35 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
         async move {
             debug!("starting");
 
-            let mut status = Status::Initializing;
+            let mut status = NodeStatus::Initializing;
             let mut idxs = HashSet::new();
             while let Some(msg) = rx.recv().await {
                 match msg {
                     NodeState::SendEvent(event) => match event {
                         Event::ConnectingToDb => {
-                            status = Status::ConnectingToDb;
+                            status = NodeStatus::ConnectingToDb;
                         }
                         Event::ConnectedToDb => {}
                         Event::DiscoveringIndexes => {
-                            if status != Status::Serving {
-                                status = Status::DiscoveringIndexes;
+                            if status != NodeStatus::Serving {
+                                status = NodeStatus::DiscoveringIndexes;
                             }
                         }
                         Event::IndexesDiscovered(indexes) => {
-                            if indexes.is_empty() && status != Status::Serving {
-                                status = Status::Serving;
+                            if indexes.is_empty() && status != NodeStatus::Serving {
+                                status = NodeStatus::Serving;
                                 info!("Service is running, no indexes to build");
                                 continue;
                             }
-                            if status == Status::DiscoveringIndexes {
-                                status = Status::IndexingEmbeddings;
+                            if status == NodeStatus::DiscoveringIndexes {
+                                status = NodeStatus::IndexingEmbeddings;
                                 idxs = indexes;
                             }
                         }
                         Event::FullScanFinished(metadata) => {
                             idxs.remove(&metadata);
-                            if idxs.is_empty() && status != Status::Serving {
-                                status = Status::Serving;
+                            if idxs.is_empty() && status != NodeStatus::Serving {
+                                status = NodeStatus::Serving;
                                 info!("Service is running, finished building indexes");
                             }
                         }
@@ -130,14 +130,14 @@ mod tests {
     async fn test_node_state_changes_as_expected() {
         let node_state = new().await;
         let mut status = node_state.get_status().await;
-        assert_eq!(status, Status::Initializing);
+        assert_eq!(status, NodeStatus::Initializing);
         node_state.send_event(Event::ConnectingToDb).await;
         status = node_state.get_status().await;
-        assert_eq!(status, Status::ConnectingToDb);
+        assert_eq!(status, NodeStatus::ConnectingToDb);
         node_state.send_event(Event::ConnectedToDb).await;
         node_state.send_event(Event::DiscoveringIndexes).await;
         status = node_state.get_status().await;
-        assert_eq!(status, Status::DiscoveringIndexes);
+        assert_eq!(status, NodeStatus::DiscoveringIndexes);
         let idx1 = IndexMetadata {
             keyspace_name: KeyspaceName("test_keyspace".to_string()),
             index_name: IndexName("test_index".to_string()),
@@ -165,31 +165,34 @@ mod tests {
         let idxs = HashSet::from([idx1.clone(), idx2.clone()]);
         node_state.send_event(Event::IndexesDiscovered(idxs)).await;
         status = node_state.get_status().await;
-        assert_eq!(status, Status::IndexingEmbeddings);
+        assert_eq!(status, NodeStatus::IndexingEmbeddings);
         node_state.send_event(Event::FullScanFinished(idx1)).await;
         status = node_state.get_status().await;
-        assert_eq!(status, Status::IndexingEmbeddings);
+        assert_eq!(status, NodeStatus::IndexingEmbeddings);
         node_state.send_event(Event::FullScanFinished(idx2)).await;
         status = node_state.get_status().await;
-        assert_eq!(status, Status::Serving);
+        assert_eq!(status, NodeStatus::Serving);
     }
 
     #[tokio::test]
     async fn no_indexes_discovered() {
         let node_state = new().await;
 
-        assert_eq!(node_state.get_status().await, Status::Initializing);
+        assert_eq!(node_state.get_status().await, NodeStatus::Initializing);
 
         node_state.send_event(Event::ConnectingToDb).await;
-        assert_eq!(node_state.get_status().await, Status::ConnectingToDb);
+        assert_eq!(node_state.get_status().await, NodeStatus::ConnectingToDb);
 
         node_state.send_event(Event::DiscoveringIndexes).await;
-        assert_eq!(node_state.get_status().await, Status::DiscoveringIndexes);
+        assert_eq!(
+            node_state.get_status().await,
+            NodeStatus::DiscoveringIndexes
+        );
 
         node_state
             .send_event(Event::IndexesDiscovered(HashSet::new()))
             .await;
-        assert_eq!(node_state.get_status().await, Status::Serving);
+        assert_eq!(node_state.get_status().await, NodeStatus::Serving);
     }
 
     #[tokio::test]
@@ -201,13 +204,13 @@ mod tests {
         node_state
             .send_event(Event::IndexesDiscovered(HashSet::new()))
             .await;
-        assert_eq!(node_state.get_status().await, Status::Serving);
+        assert_eq!(node_state.get_status().await, NodeStatus::Serving);
 
         // Try to trigger DiscoveringIndexes again
         node_state.send_event(Event::DiscoveringIndexes).await;
         // Status should remain Serving
         let status = node_state.get_status().await;
-        assert_eq!(status, Status::Serving);
+        assert_eq!(status, NodeStatus::Serving);
 
         let idx = IndexMetadata {
             keyspace_name: KeyspaceName("test_keyspace".to_string()),
@@ -228,6 +231,6 @@ mod tests {
             .await;
         // Status should remain Serving
         let status = node_state.get_status().await;
-        assert_eq!(status, Status::Serving);
+        assert_eq!(status, NodeStatus::Serving);
     }
 }

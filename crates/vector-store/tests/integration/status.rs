@@ -5,7 +5,7 @@
 
 use crate::usearch::{setup_store, setup_store_and_wait_for_index};
 use crate::wait_for;
-use vector_store::httproutes::Status;
+use vector_store::httproutes::NodeStatus;
 
 #[tokio::test]
 async fn status_is_serving_after_creation() {
@@ -13,7 +13,7 @@ async fn status_is_serving_after_creation() {
     let (_index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
 
     let result = client.status().await;
-    assert_eq!(result.unwrap(), Status::Serving);
+    assert_eq!(result.unwrap(), NodeStatus::Serving);
 }
 
 #[tokio::test]
@@ -25,7 +25,7 @@ async fn status_is_bootstrapping_while_discovering_indexes() {
 
     // assert that status is Bootstrapping while indexes are being discovered
     wait_for(
-        || async { client.status().await.unwrap() == Status::Bootstrapping },
+        || async { client.status().await.unwrap() == NodeStatus::Bootstrapping },
         "Waiting for status to be Bootstrapping",
     )
     .await;
