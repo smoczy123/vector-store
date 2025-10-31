@@ -151,6 +151,11 @@ pub(crate) async fn new(
         async move {
             debug!("starting");
             let completed_scan_length = Arc::new(AtomicU64::new(0));
+            node_state
+                .send_event(Event::FullScanStarted(metadata.clone()))
+                .await;
+
+            info!("starting full scan on {}", metadata.id());
 
             let mut initial_scan = Box::pin(statements.initial_scan(
                 tx_embeddings.clone(),

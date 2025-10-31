@@ -15,6 +15,7 @@ use vector_store::IndexName;
 use vector_store::KeyspaceName;
 use vector_store::Limit;
 use vector_store::Vector;
+use vector_store::httproutes::IndexStatusResponse;
 use vector_store::httproutes::InfoResponse;
 use vector_store::httproutes::NodeStatus;
 use vector_store::httproutes::PostIndexAnnRequest;
@@ -93,22 +94,27 @@ impl HttpClient {
             .unwrap()
     }
 
-    pub async fn count(
+    pub async fn index_status(
         &self,
         keyspace_name: &KeyspaceName,
         index_name: &IndexName,
-    ) -> Option<usize> {
-        self.client
+    ) -> anyhow::Result<IndexStatusResponse> {
+        let response = self
+            .client
             .get(format!(
-                "{}/indexes/{}/{}/count",
+                "{}/indexes/{}/{}/status",
                 self.url_api, keyspace_name, index_name
             ))
             .send()
-            .await
-            .unwrap()
-            .json::<usize>()
-            .await
-            .ok()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.json::<IndexStatusResponse>().await?)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await?;
+            Err(anyhow::anyhow!("HTTP {}: {}", status, error_text))
+        }
     }
 
     pub async fn info(&self) -> InfoResponse {

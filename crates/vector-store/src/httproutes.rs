@@ -128,7 +128,7 @@ fn new_open_api_router() -> (Router<RoutesInnerState>, utoipa::openapi::OpenApi)
         .merge(
             OpenApiRouter::new()
                 .routes(routes!(get_indexes))
-                .routes(routes!(get_index_count))
+                .routes(routes!(get_index_status))
                 .routes(routes!(post_index_ann))
                 .routes(routes!(get_info))
                 .routes(routes!(get_status)),
@@ -194,23 +194,56 @@ async fn get_indexes(State(state): State<RoutesInnerState>) -> Response {
 #[derive(utoipa::ToSchema)]
 struct ErrorMessage(#[allow(dead_code)] String);
 
+#[derive(ToEnumSchema, serde::Deserialize, serde::Serialize, PartialEq, Debug)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Operational status of the vector index.
+pub enum IndexStatus {
+    /// The index has been discovered and is being initialized.
+    Initializing,
+    /// The index is performing the initial full scan of the underlying table to populate the index.
+    Bootstrapping,
+    /// The index has completed the initial table scan. It is now monitoring the database for changes.
+    Serving,
+}
+
+impl From<crate::node_state::IndexStatus> for IndexStatus {
+    fn from(status: crate::node_state::IndexStatus) -> Self {
+        match status {
+            crate::node_state::IndexStatus::Initializing => IndexStatus::Initializing,
+            crate::node_state::IndexStatus::FullScanning => IndexStatus::Bootstrapping,
+            crate::node_state::IndexStatus::Serving => IndexStatus::Serving,
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+pub struct IndexStatusResponse {
+    pub status: IndexStatus,
+    pub count: usize,
+}
+
 #[utoipa::path(
     get,
-    path = "/api/v1/indexes/{keyspace}/{index}/count",
+    path = "/api/v1/indexes/{keyspace}/{index}/status",
     tag = "scylla-vector-store-index",
-    description = "Returns the number of vectors indexed by a specific vector index. \
-    Reflects only available vectors and excludes any 'tombstones' \
-    (elements marked for deletion but still present in the index structure).",
+    description = "Retrieves the current operational status and vector count for a specific vector index. \
+    The response includes the index's state and the total number of vectors currently indexed (excluding tombstoned or deleted entries). \
+    This endpoint enables clients to monitor index readiness and data availability for search operations.",
     params(
         ("keyspace" = KeyspaceName, Path, description = "The name of the ScyllaDB keyspace containing the vector index."),
-        ("index" = IndexName, Path, description = "The name of the ScyllaDB vector index within the specified keyspace to count vectors for.")
+        ("index" = IndexName, Path, description = "The name of the ScyllaDB vector index within the specified keyspace to check status of.")
     ),
     responses(
         (
             status = 200,
-            description = "Successful count operation. Returns the total number of vectors currently stored in the index.",
-            body = usize,
-            content_type = "application/json"
+            description = "Successful operation. Returns the current operational status of the specified vector index, including its state \
+            and the total number of vectors currently indexed.",
+            body = IndexStatusResponse,
+            content_type = "application/json",
+            example = json!({
+                "status": "SERVING",
+                "count": 12345
+            })
         ),
         (
             status = 404,
@@ -220,33 +253,49 @@ struct ErrorMessage(#[allow(dead_code)] String);
         ),
         (
             status = 500,
-            description = "Error while counting vectors. Possible causes: internal error, or issues accessing the database.",
+            description = "Error while checking index state or counting vectors. Possible causes: internal error, or issues accessing the database.",
             content_type = "application/json",
             body = ErrorMessage
         )
     )
 )]
-async fn get_index_count(
+async fn get_index_status(
     State(state): State<RoutesInnerState>,
-    Path((keyspace, index)): Path<(KeyspaceName, IndexName)>,
+    Path((keyspace_name, index_name)): Path<(KeyspaceName, IndexName)>,
 ) -> Response {
     let Some((index, _)) = state
         .engine
-        .get_index(IndexId::new(&keyspace, &index))
+        .get_index(IndexId::new(&keyspace_name, &index_name))
         .await
     else {
-        let msg = format!("missing index: {keyspace}.{index}");
-        debug!("get_index_count: {msg}");
+        let msg = format!("missing index: {keyspace_name}.{index_name}");
+        debug!("get_index_status: {msg}");
         return (StatusCode::NOT_FOUND, msg).into_response();
     };
-    match index.count().await {
-        Err(err) => {
-            let msg = format!("index.count request error: {err}");
-            debug!("get_index_count: {msg}");
-            (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+    if let Some(index_status) = state
+        .node_state
+        .get_index_status(keyspace_name.as_ref(), index_name.as_ref())
+        .await
+    {
+        match index.count().await {
+            Err(err) => {
+                let msg = format!("index.count request error: {err}");
+                debug!("get_index_status: {msg}");
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+            Ok(count) => (
+                StatusCode::OK,
+                response::Json(IndexStatusResponse {
+                    status: IndexStatus::from(index_status),
+                    count,
+                }),
+            )
+                .into_response(),
         }
-
-        Ok(count) => (StatusCode::OK, response::Json(count)).into_response(),
+    } else {
+        let msg = format!("missing index status: {keyspace_name}.{index_name}");
+        debug!("get_index_status: {msg}");
+        (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
     }
 }
 
@@ -678,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn status_conversion() {
+    fn node_status_conversion() {
         assert_eq!(
             NodeStatus::from(crate::node_state::NodeStatus::Initializing),
             NodeStatus::Initializing
@@ -698,6 +747,22 @@ mod tests {
         assert_eq!(
             NodeStatus::from(crate::node_state::NodeStatus::Serving),
             NodeStatus::Serving
+        );
+    }
+
+    #[test]
+    fn index_status_conversion() {
+        assert_eq!(
+            IndexStatus::from(crate::node_state::IndexStatus::Initializing),
+            IndexStatus::Initializing
+        );
+        assert_eq!(
+            IndexStatus::from(crate::node_state::IndexStatus::FullScanning),
+            IndexStatus::Bootstrapping
+        );
+        assert_eq!(
+            IndexStatus::from(crate::node_state::IndexStatus::Serving),
+            IndexStatus::Serving
         );
     }
 }

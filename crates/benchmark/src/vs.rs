@@ -20,18 +20,16 @@ pub(crate) async fn wait_for_indexes_ready(clients: &[HttpClient], count: usize)
         let url = client.url();
         loop {
             let found = client
-                .count(&KEYSPACE.to_string().into(), &INDEX.to_string().into())
-                .await;
-            if let Some(found) = found {
-                if found == count {
-                    break;
-                }
-                info!(
-                    "Waiting for index {INDEX} at {url} to be ready, found: {found}, expected: {count}"
-                );
-            } else {
-                info!("Waiting for index {INDEX} at {url} to be ready, got no response");
+                .index_status(&KEYSPACE.to_string().into(), &INDEX.to_string().into())
+                .await
+                .expect("failed to get index status")
+                .count;
+            if found == count {
+                break;
             }
+            info!(
+                "Waiting for index {INDEX} at {url} to be ready, found: {found}, expected: {count}"
+            );
             time::sleep(Duration::from_secs(1)).await;
         }
         info!("Index {INDEX} at {url} is ready");

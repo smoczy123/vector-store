@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::IndexId;
 use crate::IndexMetadata;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry::Vacant;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::Instrument;
@@ -21,22 +24,32 @@ pub enum NodeStatus {
     Serving,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexStatus {
+    Initializing,
+    FullScanning,
+    Serving,
+}
+
 pub enum Event {
     ConnectingToDb,
     ConnectedToDb,
     DiscoveringIndexes,
     IndexesDiscovered(HashSet<IndexMetadata>),
+    FullScanStarted(IndexMetadata),
     FullScanFinished(IndexMetadata),
 }
 
 pub enum NodeState {
     SendEvent(Event),
     GetStatus(oneshot::Sender<NodeStatus>),
+    GetIndexStatus(oneshot::Sender<Option<IndexStatus>>, String, String),
 }
 
 pub(crate) trait NodeStateExt {
     async fn send_event(&self, event: Event);
     async fn get_status(&self) -> NodeStatus;
+    async fn get_index_status(&self, keyspace: &str, index: &str) -> Option<IndexStatus>;
 }
 
 impl NodeStateExt for mpsc::Sender<NodeState> {
@@ -55,6 +68,31 @@ impl NodeStateExt for mpsc::Sender<NodeState> {
         rx.await
             .expect("NodeStateExt::get_status: failed to receive status")
     }
+
+    async fn get_index_status(&self, keyspace: &str, index: &str) -> Option<IndexStatus> {
+        let (tx, rx) = oneshot::channel();
+        self.send(NodeState::GetIndexStatus(
+            tx,
+            keyspace.to_string(),
+            index.to_string(),
+        ))
+        .await
+        .expect("NodeStateExt::get_index_status: internal actor should receive request");
+        rx.await
+            .expect("NodeStateExt::get_index_status: failed to receive index status")
+    }
+}
+
+fn update_indexes(idxs: &mut HashMap<IndexId, IndexStatus>, ids: HashSet<IndexId>) {
+    // Remove indexes that are no longer present
+    idxs.retain(|idx, _| ids.contains(idx));
+
+    for id in ids.into_iter() {
+        // Add index only if not already present
+        if let Vacant(e) = idxs.entry(id) {
+            e.insert(IndexStatus::Initializing);
+        }
+    }
 }
 
 pub(crate) async fn new() -> mpsc::Sender<NodeState> {
@@ -66,7 +104,8 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
             debug!("starting");
 
             let mut status = NodeStatus::Initializing;
-            let mut idxs = HashSet::new();
+            let mut initial_idxs = HashSet::new();
+            let mut idxs = HashMap::<IndexId, IndexStatus>::new();
             while let Some(msg) = rx.recv().await {
                 match msg {
                     NodeState::SendEvent(event) => match event {
@@ -85,14 +124,29 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
                                 info!("Service is running, no indexes to build");
                                 continue;
                             }
+
+                            update_indexes(
+                                &mut idxs,
+                                indexes.iter().map(|meta| meta.id()).collect(),
+                            );
+
                             if status == NodeStatus::DiscoveringIndexes {
                                 status = NodeStatus::IndexingEmbeddings;
-                                idxs = indexes;
+                                initial_idxs = indexes;
+                            }
+                        }
+                        Event::FullScanStarted(metadata) => {
+                            if let Some(index_status) = idxs.get_mut(&metadata.id()) {
+                                *index_status = IndexStatus::FullScanning;
                             }
                         }
                         Event::FullScanFinished(metadata) => {
-                            idxs.remove(&metadata);
-                            if idxs.is_empty() && status != NodeStatus::Serving {
+                            if let Some(index_status) = idxs.get_mut(&metadata.id()) {
+                                *index_status = IndexStatus::Serving;
+                            }
+
+                            initial_idxs.remove(&metadata);
+                            if initial_idxs.is_empty() && status != NodeStatus::Serving {
                                 status = NodeStatus::Serving;
                                 info!("Service is running, finished building indexes");
                             }
@@ -102,6 +156,20 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
                         tx.send(status).unwrap_or_else(|_| {
                             tracing::debug!("Failed to send current state");
                         });
+                    }
+                    NodeState::GetIndexStatus(tx, keyspace, index) => {
+                        if let Some(index_status) = idxs.get(&IndexId::new(
+                            &crate::KeyspaceName(keyspace.clone()),
+                            &crate::IndexName(index.clone()),
+                        )) {
+                            tx.send(Some(*index_status)).unwrap_or_else(|_| {
+                                tracing::debug!("Failed to send index status");
+                            });
+                        } else {
+                            tx.send(None).unwrap_or_else(|_| {
+                                tracing::debug!("Failed to send index status for missing index");
+                            });
+                        }
                     }
                 }
             }
