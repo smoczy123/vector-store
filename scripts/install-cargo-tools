@@ -3,7 +3,7 @@
 # This script installs cargo tools for using in CI environments.
 
 CARGO_TOOLS=(
-    "cargo-audit"
+    "cargo-deny"
     "cargo-machete"
 )
 

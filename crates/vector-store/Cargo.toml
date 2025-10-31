@@ -7,6 +7,7 @@
 name = "vector-store"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 default-run = "vector-store"
 
 [[bin]]
