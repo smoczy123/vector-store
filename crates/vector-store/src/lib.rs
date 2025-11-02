@@ -58,8 +58,9 @@ pub struct ScyllaDbUri(String);
 
 #[derive(Clone, Debug)]
 pub struct Credentials {
-    pub username: String,
-    pub password: secrecy::SecretString,
+    pub username: Option<String>,
+    pub password: Option<secrecy::SecretString>,
+    pub certificate_path: Option<std::path::PathBuf>,
 }
 
 #[derive(

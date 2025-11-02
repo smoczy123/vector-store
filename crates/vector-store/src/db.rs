@@ -26,12 +26,18 @@ use crate::node_state::NodeStateExt;
 use anyhow::Context;
 use futures::TryStreamExt;
 use regex::Regex;
+use rustls::ClientConfig;
+use rustls::RootCertStore;
+use rustls::pki_types::CertificateDer;
+use rustls_pemfile::certs;
 use scylla::client::session::Session;
+use scylla::client::session::TlsContext;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlTimeuuid;
 use secrecy::ExposeSecret;
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -313,8 +319,43 @@ struct Statements {
 impl Statements {
     async fn new(uri: ScyllaDbUri, credentials: Option<Credentials>) -> anyhow::Result<Self> {
         let mut builder = SessionBuilder::new().known_node(uri.0.as_str());
-        if let Some(Credentials { username, password }) = credentials {
-            builder = builder.user(username, password.expose_secret());
+
+        if let Some(Credentials {
+            username,
+            password,
+            certificate_path,
+        }) = credentials
+        {
+            // Configure username/password authentication if provided
+            if let (Some(username), Some(password)) = (username, password) {
+                builder = builder.user(username, password.expose_secret());
+                debug!("Username/password authentication configured");
+            }
+
+            // Configure TLS if certificate path is provided
+            if let Some(cert_path) = certificate_path {
+                // Load the CA certificates from the PEM file using async tokio fs
+                let cert_pem = tokio::fs::read(&cert_path)
+                    .await
+                    .with_context(|| format!("Failed to read certificate file at {cert_path:?}"))?;
+
+                let mut reader = Cursor::new(cert_pem);
+                let ca_der: Vec<CertificateDer<'static>> = certs(&mut reader)
+                    .collect::<Result<Vec<_>, _>>()
+                    .context("Failed to parse certificate PEM")?;
+
+                let mut root_store = RootCertStore::empty();
+                root_store.add_parsable_certificates(ca_der);
+
+                let client_cfg = ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+
+                let tls_context = TlsContext::from(Arc::new(client_cfg));
+                builder = builder.tls_context(Some(tls_context));
+
+                debug!("TLS (rustls) enabled with certificate from {:?}", cert_path);
+            }
         }
 
         let session = Arc::new(builder.build().await?);
