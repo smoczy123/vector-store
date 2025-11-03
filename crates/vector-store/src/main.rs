@@ -38,7 +38,7 @@ where
     let password = secrecy::SecretString::new(
         tokio::fs::read_to_string(&password_file)
             .await
-            .map_err(|e| anyhow!("credentials: failed to read password file: {}", e))?
+            .map_err(|e| anyhow!("credentials: failed to read password file: {e}"))?
             .into(),
     );
     Ok(Some(vector_store::Credentials {

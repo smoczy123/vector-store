@@ -11,6 +11,9 @@ use crate::db::DbExt;
 use crate::db_index::DbIndex;
 use crate::factory::IndexFactory;
 use crate::index::Index;
+use crate::index::factory::IndexConfiguration;
+use crate::memory;
+use crate::memory::Memory;
 use crate::monitor_indexes;
 use crate::monitor_items;
 use crate::monitor_items::MonitorItems;
@@ -107,6 +110,7 @@ pub(crate) async fn new(
     let (tx, mut rx) = mpsc::channel(10);
 
     let monitor_actor = monitor_indexes::new(db.clone(), tx.clone(), node_state).await?;
+    let memory_actor = memory::new();
 
     tokio::spawn(
         async move {
@@ -125,6 +129,7 @@ pub(crate) async fn new(
                             index_factory.as_ref(),
                             &mut indexes,
                             metrics.clone(),
+                            memory_actor.clone(),
                         )
                         .await
                     }
@@ -156,6 +161,7 @@ async fn add_index(
     index_factory: &(dyn IndexFactory + Send + Sync),
     indexes: &mut IndexesT,
     metrics: Arc<Metrics>,
+    memory: Sender<Memory>,
 ) {
     let id = metadata.id();
     if indexes.contains_key(&id) {
@@ -166,12 +172,15 @@ async fn add_index(
     }
 
     let index_actor = match index_factory.create_index(
-        id.clone(),
-        metadata.dimensions,
-        metadata.connectivity,
-        metadata.expansion_add,
-        metadata.expansion_search,
-        metadata.space_type,
+        IndexConfiguration {
+            id: id.clone(),
+            dimensions: metadata.dimensions,
+            connectivity: metadata.connectivity,
+            expansion_add: metadata.expansion_add,
+            expansion_search: metadata.expansion_search,
+            space_type: metadata.space_type,
+        },
+        memory,
     ) {
         Ok(actor) => actor,
         Err(err) => {
