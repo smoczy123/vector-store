@@ -243,6 +243,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_index_state_changes_as_expected() {
+        let node_state = new().await;
+        let mut status = node_state.get_status().await;
+        assert_eq!(status, NodeStatus::Initializing);
+        node_state.send_event(Event::ConnectingToDb).await;
+        status = node_state.get_status().await;
+        assert_eq!(status, NodeStatus::ConnectingToDb);
+        node_state.send_event(Event::ConnectedToDb).await;
+        node_state.send_event(Event::DiscoveringIndexes).await;
+        status = node_state.get_status().await;
+        assert_eq!(status, NodeStatus::DiscoveringIndexes);
+        let idx = IndexMetadata {
+            keyspace_name: KeyspaceName("test_keyspace".to_string()),
+            index_name: IndexName("test_index".to_string()),
+            table_name: TableName("test_table".to_string()),
+            target_column: ColumnName("test_column".to_string()),
+            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            version: Uuid::new_v4().into(),
+        };
+        let idxs = HashSet::from([idx.clone()]);
+        node_state.send_event(Event::IndexesDiscovered(idxs)).await;
+
+        // Check index state after discovery
+        let idx_status = node_state
+            .get_index_status(&idx.keyspace_name.0, &idx.index_name.0)
+            .await;
+        assert_eq!(idx_status, Some(IndexStatus::Initializing));
+
+        // Simulate full scan started and finished for idx
+        node_state
+            .send_event(Event::FullScanStarted(idx.clone()))
+            .await;
+        let idx_status = node_state
+            .get_index_status(&idx.keyspace_name.0, &idx.index_name.0)
+            .await;
+        assert_eq!(idx_status, Some(IndexStatus::FullScanning));
+
+        node_state
+            .send_event(Event::FullScanFinished(idx.clone()))
+            .await;
+        let idx_status = node_state
+            .get_index_status(&idx.keyspace_name.0, &idx.index_name.0)
+            .await;
+        assert_eq!(idx_status, Some(IndexStatus::Serving));
+
+        // Simulate removal of the index (empty set)
+        node_state
+            .send_event(Event::IndexesDiscovered(HashSet::new()))
+            .await;
+        let idx_status = node_state
+            .get_index_status(&idx.keyspace_name.0, &idx.index_name.0)
+            .await;
+        assert_eq!(idx_status, None); // Index should be missing
+    }
+
+    #[tokio::test]
     async fn no_indexes_discovered() {
         let node_state = new().await;
 
@@ -295,10 +355,16 @@ mod tests {
 
         // Simulate discovering an index
         node_state
-            .send_event(Event::IndexesDiscovered(HashSet::from([idx])))
+            .send_event(Event::IndexesDiscovered(HashSet::from([idx.clone()])))
             .await;
         // Status should remain Serving
         let status = node_state.get_status().await;
         assert_eq!(status, NodeStatus::Serving);
+
+        // Index state should be present and in Initializing state
+        let idx_status = node_state
+            .get_index_status(&idx.keyspace_name.0, &idx.index_name.0)
+            .await;
+        assert_eq!(idx_status, Some(IndexStatus::Initializing));
     }
 }
