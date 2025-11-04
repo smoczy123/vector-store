@@ -23,6 +23,7 @@ dev-tools = []
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 bimap.workspace = true
 clap.workspace = true
 dashmap = "6.1.0"
@@ -60,3 +61,5 @@ mockall.workspace = true
 reqwest.workspace = true
 httpclient.workspace = true
 tempfile.workspace = true
+temp-env = "0.3.6"
+rcgen = "0.14.5"

@@ -9,7 +9,9 @@ service supports also `.env` files.
 
 | Variable                              | Description                                                                                                              | Default           |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------- |
-| `VECTOR_STORE_URI`                    | The bind address and a listening port of HTTP API                                                                        | `127.0.0.1:6080`  |
+| `VECTOR_STORE_URI`                    | The bind address and a listening port of HTTP(S) API                                                                     | `127.0.0.1:6080`  |
+| `VECTOR_STORE_TLS_CERT_PATH`          | Path to the TLS certificate file to enable HTTPS. Both certificate and key paths must be set.                            |                   |
+| `VECTOR_STORE_TLS_KEY_PATH`           | Path to the TLS private key file to enable HTTPS. Both certificate and key paths must be set.                            |                   |
 | `VECTOR_STORE_SCYLLADB_URI`           | The connection endpoint to ScyllaDB server.                                                                              | `127.0.0.1:9042`  |
 | `VECTOR_STORE_SCYLLADB_USERNAME`      | The username for authenticating with ScyllaDB. If not set, authentication is disabled.                                   |                   |
 | `VECTOR_STORE_SCYLLADB_PASSWORD_FILE` | The path to a file containing the password for ScyllaDB authentication.                                                  |                   |

@@ -34,6 +34,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -454,8 +455,21 @@ pub struct DbEmbedding {
     pub timestamp: Timestamp,
 }
 
-#[derive(derive_more::From)]
-pub struct HttpServerAddr(SocketAddr);
+pub struct TlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+}
+
+pub struct HttpServerConfig {
+    pub addr: SocketAddr,
+    pub tls: Option<TlsConfig>,
+}
+
+impl From<SocketAddr> for HttpServerConfig {
+    fn from(addr: SocketAddr) -> Self {
+        Self { addr, tls: None }
+    }
+}
 
 pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output) -> Output {
     let mut builder = match threads {
@@ -475,7 +489,7 @@ pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output)
 }
 
 pub async fn run(
-    addr: HttpServerAddr,
+    http_server_config: HttpServerConfig,
     node_state: Sender<NodeState>,
     db_actor: Sender<Db>,
     index_factory: Box<dyn IndexFactory + Send + Sync>,
@@ -483,7 +497,7 @@ pub async fn run(
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
     httpserver::new(
-        addr,
+        http_server_config,
         node_state.clone(),
         engine::new(db_actor, index_factory, node_state, metrics.clone()).await?,
         metrics,

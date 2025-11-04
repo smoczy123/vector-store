@@ -88,6 +88,24 @@ where
     }))
 }
 
+fn tls_config() -> anyhow::Result<Option<vector_store::TlsConfig>> {
+    let cert_path = dotenvy::var("VECTOR_STORE_TLS_CERT_PATH").ok();
+    let key_path = dotenvy::var("VECTOR_STORE_TLS_KEY_PATH").ok();
+
+    match (cert_path, key_path) {
+        (Some(cert_path), Some(key_path)) => Ok(Some(vector_store::TlsConfig {
+            cert_path: cert_path.into(),
+            key_path: key_path.into(),
+        })),
+        (None, None) => Ok(None),
+        _ => {
+            bail!(
+                "Both VECTOR_STORE_TLS_CERT_PATH and VECTOR_STORE_TLS_KEY_PATH must be set together"
+            )
+        }
+    }
+}
+
 // Index creating/querying is CPU bound task, so that vector-store uses rayon ThreadPool for them.
 // From the start there was no need (network traffic seems to be not so high) to support more than
 // one thread per network IO bound tasks.
@@ -119,12 +137,14 @@ fn main() -> anyhow::Result<()> {
         info::Info::version()
     );
 
-    let vector_store_addr = dotenvy::var("VECTOR_STORE_URI")
-        .unwrap_or("127.0.0.1:6080".to_string())
-        .to_socket_addrs()?
-        .next()
-        .ok_or(anyhow!("Unable to parse VECTOR_STORE_URI env (host:port)"))?
-        .into();
+    let http_server_config = vector_store::HttpServerConfig {
+        addr: dotenvy::var("VECTOR_STORE_URI")
+            .unwrap_or("127.0.0.1:6080".to_string())
+            .to_socket_addrs()?
+            .next()
+            .ok_or(anyhow!("Unable to parse VECTOR_STORE_URI env (host:port)"))?,
+        tls: tls_config()?,
+    };
 
     let scylladb_uri = dotenvy::var("VECTOR_STORE_SCYLLADB_URI")
         .unwrap_or("127.0.0.1:9042".to_string())
@@ -156,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         .await?;
 
         let (_server_actor, addr) =
-            vector_store::run(vector_store_addr, node_state, db_actor, index_factory).await?;
+            vector_store::run(http_server_config, node_state, db_actor, index_factory).await?;
         tracing::info!("listening on {addr}");
 
         vector_store::wait_for_shutdown().await;
@@ -319,6 +339,61 @@ mod tests {
         assert_eq!(
             creds.certificate_path,
             Some(std::path::PathBuf::from("/path/to/cert.pem"))
+        );
+    }
+
+    #[test]
+    fn tls_config_none_when_no_env_vars() {
+        temp_env::with_vars_unset(
+            ["VECTOR_STORE_TLS_CERT_PATH", "VECTOR_STORE_TLS_KEY_PATH"],
+            || {
+                let config = tls_config();
+                assert!(config.is_ok());
+                assert!(config.unwrap().is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn tls_config_success_when_both_set() {
+        temp_env::with_vars(
+            [
+                ("VECTOR_STORE_TLS_CERT_PATH", Some("/path/to/cert.pem")),
+                ("VECTOR_STORE_TLS_KEY_PATH", Some("/path/to/key.pem")),
+            ],
+            || {
+                let config = tls_config().unwrap().unwrap();
+                assert_eq!(config.cert_path.to_str(), Some("/path/to/cert.pem"));
+                assert_eq!(config.key_path.to_str(), Some("/path/to/key.pem"));
+            },
+        );
+    }
+
+    #[test]
+    fn tls_config_error_when_only_cert_set() {
+        temp_env::with_vars(
+            [
+                ("VECTOR_STORE_TLS_CERT_PATH", Some("/path/to/cert.pem")),
+                ("VECTOR_STORE_TLS_KEY_PATH", None),
+            ],
+            || {
+                let result = tls_config();
+                assert!(result.is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn tls_config_error_when_only_key_set() {
+        temp_env::with_vars(
+            [
+                ("VECTOR_STORE_TLS_CERT_PATH", None),
+                ("VECTOR_STORE_TLS_KEY_PATH", Some("/path/to/key.pem")),
+            ],
+            || {
+                let result = tls_config();
+                assert!(result.is_err());
+            },
         );
     }
 }
