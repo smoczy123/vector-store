@@ -6,6 +6,7 @@
 use crate::INDEX;
 use crate::KEYSPACE;
 use httpclient::HttpClient;
+use httpclient::IndexStatus;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::time;
@@ -15,21 +16,22 @@ pub(crate) fn new_http_clients(addrs: Vec<SocketAddr>) -> Vec<HttpClient> {
     addrs.into_iter().map(HttpClient::new).collect()
 }
 
-pub(crate) async fn wait_for_indexes_ready(clients: &[HttpClient], count: usize) {
+pub(crate) async fn wait_for_indexes_ready(clients: &[HttpClient]) {
     for client in clients {
         let url = client.url();
         loop {
-            let found = client
+            let status = client
                 .index_status(&KEYSPACE.to_string().into(), &INDEX.to_string().into())
                 .await
                 .expect("failed to get index status")
-                .count;
-            if found == count {
+                .status;
+            if status == IndexStatus::Serving {
                 break;
+            } else {
+                info!(
+                    "Waiting for index {INDEX} at {url} to be ready (current status: {status:?})"
+                );
             }
-            info!(
-                "Waiting for index {INDEX} at {url} to be ready, found: {found}, expected: {count}"
-            );
             time::sleep(Duration::from_secs(1)).await;
         }
         info!("Index {INDEX} at {url} is ready");

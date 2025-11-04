@@ -15,6 +15,7 @@ use vector_store::IndexName;
 use vector_store::KeyspaceName;
 use vector_store::Limit;
 use vector_store::Vector;
+pub use vector_store::httproutes::IndexStatus;
 use vector_store::httproutes::IndexStatusResponse;
 use vector_store::httproutes::InfoResponse;
 use vector_store::httproutes::NodeStatus;
