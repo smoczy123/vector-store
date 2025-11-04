@@ -316,7 +316,8 @@ impl Statements {
         tx: mpsc::Sender<DbEmbedding>,
         completed_scan_length: Arc<AtomicU64>,
     ) {
-        let semaphore = Arc::new(Semaphore::new(self.nr_parallel_queries().get()));
+        let semaphore_capacity = self.nr_parallel_queries().get();
+        let semaphore = Arc::new(Semaphore::new(semaphore_capacity));
 
         for (begin, end) in self.fullscan_ranges() {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
@@ -342,6 +343,12 @@ impl Statements {
                 drop(permit);
             }
         }
+
+        // Acquire all permits to wait until all spawned tasks have finished and released their permits.
+        let _permits = semaphore
+            .acquire_many(semaphore_capacity as u32)
+            .await
+            .unwrap();
     }
 
     fn nr_shards_in_cluster(&self) -> NonZeroUsize {
