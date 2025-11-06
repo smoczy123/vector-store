@@ -29,6 +29,7 @@ EOF
 # run scylla in docker
 ssh ubuntu@$ip_ext docker run --rm -d \
     --name scylla \
+    --ulimit nofile=4294967295:4294967295 \
     -v /mnt/data/scylla:/var/lib/scylla \
     -v /home/ubuntu/cassandra-rackdc.properties:/etc/scylla/cassandra-rackdc.properties:ro \
     -p 7000:7000 \
@@ -36,6 +37,7 @@ ssh ubuntu@$ip_ext docker run --rm -d \
     -p 7199:7199 \
     -p 9042:9042 \
     -p 9160:9160 \
+    -p 9180:9180 \
     -p 10000:10000 \
     -p 19042:19042 \
     $SCYLLA_DOCKER_IMAGE \

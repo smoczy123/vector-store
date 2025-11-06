@@ -11,21 +11,16 @@ source $envs
 idx=$2
 [[ -z $idx ]] && (echo idx not provided ; exit 1)
 
-vs=$3
-
 ip_ext=VS_IP_${idx}_EXT
 ip_ext=${!ip_ext}
-ip_int=VS_IP_${idx}_INT
-ip_int=${!ip_int}
 ip_db=DB_IP_${idx}_INT
 ip_db=${!ip_db}
 
-# Stop old instance
-ssh ubuntu@$ip_ext killall vector-store || true
-ssh ubuntu@$ip_ext killall -9 vector-store || true
-
-# Copy binary if provided
-[[ -x $vs ]] && scp $vs ubuntu@$ip_ext:~/vector-store
-
-# Run new instance
-ssh ubuntu@$ip_ext VECTOR_STORE_URI=$ip_int:6080 VECTOR_STORE_SCYLLADB_URI=$ip_db:9042 /home/ubuntu/vector-store
+# run vs in docker
+ssh ubuntu@$ip_ext sudo docker run --rm -d \
+    --name vs \
+    --ulimit nofile=4294967295:4294967295 \
+    -p 6080:6080 \
+    -e VECTOR_STORE_URI=0.0.0.0:6080 \
+    -e VECTOR_STORE_SCYLLADB_URI=$ip_db:9042 \
+    $VS_DOCKER_IMAGE
