@@ -62,9 +62,6 @@ enum Command {
 
     BuildIndex {
         #[clap(long)]
-        data_dir: PathBuf,
-
-        #[clap(long)]
         scylla: SocketAddr,
 
         #[clap(long, required = true)]
@@ -146,7 +143,6 @@ async fn main() {
         }
 
         Command::BuildIndex {
-            data_dir,
             scylla,
             vector_store,
             metric_type,
@@ -154,14 +150,13 @@ async fn main() {
             ef_construction,
             ef_search,
         } => {
-            let count = data::count(&data_dir).await;
             let scylla = Scylla::new(scylla).await;
             let clients = vs::new_http_clients(vector_store);
             let (duration, _) = measure_duration(async move {
                 scylla
                     .create_index(metric_type, m, ef_construction, ef_search)
                     .await;
-                vs::wait_for_indexes_ready(&clients, count).await;
+                vs::wait_for_indexes_ready(&clients).await;
             })
             .await;
             info!("Build Index took {duration:.2?}");

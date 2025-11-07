@@ -124,13 +124,13 @@
         }
       }
     },
-    "/api/v1/indexes/{keyspace}/{index}/count": {
+    "/api/v1/indexes/{keyspace}/{index}/status": {
       "get": {
         "tags": [
           "scylla-vector-store-index"
         ],
-        "description": "Returns the number of vectors indexed by a specific vector index. Reflects only available vectors and excludes any 'tombstones' (elements marked for deletion but still present in the index structure).",
-        "operationId": "get_index_count",
+        "description": "Retrieves the current operational status and vector count for a specific vector index. The response includes the index's state and the total number of vectors currently indexed (excluding tombstoned or deleted entries). This endpoint enables clients to monitor index readiness and data availability for search operations.",
+        "operationId": "get_index_status",
         "parameters": [
           {
             "name": "keyspace",
@@ -144,7 +144,7 @@
           {
             "name": "index",
             "in": "path",
-            "description": "The name of the ScyllaDB vector index within the specified keyspace to count vectors for.",
+            "description": "The name of the ScyllaDB vector index within the specified keyspace to check status of.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/IndexName"
@@ -153,12 +153,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful count operation. Returns the total number of vectors currently stored in the index.",
+            "description": "Successful operation. Returns the current operational status of the specified vector index, including its state and the total number of vectors currently indexed.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "integer",
-                  "minimum": 0
+                  "$ref": "#/components/schemas/IndexStatusResponse"
+                },
+                "example": {
+                  "count": 12345,
+                  "status": "SERVING"
                 }
               }
             }
@@ -174,7 +177,7 @@
             }
           },
           "500": {
-            "description": "Error while counting vectors. Possible causes: internal error, or issues accessing the database.",
+            "description": "Error while checking index state or counting vectors. Possible causes: internal error, or issues accessing the database.",
             "content": {
               "application/json": {
                 "schema": {
@@ -220,7 +223,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/NodeStatus"
                 }
               }
             }
@@ -271,6 +274,36 @@
         "type": "string",
         "description": "A name of the vector index in a db."
       },
+      "IndexStatus": {
+        "type": "string",
+        "description": "Operational status of the vector index.",
+        "enum": [
+          "INITIALIZING",
+          "BOOTSTRAPPING",
+          "SERVING"
+        ],
+        "x-enum-descriptions": [
+          "The index has been discovered and is being initialized.",
+          "The index is performing the initial full scan of the underlying table to populate the index.",
+          "The index has completed the initial table scan. It is now monitoring the database for changes."
+        ]
+      },
+      "IndexStatusResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/IndexStatus"
+          }
+        }
+      },
       "InfoResponse": {
         "type": "object",
         "required": [
@@ -300,6 +333,22 @@
       "Limit": {
         "type": "integer",
         "format": "int32"
+      },
+      "NodeStatus": {
+        "type": "string",
+        "description": "Operational status of the Vector Store indexing service.",
+        "enum": [
+          "INITIALIZING",
+          "CONNECTING_TO_DB",
+          "BOOTSTRAPPING",
+          "SERVING"
+        ],
+        "x-enum-descriptions": [
+          "The node is starting up.",
+          "The node is establishing a connection to ScyllaDB.",
+          "The node is discovering available vector indexes in ScyllaDB.",
+          "The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes."
+        ]
       },
       "PostIndexAnnRequest": {
         "type": "object",
@@ -340,22 +389,6 @@
             }
           }
         }
-      },
-      "Status": {
-        "type": "string",
-        "description": "Operational status of the Vector Store indexing service.",
-        "enum": [
-          "INITIALIZING",
-          "CONNECTING_TO_DB",
-          "BOOTSTRAPPING",
-          "SERVING"
-        ],
-        "x-enum-descriptions": [
-          "The node is starting up.",
-          "The node is establishing a connection to ScyllaDB.",
-          "The node is discovering available vector indexes in ScyllaDB.",
-          "The node has completed the initial database scan and built the indexes defined at that time. It is now monitoring the database for changes."
-        ]
       },
       "Vector": {
         "type": "array",
