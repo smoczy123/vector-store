@@ -18,7 +18,10 @@ use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+use tokio::time;
+use tracing::error;
 use tracing::info;
 use uuid::Uuid;
 
@@ -179,21 +182,27 @@ impl Scylla {
     }
 
     pub(crate) async fn search(&self, query: &Query) -> f64 {
-        let found = self
-            .0
-            .session
-            .execute_iter(
-                self.0.st_search.as_ref().unwrap().clone(),
-                (&query.query, query.neighbors.len() as i32),
-            )
-            .await
-            .unwrap()
-            .rows_stream::<(i64,)>()
-            .unwrap()
-            .map_ok(|(vector_id,)| vector_id)
-            .try_collect()
-            .await
-            .unwrap();
+        let found = time::timeout(Duration::from_secs(10), async move {
+            self.0
+                .session
+                .execute_iter(
+                    self.0.st_search.as_ref().unwrap().clone(),
+                    (&query.query, query.neighbors.len() as i32),
+                )
+                .await
+                .unwrap()
+                .rows_stream::<(i64,)>()
+                .unwrap()
+                .map_ok(|(vector_id,)| vector_id)
+                .try_collect()
+                .await
+                .unwrap()
+        })
+        .await;
+        let Ok(found) = found else {
+            error!("Search query timed out");
+            return 0.0;
+        };
         query.neighbors.intersection(&found).count() as f64 / query.neighbors.len() as f64
     }
 }
