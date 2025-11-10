@@ -10,6 +10,7 @@ pub mod httproutes;
 mod httpserver;
 mod index;
 mod info;
+mod memory;
 mod metrics;
 mod monitor_indexes;
 mod monitor_items;

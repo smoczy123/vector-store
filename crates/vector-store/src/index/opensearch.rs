@@ -15,7 +15,9 @@ use crate::PrimaryKey;
 use crate::SpaceType;
 use crate::Vector;
 use crate::index::actor::Index;
+use crate::index::factory::IndexConfiguration;
 use crate::index::validator;
+use crate::memory::Memory;
 use anyhow::anyhow;
 use bimap::BiMap;
 use opensearch::DeleteParts;
@@ -72,20 +74,16 @@ impl Display for SpaceType {
 impl IndexFactory for OpenSearchIndexFactory {
     fn create_index(
         &self,
-        id: IndexId,
-        dimensions: Dimensions,
-        connectivity: Connectivity,
-        expansion_add: ExpansionAdd,
-        expansion_search: ExpansionSearch,
-        space_type: SpaceType,
+        index: IndexConfiguration,
+        _: mpsc::Sender<Memory>,
     ) -> anyhow::Result<mpsc::Sender<Index>> {
         new(
-            id,
-            dimensions,
-            connectivity,
-            expansion_add,
-            expansion_search,
-            space_type,
+            index.id,
+            index.dimensions,
+            index.connectivity,
+            index.expansion_add,
+            index.expansion_search,
+            index.space_type,
             self.client.clone(),
         )
     }

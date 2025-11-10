@@ -10,17 +10,23 @@ use crate::ExpansionSearch;
 use crate::IndexId;
 use crate::SpaceType;
 use crate::index::actor::Index;
+use crate::memory::Memory;
 use tokio::sync::mpsc;
+
+pub struct IndexConfiguration {
+    pub id: IndexId,
+    pub dimensions: Dimensions,
+    pub connectivity: Connectivity,
+    pub expansion_add: ExpansionAdd,
+    pub expansion_search: ExpansionSearch,
+    pub space_type: SpaceType,
+}
 
 pub trait IndexFactory {
     fn create_index(
         &self,
-        id: IndexId,
-        dimensions: Dimensions,
-        connectivity: Connectivity,
-        expansion_add: ExpansionAdd,
-        expansion_search: ExpansionSearch,
-        space_type: SpaceType,
+        index: IndexConfiguration,
+        memory: mpsc::Sender<Memory>,
     ) -> anyhow::Result<mpsc::Sender<Index>>;
     fn index_engine_version(&self) -> String;
 }

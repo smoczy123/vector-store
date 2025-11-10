@@ -114,7 +114,7 @@ impl HttpClient {
         } else {
             let status = response.status();
             let error_text = response.text().await?;
-            Err(anyhow::anyhow!("HTTP {}: {}", status, error_text))
+            Err(anyhow::anyhow!("HTTP {status}: {error_text}"))
         }
     }
 
