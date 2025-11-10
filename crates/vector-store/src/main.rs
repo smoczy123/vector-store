@@ -17,33 +17,74 @@ mod info;
 #[clap(version)]
 struct Args {}
 
+fn dotenvy_to_std_var(key: &'static str) -> Result<String, std::env::VarError> {
+    dotenvy::var(key).map_err(|_| std::env::VarError::NotPresent)
+}
+
 async fn credentials<F>(env: F) -> anyhow::Result<Option<vector_store::Credentials>>
 where
     F: Fn(&'static str) -> Result<String, std::env::VarError>,
 {
     const USERNAME_ENV: &str = "VECTOR_STORE_SCYLLADB_USERNAME";
     const PASS_FILE_ENV: &str = "VECTOR_STORE_SCYLLADB_PASSWORD_FILE";
-
-    let Ok(username) = env(USERNAME_ENV) else {
-        return Ok(None);
+    const CERT_FILE_ENV: &str = "VECTOR_STORE_SCYLLADB_CERTIFICATE_FILE";
+    // Check for certificate file
+    let certificate_path = match env(CERT_FILE_ENV) {
+        Ok(val) => {
+            tracing::debug!("{} = {:?}", CERT_FILE_ENV, val);
+            Some(std::path::PathBuf::from(val))
+        }
+        Err(_) => None,
     };
 
-    if username.is_empty() {
-        bail!("credentials: {USERNAME_ENV} must not be empty");
+    // Check for username/password authentication
+    let username = match env(USERNAME_ENV) {
+        Ok(val) => {
+            tracing::debug!("{} = {}", USERNAME_ENV, val);
+            Some(val)
+        }
+        Err(_) => None,
+    };
+
+    // If neither certificate nor username is provided, return None
+    if certificate_path.is_none() && username.is_none() {
+        tracing::debug!(
+            "No credentials or certificate configured, connecting without authentication"
+        );
+        return Ok(None);
     }
 
-    let Ok(password_file) = env(PASS_FILE_ENV) else {
-        bail!("credentials: {PASS_FILE_ENV} env required when {USERNAME_ENV} is set");
+    // Handle username/password if username is provided
+    let (username, password) = if let Some(username) = username {
+        if username.is_empty() {
+            bail!("credentials: {USERNAME_ENV} must not be empty");
+        }
+
+        let Ok(password_file) = env(PASS_FILE_ENV) else {
+            bail!("credentials: {PASS_FILE_ENV} env required when {USERNAME_ENV} is set");
+        };
+
+        let password = secrecy::SecretString::new(
+            tokio::fs::read_to_string(&password_file)
+                .await
+                .map_err(|e| anyhow!("credentials: failed to read password file: {e}"))?
+                .into(),
+        );
+
+        (
+            Some(username),
+            Some(secrecy::SecretString::new(
+                password.expose_secret().trim().into(),
+            )),
+        )
+    } else {
+        tracing::info!("No username/password configured, using certificate-only authentication");
+        (None, None)
     };
-    let password = secrecy::SecretString::new(
-        tokio::fs::read_to_string(&password_file)
-            .await
-            .map_err(|e| anyhow!("credentials: failed to read password file: {e}"))?
-            .into(),
-    );
     Ok(Some(vector_store::Credentials {
         username,
-        password: secrecy::SecretString::new(password.expose_secret().trim().into()),
+        password,
+        certificate_path,
     }))
 }
 
@@ -51,6 +92,10 @@ where
 // From the start there was no need (network traffic seems to be not so high) to support more than
 // one thread per network IO bound tasks.
 fn main() -> anyhow::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("install ring crypto provider");
+
     _ = dotenvy::dotenv();
 
     let disable_colors: bool = dotenvy::var("VECTOR_STORE_DISABLE_COLORS")
@@ -106,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         let db_actor = vector_store::new_db(
             scylladb_uri,
             node_state.clone(),
-            credentials(std::env::var).await?,
+            credentials(dotenvy_to_std_var).await?,
         )
         .await?;
 
@@ -216,8 +261,9 @@ mod tests {
 
         let creds = credentials(env).await.unwrap().unwrap();
 
-        assert_eq!(creds.username, USERNAME);
-        assert_eq!(creds.password.expose_secret(), PASSWORD);
+        assert_eq!(creds.username, Some(USERNAME.to_string()));
+        assert_eq!(creds.password.as_ref().unwrap().expose_secret(), PASSWORD);
+        assert_eq!(creds.certificate_path, None);
     }
 
     #[tokio::test]
@@ -230,7 +276,49 @@ mod tests {
 
         let creds = credentials(env).await.unwrap().unwrap();
 
-        assert_eq!(creds.username, USERNAME);
-        assert_eq!(creds.password.expose_secret(), "my_trimmed_pass");
+        assert_eq!(creds.username, Some(USERNAME.to_string()));
+        assert_eq!(
+            creds.password.as_ref().unwrap().expose_secret(),
+            "my_trimmed_pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_with_certificate_only() {
+        let env = mock_env(HashMap::from([(
+            "VECTOR_STORE_SCYLLADB_CERTIFICATE_FILE",
+            "/path/to/cert.pem".into(),
+        )]));
+
+        let creds = credentials(env).await.unwrap().unwrap();
+
+        assert_eq!(creds.username, None);
+        assert!(creds.password.is_none());
+        assert_eq!(
+            creds.certificate_path,
+            Some(std::path::PathBuf::from("/path/to/cert.pem"))
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_with_both_username_and_certificate() {
+        let file = pass_file(PASSWORD);
+        let env = mock_env(HashMap::from([
+            ("VECTOR_STORE_SCYLLADB_USERNAME", USERNAME.into()),
+            ("VECTOR_STORE_SCYLLADB_PASSWORD_FILE", path(&file)),
+            (
+                "VECTOR_STORE_SCYLLADB_CERTIFICATE_FILE",
+                "/path/to/cert.pem".into(),
+            ),
+        ]));
+
+        let creds = credentials(env).await.unwrap().unwrap();
+
+        assert_eq!(creds.username, Some(USERNAME.to_string()));
+        assert_eq!(creds.password.as_ref().unwrap().expose_secret(), PASSWORD);
+        assert_eq!(
+            creds.certificate_path,
+            Some(std::path::PathBuf::from("/path/to/cert.pem"))
+        );
     }
 }
