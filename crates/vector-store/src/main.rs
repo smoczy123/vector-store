@@ -110,7 +110,7 @@ fn tls_config() -> anyhow::Result<Option<vector_store::TlsConfig>> {
 // From the start there was no need (network traffic seems to be not so high) to support more than
 // one thread per network IO bound tasks.
 fn main() -> anyhow::Result<()> {
-    rustls::crypto::ring::default_provider()
+    rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("install ring crypto provider");
 
