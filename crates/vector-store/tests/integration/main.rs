@@ -4,6 +4,7 @@
  */
 
 mod db_basic;
+mod https;
 mod info;
 mod mock_opensearch;
 mod openapi;

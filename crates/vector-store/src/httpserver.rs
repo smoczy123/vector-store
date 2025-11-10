@@ -3,62 +3,94 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-use crate::HttpServerAddr;
+use crate::HttpServerConfig;
 use crate::engine::Engine;
 use crate::httproutes;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
-use axum::serve::ListenerExt;
+use axum_server::Handle;
+use axum_server::accept::NoDelayAcceptor;
+use axum_server::tls_rustls::RustlsAcceptor;
+use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
-use tracing::error;
 
 pub(crate) enum HttpServer {}
 
+async fn load_tls_config(config: &HttpServerConfig) -> anyhow::Result<Option<RustlsConfig>> {
+    match &config.tls {
+        Some(tls) => {
+            let config = RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to load TLS config: {e}"))?;
+            Ok(Some(config))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn protocol(tls_config: &Option<RustlsConfig>) -> &'static str {
+    if tls_config.is_some() {
+        "HTTPS"
+    } else {
+        "HTTP"
+    }
+}
+
 pub(crate) async fn new(
-    addr: HttpServerAddr,
+    config: HttpServerConfig,
     state: Sender<NodeState>,
     engine: Sender<Engine>,
     metrics: Arc<Metrics>,
     index_engine_version: String,
 ) -> anyhow::Result<(Sender<HttpServer>, SocketAddr)> {
-    let listener = TcpListener::bind(addr.0).await?;
-    let addr = listener.local_addr()?;
-    let listener = listener.tap_io(|socket| {
-        if let Err(err) = socket.set_nodelay(true) {
-            error!("Failed to set TCP_NODELAY on HTTP server socket: {err}");
-        }
-    });
-
     // minimal size as channel is used as a lifetime guard
     const CHANNEL_SIZE: usize = 1;
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
 
-    let notify = Arc::new(Notify::new());
+    let handle = Handle::new();
+    let tls_config = load_tls_config(&config).await?;
+    let protocol = protocol(&tls_config);
 
     tokio::spawn({
-        let notify = Arc::clone(&notify);
+        let handle = handle.clone();
         async move {
             while rx.recv().await.is_some() {}
-            notify.notify_one();
+            tracing::info!("{protocol} server shutting down");
+            // 10 secs is how long docker will wait to force shutdown
+            handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
         }
     });
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            httproutes::new(engine, metrics, state, index_engine_version),
-        )
-        .with_graceful_shutdown(async move {
-            notify.notified().await;
-            tracing::info!("HTTP server shutting down");
-        })
-        .await
-        .expect("failed to run web server");
-    });
 
+    tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            let router = httproutes::new(engine, metrics, state, index_engine_version);
+            let server = axum_server::bind(config.addr).handle(handle);
+            let acceptor = NoDelayAcceptor::new();
+
+            let result = match tls_config {
+                Some(config) => {
+                    server
+                        .acceptor(RustlsAcceptor::new(config).acceptor(acceptor))
+                        .serve(router.into_make_service())
+                        .await
+                }
+                _ => {
+                    server
+                        .acceptor(acceptor)
+                        .serve(router.into_make_service())
+                        .await
+                }
+            };
+            result.unwrap_or_else(|e| panic!("failed to run {protocol} server: {e}"));
+        }
+    });
+    let addr = handle
+        .listening()
+        .await
+        .ok_or(anyhow::anyhow!("failed to get listening address"))?;
     Ok((tx, addr))
 }
