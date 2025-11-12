@@ -56,6 +56,9 @@ enum Command {
         #[clap(long)]
         scylla: SocketAddr,
 
+        #[clap(long)]
+        rf: usize,
+
         #[clap(long, value_parser = clap::value_parser!(u32).range(1..=1_000_000))]
         concurrency: u32,
     },
@@ -129,6 +132,7 @@ async fn main() {
         Command::BuildTable {
             data_dir,
             scylla,
+            rf,
             concurrency,
         } => {
             let dataset = data::new(data_dir).await;
@@ -136,7 +140,7 @@ async fn main() {
             let stream = dataset.vector_stream().await;
             let scylla = Scylla::new(scylla).await;
             let (duration, _) = measure_duration(async move {
-                scylla.create_table(dimension).await;
+                scylla.create_table(dimension, rf).await;
                 scylla.upload_vectors(stream, concurrency as usize).await;
             })
             .await;
