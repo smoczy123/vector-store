@@ -21,20 +21,30 @@ ip_vs=${!ip_vs}
 # setup seeds for scylla cluster if setup for second or later node
 [[ $idx -gt 0 ]] && seeds="--seeds=$DB_IP_0_INT"
 
+ssh ubuntu@$ip_ext bash <<EOF
+echo "dc=datacenter1" > /home/ubuntu/cassandra-rackdc.properties
+echo "rack=rack$idx" >> /home/ubuntu/cassandra-rackdc.properties
+EOF
+
 # run scylla in docker
 ssh ubuntu@$ip_ext docker run --rm -d \
     --name scylla \
+    --ulimit nofile=4294967295:4294967295 \
     -v /mnt/data/scylla:/var/lib/scylla \
+    -v /home/ubuntu/cassandra-rackdc.properties:/etc/scylla/cassandra-rackdc.properties:ro \
     -p 7000:7000 \
     -p 7001:7001 \
     -p 7199:7199 \
     -p 9042:9042 \
     -p 9160:9160 \
+    -p 9180:9180 \
     -p 10000:10000 \
     -p 19042:19042 \
     $SCYLLA_DOCKER_IMAGE \
-        --vector-store-uri http://$ip_vs:6080 \
+        --vector-store-primary-uri http://$ip_vs:6080 \
         --batch-size-warn-threshold-in-kb=1024 \
         --broadcast-address $ip_int \
         --broadcast-rpc-address $ip_int \
+        --rf-rack-valid-keyspaces true \
+        --endpoint-snitch GossipingPropertyFileSnitch \
         $seeds

@@ -21,7 +21,7 @@ cat $LOCAL_SSH_PUB_KEY | ssh -i $AWS_SSH_KEY ubuntu@$ip_ext "cat >> /home/ubuntu
 ssh ubuntu@$ip_ext bash <<EOF
 set -e
 sudo apt update
-sudo apt install -y docker.io
+sudo apt install -y docker.io tmux
 sudo usermod -a -G docker ubuntu
 EOF
 
@@ -30,6 +30,8 @@ set -e
 
 # tune system for enough aio resources
 echo 104857600 | sudo tee /proc/sys/fs/aio-max-nr
+# tune system for enough number of file open resources
+echo 4294967295 | sudo tee /proc/sys/fs/nr_open
 
 docker pull $SCYLLA_DOCKER_IMAGE
 

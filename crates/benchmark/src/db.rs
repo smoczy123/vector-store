@@ -8,18 +8,21 @@ use crate::KEYSPACE;
 use crate::MetricType;
 use crate::Query;
 use crate::TABLE;
-use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use futures::stream::BoxStream;
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
 use std::net::SocketAddr;
-use std::pin::pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+use tokio::time;
+use tracing::error;
+use tracing::info;
 use uuid::Uuid;
 
 const ID: &str = "id";
@@ -65,7 +68,6 @@ impl Scylla {
                 "
                 CREATE KEYSPACE {KEYSPACE}
                 WITH replication = {{'class': 'NetworkTopologyStrategy' , 'replication_factor': '3'}}
-                AND tablets = {{'enabled': 'false'}}
                 "
             ),
             &[],
@@ -141,7 +143,7 @@ impl Scylla {
 
     pub(crate) async fn upload_vectors(
         &self,
-        stream: impl Stream<Item = (i64, Vec<f32>)>,
+        mut stream: BoxStream<'static, (i64, Vec<f32>)>,
         concurrency: usize,
     ) {
         let mut st_insert = self
@@ -156,11 +158,17 @@ impl Scylla {
 
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
-        let mut stream = pin!(stream);
+        let mut count = 0;
         while let Some((vector_id, vector)) = stream.next().await {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let scylla = Arc::clone(&self.0);
             let st_insert = st_insert.clone();
+
+            count += 1;
+            if count % 1_000_000 == 0 {
+                info!("Uploading vector {}M", count / 1_000_000);
+            }
+
             tokio::spawn(async move {
                 scylla
                     .session
@@ -174,21 +182,27 @@ impl Scylla {
     }
 
     pub(crate) async fn search(&self, query: &Query) -> f64 {
-        let found = self
-            .0
-            .session
-            .execute_iter(
-                self.0.st_search.as_ref().unwrap().clone(),
-                (&query.query, query.neighbors.len() as i32),
-            )
-            .await
-            .unwrap()
-            .rows_stream::<(i64,)>()
-            .unwrap()
-            .map_ok(|(vector_id,)| vector_id)
-            .try_collect()
-            .await
-            .unwrap();
+        let found = time::timeout(Duration::from_secs(10), async move {
+            self.0
+                .session
+                .execute_iter(
+                    self.0.st_search.as_ref().unwrap().clone(),
+                    (&query.query, query.neighbors.len() as i32),
+                )
+                .await
+                .unwrap()
+                .rows_stream::<(i64,)>()
+                .unwrap()
+                .map_ok(|(vector_id,)| vector_id)
+                .try_collect()
+                .await
+                .unwrap()
+        })
+        .await;
+        let Ok(found) = found else {
+            error!("Search query timed out");
+            return 0.0;
+        };
         query.neighbors.intersection(&found).count() as f64 / query.neighbors.len() as f64
     }
 }
