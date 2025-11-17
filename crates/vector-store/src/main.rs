@@ -80,9 +80,9 @@ fn main() -> anyhow::Result<()> {
         info::Info::version()
     );
 
-    // Create ConfigManager for reload capability
-    let config_manager = ConfigManager::new(loaded_config);
-    let config = config_manager.config();
+    // Create ConfigManager with initial configuration
+    let (config_manager, config_rx) = ConfigManager::new(loaded_config);
+    let config = config_rx.borrow().clone();
 
     let vector_store_addr = config.vector_store_addr;
 
@@ -95,6 +95,9 @@ fn main() -> anyhow::Result<()> {
     let threads = config.threads;
 
     vector_store::block_on(threads, async move || {
+        // Start SIGHUP handler now that we're in the Tokio runtime
+        config_manager.start(dotenvy_to_std_var);
+
         let node_state = vector_store::new_node_state().await;
 
         let opensearch_addr = config.opensearch_addr.clone();
