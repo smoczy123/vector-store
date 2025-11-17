@@ -62,6 +62,54 @@ impl ConfigManager {
         Ok(())
     }
 
+    /// Start listening for SIGHUP signals and reload configuration when received.
+    /// This function runs in a loop and should be spawned in a separate task.
+    /// The loop will exit when there are no more configuration receivers.
+    ///
+    /// Note: This is called automatically by ConfigManager::start(), so you typically
+    /// don't need to call this manually.
+    ///
+    /// # Arguments
+    /// * `env` - Function to read environment variables
+    pub async fn handle_sighup<F>(self, env: F)
+    where
+        F: Fn(&'static str) -> Result<String, std::env::VarError>,
+    {
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("failed to install SIGHUP handler");
+
+        // Check receiver count periodically to allow loop exit even without SIGHUP
+        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = sighup.recv() => {
+                    tracing::info!("Received SIGHUP signal, reloading configuration...");
+
+                    // Re-read the .env file to pick up any changes
+                    if let Err(e) = dotenvy::from_filename_override(".env") {
+                        tracing::debug!("No .env file found or error reading it: {}", e);
+                    }
+
+                    match self.reload_config(&env).await {
+                        Ok(()) => {
+                            tracing::info!("Configuration reloaded successfully");
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to reload configuration: {}", e);
+                        }
+                    }
+                }
+                _ = check_interval.tick() => {
+                    // Periodically check if there are any receivers left
+                    if self.config_tx.receiver_count() == 0 {
+                        tracing::debug!("No more configuration receivers, stopping SIGHUP handler");
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
