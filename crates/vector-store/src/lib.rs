@@ -42,6 +42,7 @@ use tokio::runtime::Builder;
 use tokio::runtime::Handle;
 use tokio::signal;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::task;
 use utoipa::PartialSchema;
@@ -493,6 +494,11 @@ impl From<SocketAddr> for HttpServerConfig {
         Self { addr, tls: None }
     }
 }
+
+#[derive(Clone)]
+/// Marker struct to indicate that an async operation is in progress.
+#[allow(dead_code)]
+pub struct AsyncInProgress(mpsc::Sender<()>);
 
 pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output) -> Output {
     let mut builder = match threads {

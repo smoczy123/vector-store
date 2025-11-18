@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::AsyncInProgress;
 use crate::DbEmbedding;
 use crate::IndexId;
 use crate::Metrics;
@@ -23,7 +24,7 @@ pub(crate) enum MonitorItems {}
 
 pub(crate) async fn new(
     id: IndexId,
-    mut embeddings: Receiver<DbEmbedding>,
+    mut embeddings: Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
     index: Sender<Index>,
     metrics: Arc<Metrics>,
 ) -> anyhow::Result<Sender<MonitorItems>> {
@@ -41,10 +42,10 @@ pub(crate) async fn new(
             while !rx.is_closed() {
                 tokio::select! {
                     embedding = embeddings.recv() => {
-                        let Some(embedding) = embedding else {
+                        let Some((embedding, in_progress)) = embedding else {
                             break;
                         };
-                        add(&mut timestamps, &index, embedding, &metrics, &id).await;
+                        add(&mut timestamps, &index, embedding, in_progress, &metrics, &id).await;
                     }
                     _ = rx.recv() => { }
                 }
@@ -61,6 +62,7 @@ async fn add(
     timestamps: &mut HashMap<PrimaryKey, Timestamp>,
     index: &Sender<Index>,
     embedding: DbEmbedding,
+    in_progress: Option<AsyncInProgress>,
     metrics: &Metrics,
     id: &IndexId,
 ) {
@@ -86,7 +88,9 @@ async fn add(
                     "update",
                 ])
                 .inc();
-            index.add_or_replace(primary_key, embedding).await;
+            index
+                .add_or_replace(primary_key, embedding, in_progress)
+                .await;
         } else {
             metrics
                 .modified
@@ -96,7 +100,7 @@ async fn add(
                     "remove",
                 ])
                 .inc();
-            index.remove(primary_key).await;
+            index.remove(primary_key, in_progress).await;
         }
         metrics.mark_dirty(
             id.keyspace().as_ref().as_str(),
@@ -128,68 +132,90 @@ mod tests {
         .unwrap();
 
         tx_embeddings
-            .send(DbEmbedding {
-                primary_key: vec![CqlValue::Int(1)].into(),
-                embedding: Some(vec![1.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    primary_key: vec![CqlValue::Int(1)].into(),
+                    embedding: Some(vec![1.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                primary_key: vec![CqlValue::Int(2)].into(),
-                embedding: Some(vec![2.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(11).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    primary_key: vec![CqlValue::Int(2)].into(),
+                    embedding: Some(vec![2.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(11).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                // should be dropped
-                primary_key: vec![CqlValue::Int(1)].into(),
-                embedding: Some(vec![3.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(5).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    // should be dropped
+                    primary_key: vec![CqlValue::Int(1)].into(),
+                    embedding: Some(vec![3.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(5).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                // should be accepted
-                primary_key: vec![CqlValue::Int(2)].into(),
-                embedding: Some(vec![4.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(15).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    // should be accepted
+                    primary_key: vec![CqlValue::Int(2)].into(),
+                    embedding: Some(vec![4.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(15).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                primary_key: vec![CqlValue::Int(1)].into(),
-                embedding: None,
-                timestamp: OffsetDateTime::from_unix_timestamp(25).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    primary_key: vec![CqlValue::Int(1)].into(),
+                    embedding: None,
+                    timestamp: OffsetDateTime::from_unix_timestamp(25).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                // should be dropped
-                primary_key: vec![CqlValue::Int(1)].into(),
-                embedding: Some(vec![5.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(24).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    // should be dropped
+                    primary_key: vec![CqlValue::Int(1)].into(),
+                    embedding: Some(vec![5.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(24).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
         tx_embeddings
-            .send(DbEmbedding {
-                primary_key: vec![CqlValue::Int(1)].into(),
-                embedding: Some(vec![6.].into()),
-                timestamp: OffsetDateTime::from_unix_timestamp(26).unwrap().into(),
-            })
+            .send((
+                DbEmbedding {
+                    primary_key: vec![CqlValue::Int(1)].into(),
+                    embedding: Some(vec![6.].into()),
+                    timestamp: OffsetDateTime::from_unix_timestamp(26).unwrap().into(),
+                },
+                None,
+            ))
             .await
             .unwrap();
 
         let Some(Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: None,
         }) = rx_index.recv().await
         else {
             unreachable!();
@@ -200,6 +226,7 @@ mod tests {
         let Some(Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: None,
         }) = rx_index.recv().await
         else {
             unreachable!();
@@ -210,6 +237,7 @@ mod tests {
         let Some(Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: None,
         }) = rx_index.recv().await
         else {
             unreachable!();
@@ -217,7 +245,11 @@ mod tests {
         assert_eq!(primary_key, vec![CqlValue::Int(2)].into());
         assert_eq!(embedding, vec![4.].into());
 
-        let Some(Index::Remove { primary_key }) = rx_index.recv().await else {
+        let Some(Index::Remove {
+            primary_key,
+            in_progress: None,
+        }) = rx_index.recv().await
+        else {
             unreachable!();
         };
         assert_eq!(primary_key, vec![CqlValue::Int(1)].into());
@@ -225,6 +257,7 @@ mod tests {
         let Some(Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: None,
         }) = rx_index.recv().await
         else {
             unreachable!();
