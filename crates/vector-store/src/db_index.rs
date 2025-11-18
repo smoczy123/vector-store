@@ -42,6 +42,7 @@ use std::time::Duration;
 use time::Date;
 use time::OffsetDateTime;
 use time::Time;
+use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -110,7 +111,7 @@ impl DbIndexExt for mpsc::Sender<DbIndex> {
 }
 
 pub(crate) async fn new(
-    db_session: Arc<Session>,
+    mut session_rx: tokio::sync::watch::Receiver<Option<Arc<Session>>>,
     metadata: IndexMetadata,
     node_state: Sender<NodeState>,
 ) -> anyhow::Result<(
@@ -124,33 +125,129 @@ pub(crate) async fn new(
     let (tx_index, mut rx_index) = mpsc::channel(CHANNEL_SIZE);
     let (tx_embeddings, rx_embeddings) = mpsc::channel(CHANNEL_SIZE);
 
-    let (mut cdc_reader, cdc_handler) = CDCLogReaderBuilder::new()
-        .session(Arc::clone(&db_session))
-        .keyspace(metadata.keyspace_name.as_ref())
-        .table_name(metadata.table_name.as_ref())
-        .consumer_factory(Arc::new(CdcConsumerFactory::new(
-            Arc::clone(&db_session),
-            &metadata,
-            tx_embeddings.clone(),
-        )?))
-        .build()
-        .await?;
+    // Mark the receiver to ensure first session update is visible
+    session_rx.mark_changed();
 
-    let statements = Arc::new(Statements::new(db_session, metadata.clone()).await?);
+    let mut statements_session_rx = session_rx.clone();
+    let cdc_metadata = metadata.clone();
+    let cdc_tx_embeddings = tx_embeddings.clone();
+    let cdc_id = id.clone();
+    let cdc_manager_id = id.clone();
 
+    // Spawn CDC management task - handles session changes and CDC reader lifecycle
     tokio::spawn(
         async move {
-            debug!("starting");
+            debug!("CDC manager starting");
 
-            if let Err(err) = cdc_handler.await {
-                debug!("handler: {err}");
+            let mut cdc_reader: Option<scylla_cdc::log_reader::CDCLogReader> = None;
+            let mut cdc_handler_task: Option<tokio::task::JoinHandle<()>> = None;
+            let shutdown_notify = Arc::new(Notify::new());
+
+            loop {
+                // Wait for session changes
+                if session_rx.changed().await.is_err() {
+                    // Session sender dropped, cleanup and exit
+                    if let Some(mut reader) = cdc_reader {
+                        reader.stop();
+                    }
+                    if let Some(task) = cdc_handler_task {
+                        shutdown_notify.notify_one();
+                        task.abort();
+                    }
+                    break;
+                }
+
+                let session_opt = session_rx.borrow_and_update().clone();
+
+                match session_opt {
+                    Some(session) => {
+                        info!(
+                            "Session available, creating CDC reader for {}",
+                            cdc_metadata.id()
+                        );
+
+                        // Stop old CDC reader if exists
+                        if let Some(mut reader) = cdc_reader.take() {
+                            reader.stop();
+                        }
+                        if let Some(task) = cdc_handler_task.take() {
+                            shutdown_notify.notify_one();
+                            task.abort();
+                        }
+
+                        // Create new CDC reader
+                        match create_cdc_reader(
+                            session,
+                            cdc_metadata.clone(),
+                            cdc_tx_embeddings.clone(),
+                        )
+                        .await
+                        {
+                            Ok((reader, handler)) => {
+                                cdc_reader = Some(reader);
+
+                                // Spawn CDC handler task
+                                let shutdown_notify_clone = Arc::clone(&shutdown_notify);
+                                let handler_id = cdc_id.clone();
+                                cdc_handler_task = Some(tokio::spawn(
+                                    async move {
+                                        tokio::select! {
+                                            result = handler => {
+                                                if let Err(err) = result {
+                                                    debug!("CDC handler error: {err}");
+                                                }
+                                            }
+                                            _ = shutdown_notify_clone.notified() => {
+                                                debug!("CDC handler: shutdown requested");
+                                            }
+                                        }
+                                        debug!("CDC handler finished");
+                                    }
+                                    .instrument(debug_span!("cdc", "{}", handler_id)),
+                                ));
+
+                                info!("CDC reader created successfully for {}", cdc_metadata.id());
+                            }
+                            Err(e) => {
+                                error!("Failed to create CDC reader: {}", e);
+                            }
+                        }
+                    }
+                    None => {
+                        info!(
+                            "Session became None, stopping CDC reader for {}",
+                            cdc_metadata.id()
+                        );
+
+                        // Stop CDC reader
+                        if let Some(mut reader) = cdc_reader.take() {
+                            reader.stop();
+                        }
+                        if let Some(task) = cdc_handler_task.take() {
+                            shutdown_notify.notify_one();
+                            task.abort();
+                        }
+                    }
+                }
             }
 
-            debug!("finished");
+            debug!("CDC manager finished");
         }
-        .instrument(debug_span!("cdc", "{}", id)),
+        .instrument(debug_span!("cdc_manager", "{}", cdc_manager_id)),
     );
 
+    // Wait for initial session to create statements
+    while statements_session_rx.borrow().is_none() {
+        if statements_session_rx.changed().await.is_err() {
+            return Err(anyhow::anyhow!(
+                "Session sender dropped before initialization"
+            ));
+        }
+    }
+
+    let statements = Arc::new(Statements::new(statements_session_rx, metadata.clone()).await?);
+
+    // Spawn main task for full scan and message processing
     tokio::spawn(
         async move {
             debug!("starting");
@@ -166,7 +263,8 @@ pub(crate) async fn new(
                 completed_scan_length.clone(),
             ));
 
-            while !rx_index.is_closed() {
+            // Initial scan and message processing loop
+            loop {
                 tokio::select! {
                     _ = &mut initial_scan => {
                         node_state
@@ -174,25 +272,51 @@ pub(crate) async fn new(
                             .await;
                         break;
                     }
+
                     Some(msg) = rx_index.recv() => {
                         tokio::spawn(process(Arc::clone(&statements), msg, completed_scan_length.clone()));
+                    }
+
+                    else => {
+                        break;
                     }
                 }
             }
 
             info!("finished full scan on {}", metadata.id());
 
+            // Continue processing messages after scan completes
             while let Some(msg) = rx_index.recv().await {
                 tokio::spawn(process(Arc::clone(&statements), msg, completed_scan_length.clone()));
             }
-
-            cdc_reader.stop();
 
             debug!("finished");
         }
         .instrument(debug_span!("db_index", "{}", id)),
     );
+
     Ok((tx_index, rx_embeddings))
+}
+
+// Helper function to create CDC reader - extracted to avoid duplication
+async fn create_cdc_reader(
+    session: Arc<Session>,
+    metadata: IndexMetadata,
+    tx_embeddings: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+) -> anyhow::Result<(
+    scylla_cdc::log_reader::CDCLogReader,
+    impl std::future::Future<Output = anyhow::Result<()>>,
+)> {
+    let consumer_factory = CdcConsumerFactory::new(Arc::clone(&session), &metadata, tx_embeddings)?;
+
+    CDCLogReaderBuilder::new()
+        .session(session)
+        .keyspace(metadata.keyspace_name.as_ref())
+        .table_name(metadata.table_name.as_ref())
+        .consumer_factory(Arc::new(consumer_factory))
+        .build()
+        .await
+        .context("Failed to build CDC log reader")
 }
 
 async fn process(statements: Arc<Statements>, msg: DbIndex, completed_scan_length: Arc<AtomicU64>) {
@@ -214,13 +338,20 @@ async fn process(statements: Arc<Statements>, msg: DbIndex, completed_scan_lengt
 }
 
 struct Statements {
-    session: Arc<Session>,
+    session_rx: tokio::sync::watch::Receiver<Option<Arc<Session>>>,
     primary_key_columns: Vec<ColumnName>,
     st_range_scan: PreparedStatement,
 }
 
 impl Statements {
-    async fn new(session: Arc<Session>, metadata: IndexMetadata) -> anyhow::Result<Self> {
+    async fn new(
+        session_rx: tokio::sync::watch::Receiver<Option<Arc<Session>>>,
+        metadata: IndexMetadata,
+    ) -> anyhow::Result<Self> {
+        let session = session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No session available for Statements initialization"))?;
         session.await_schema_agreement().await?;
 
         let cluster_state = session.get_cluster_state();
@@ -256,7 +387,7 @@ impl Statements {
                 .await
                 .context("range_scan_query")?,
 
-            session,
+            session_rx,
         })
     }
 
@@ -369,16 +500,22 @@ impl Statements {
     }
 
     fn nr_shards_in_cluster(&self) -> NonZeroUsize {
-        NonZeroUsize::try_from(
-            self.session
-                .get_cluster_state()
-                .get_nodes_info()
-                .iter()
-                .filter_map(|node| node.sharder())
-                .map(|sharder| sharder.nr_shards.get() as usize)
-                .sum::<usize>(),
-        )
-        .unwrap_or(NonZeroUsize::new(1).unwrap())
+        self.session_rx
+            .borrow()
+            .as_ref()
+            .and_then(|session| {
+                NonZeroUsize::try_from(
+                    session
+                        .get_cluster_state()
+                        .get_nodes_info()
+                        .iter()
+                        .filter_map(|node| node.sharder())
+                        .map(|sharder| sharder.nr_shards.get() as usize)
+                        .sum::<usize>(),
+                )
+                .ok()
+            })
+            .unwrap_or(NonZeroUsize::new(1).unwrap())
     }
 
     // Parallel queries = (cores in cluster) * (smuge factor)
@@ -403,13 +540,20 @@ impl Statements {
 
         let tokens = iter::once(Token::new(TOKEN_MIN))
             .chain(
-                self.session
-                    .get_cluster_state()
-                    .replica_locator()
-                    .ring()
-                    .iter()
-                    .map(|(token, _)| token)
-                    .copied(),
+                self.session_rx
+                    .borrow()
+                    .as_ref()
+                    .map(|session| {
+                        session
+                            .get_cluster_state()
+                            .replica_locator()
+                            .ring()
+                            .iter()
+                            .map(|(token, _)| token)
+                            .copied()
+                            .collect_vec()
+                    })
+                    .unwrap_or_default(),
             )
             .collect_vec();
         tokens
@@ -433,8 +577,12 @@ impl Statements {
     ) -> anyhow::Result<BoxStream<'static, DbEmbedding>> {
         // last two columns are embedding and writetime
         let columns_len_expected = self.primary_key_columns.len() + 2;
-        Ok(self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session for range scan"))?;
+        Ok(session
             .execute_iter(self.st_range_scan.clone(), (begin.value(), end.value()))
             .await?
             .rows_stream::<Row>()?

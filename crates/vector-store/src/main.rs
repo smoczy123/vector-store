@@ -90,7 +90,6 @@ fn main() -> anyhow::Result<()> {
         addr: vector_store_addr,
         tls: tls_config()?,
     };
-    let scylladb_uri = config.scylladb_uri.clone().into();
 
     let threads = config.threads;
 
@@ -110,8 +109,7 @@ fn main() -> anyhow::Result<()> {
             vector_store::new_index_factory_usearch(config_rx.clone())?
         };
 
-        let credentials = config.credentials.clone();
-        let db_actor = vector_store::new_db(scylladb_uri, node_state.clone(), credentials).await?;
+        let db_actor = vector_store::new_db(node_state.clone(), config_rx.clone()).await?;
 
         let (_server_actor, addr) = vector_store::run(
             http_server_config,
