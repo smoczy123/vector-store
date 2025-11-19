@@ -32,5 +32,6 @@ jobs:
       run: ./scripts/run-with-release-toolchain cargo build --release --workspace
 
     - name: Run the Validator tests
-      run: ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly target/amd64/release/vector-store target/amd64/release/vector-search-validator --verbose
+
+      run: ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly:2026.1.0-dev-0.20251117.f0039381d22c target/amd64/release/vector-store target/amd64/release/vector-search-validator --verbose
 
