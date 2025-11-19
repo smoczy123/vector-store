@@ -255,8 +255,12 @@ async fn process(
         Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: _in_progress,
         } => add_or_replace(id, keys, opensearch_key, primary_key, embedding, client).await,
-        Index::Remove { primary_key } => remove(id, keys, primary_key, client).await,
+        Index::Remove {
+            primary_key,
+            in_progress: _in_progress,
+        } => remove(id, keys, primary_key, client).await,
         Index::Ann {
             embedding,
             limit,

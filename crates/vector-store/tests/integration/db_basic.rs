@@ -16,6 +16,7 @@ use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
+use vector_store::AsyncInProgress;
 use vector_store::ColumnName;
 use vector_store::Connectivity;
 use vector_store::DbCustomIndex;
@@ -369,11 +370,12 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
     }
 }
 
+type RxEmbeddings = mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>;
 pub(crate) fn new_db_index(
     db: DbBasic,
     metadata: IndexMetadata,
     node_state: Sender<NodeState>,
-) -> anyhow::Result<(mpsc::Sender<DbIndex>, mpsc::Receiver<DbEmbedding>)> {
+) -> anyhow::Result<(mpsc::Sender<DbIndex>, RxEmbeddings)> {
     if db.0.read().unwrap().next_get_db_index_failed {
         db.0.write().unwrap().next_get_db_index_failed = false;
         bail!("get_db_index failed");
@@ -396,7 +398,7 @@ pub(crate) fn new_db_index(
                         let Some(item) = item else {
                             break;
                         };
-                        if tx_embeddings.send(item).await.is_err() {
+                        if tx_embeddings.send((item, None)).await.is_err() {
                             break;
                         }
                     }

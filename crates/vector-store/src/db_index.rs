@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::AsyncInProgress;
 use crate::ColumnName;
 use crate::DbEmbedding;
 use crate::IndexMetadata;
@@ -112,7 +113,10 @@ pub(crate) async fn new(
     db_session: Arc<Session>,
     metadata: IndexMetadata,
     node_state: Sender<NodeState>,
-) -> anyhow::Result<(mpsc::Sender<DbIndex>, mpsc::Receiver<DbEmbedding>)> {
+) -> anyhow::Result<(
+    mpsc::Sender<DbIndex>,
+    mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
+)> {
     let id = metadata.id();
 
     // TODO: The value of channel size was taken from initial benchmarks. Needs more testing
@@ -313,7 +317,7 @@ impl Statements {
     /// to send read embeddings into the pipeline.
     async fn initial_scan(
         &self,
-        tx: mpsc::Sender<DbEmbedding>,
+        tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
         completed_scan_length: Arc<AtomicU64>,
     ) {
         let semaphore_capacity = self.nr_parallel_queries().get();
@@ -324,14 +328,27 @@ impl Statements {
 
             let range_scan = self.preform_range_scan(begin, end).await;
             if let Ok(embeddings) = range_scan {
-                let tx: Sender<DbEmbedding> = tx.clone();
+                let tx = tx.clone();
                 let scan_length = completed_scan_length.clone();
                 tokio::spawn(async move {
+                    let (tx_in_progress, mut rx_in_progress) = mpsc::channel(1);
                     embeddings
-                        .for_each(|embedding| async {
-                            _ = tx.send(embedding).await;
+                        .for_each(move |embedding| {
+                            let tx = tx.clone();
+                            let tx_in_progress = tx_in_progress.clone();
+                            async move {
+                                _ = tx
+                                    .send((embedding, Some(AsyncInProgress(tx_in_progress))))
+                                    .await;
+                            }
                         })
                         .await;
+
+                    // wait until all in-progress markers are dropped
+                    while rx_in_progress.recv().await.is_some() {
+                        rx_in_progress.len();
+                    }
+
                     //Safety: end > begin, and the range fits into u64
                     scan_length.fetch_add(
                         end.value().abs_diff(begin.value() - 1),
@@ -493,7 +510,7 @@ impl Statements {
 struct CdcConsumerData {
     primary_key_columns: Vec<ColumnName>,
     target_column: ColumnName,
-    tx: mpsc::Sender<DbEmbedding>,
+    tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
     gregorian_epoch: OffsetDateTime,
 }
 
@@ -563,11 +580,14 @@ impl Consumer for CdcConsumer {
         _ = self
             .0
             .tx
-            .send(DbEmbedding {
-                primary_key,
-                embedding,
-                timestamp,
-            })
+            .send((
+                DbEmbedding {
+                    primary_key,
+                    embedding,
+                    timestamp,
+                },
+                None,
+            ))
             .await;
         Ok(())
     }
@@ -586,7 +606,7 @@ impl CdcConsumerFactory {
     fn new(
         session: Arc<Session>,
         metadata: &IndexMetadata,
-        tx: mpsc::Sender<DbEmbedding>,
+        tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
     ) -> anyhow::Result<Self> {
         let cluster_state = session.get_cluster_state();
         let table = cluster_state

@@ -158,11 +158,15 @@ fn process(
         Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress: _in_progress,
         } => {
             add_or_replace(idx, keys, usearch_key, primary_key, embedding, allocate);
         }
 
-        Index::Remove { primary_key } => {
+        Index::Remove {
+            primary_key,
+            in_progress: _in_progress,
+        } => {
             remove(idx, keys, primary_key);
         }
 
@@ -339,18 +343,21 @@ mod tests {
             .add_or_replace(
                 vec![CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
                 vec![1., 1., 1.].into(),
+                None,
             )
             .await;
         actor
             .add_or_replace(
                 vec![CqlValue::Int(2), CqlValue::Text("two".to_string())].into(),
                 vec![2., -2., 2.].into(),
+                None,
             )
             .await;
         actor
             .add_or_replace(
                 vec![CqlValue::Int(3), CqlValue::Text("three".to_string())].into(),
                 vec![3., 3., 3.].into(),
+                None,
             )
             .await;
 
@@ -380,6 +387,7 @@ mod tests {
             .add_or_replace(
                 vec![CqlValue::Int(3), CqlValue::Text("three".to_string())].into(),
                 vec![2.1, -2.1, 2.1].into(),
+                None,
             )
             .await;
 
@@ -403,7 +411,10 @@ mod tests {
         .unwrap();
 
         actor
-            .remove(vec![CqlValue::Int(3), CqlValue::Text("three".to_string())].into())
+            .remove(
+                vec![CqlValue::Int(3), CqlValue::Text("three".to_string())].into(),
+                None,
+            )
             .await;
 
         time::timeout(Duration::from_secs(10), async {

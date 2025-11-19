@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::AsyncInProgress;
 use crate::Distance;
 use crate::Limit;
 use crate::PrimaryKey;
@@ -17,9 +18,11 @@ pub enum Index {
     AddOrReplace {
         primary_key: PrimaryKey,
         embedding: Vector,
+        in_progress: Option<AsyncInProgress>,
     },
     Remove {
         primary_key: PrimaryKey,
+        in_progress: Option<AsyncInProgress>,
     },
     Ann {
         embedding: Vector,
@@ -32,26 +35,40 @@ pub enum Index {
 }
 
 pub(crate) trait IndexExt {
-    async fn add_or_replace(&self, primary_key: PrimaryKey, embedding: Vector);
-    async fn remove(&self, primary_key: PrimaryKey);
+    async fn add_or_replace(
+        &self,
+        primary_key: PrimaryKey,
+        embedding: Vector,
+        in_progress: Option<AsyncInProgress>,
+    );
+    async fn remove(&self, primary_key: PrimaryKey, in_progress: Option<AsyncInProgress>);
     async fn ann(&self, embedding: Vector, limit: Limit) -> AnnR;
     async fn count(&self) -> CountR;
 }
 
 impl IndexExt for mpsc::Sender<Index> {
-    async fn add_or_replace(&self, primary_key: PrimaryKey, embedding: Vector) {
+    async fn add_or_replace(
+        &self,
+        primary_key: PrimaryKey,
+        embedding: Vector,
+        in_progress: Option<AsyncInProgress>,
+    ) {
         self.send(Index::AddOrReplace {
             primary_key,
             embedding,
+            in_progress,
         })
         .await
         .expect("internal actor should receive request");
     }
 
-    async fn remove(&self, primary_key: PrimaryKey) {
-        self.send(Index::Remove { primary_key })
-            .await
-            .expect("internal actor should receive request");
+    async fn remove(&self, primary_key: PrimaryKey, in_progress: Option<AsyncInProgress>) {
+        self.send(Index::Remove {
+            primary_key,
+            in_progress,
+        })
+        .await
+        .expect("internal actor should receive request");
     }
 
     async fn ann(&self, embedding: Vector, limit: Limit) -> AnnR {
