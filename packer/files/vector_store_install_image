@@ -63,6 +63,13 @@ def install_node_exporter(arch):
     run('systemctl enable node-exporter.service')
     run('systemctl start node-exporter.service')
 
+def install_process_exporter():
+    try:
+        run('{_HOME}/install_process_exporter.sh'.format(_HOME=HOME_DIR,))
+    except Exception as e:
+        print("process_exporter_install failed" + str(e))
+        print(e.output)
+
 def install_service():
     run('cp {_HOME}/vector-store.service /etc/systemd/system/')
     try:
@@ -93,3 +100,4 @@ if __name__ == '__main__':
     install_vector_store(args.version, args.arch)
     install_service()
     install_node_exporter(arch=args.arch)
+    install_process_exporter()
