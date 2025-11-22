@@ -31,7 +31,8 @@ async fn run_vs(
 #[tokio::test]
 async fn get_application_info_usearch() {
     let (_, rx) = watch::channel(Arc::new(Config::default()));
-    let (client, _server, _config_tx) = run_vs(vector_store::new_index_factory_usearch(rx).unwrap()).await;
+    let (client, _server, _config_tx) =
+        run_vs(vector_store::new_index_factory_usearch(rx).unwrap()).await;
 
     let info = client.info().await;
 
@@ -43,7 +44,9 @@ async fn get_application_info_usearch() {
 #[tokio::test]
 async fn get_application_info_opensearch() {
     let server = mock_opensearch::TestOpenSearchServer::start().await;
-    let index_factory = vector_store::new_index_factory_opensearch(server.base_url()).unwrap();
+    let (_, config_rx) = watch::channel(Arc::new(vector_store::Config::default()));
+    let index_factory =
+        vector_store::new_index_factory_opensearch(server.base_url(), config_rx).unwrap();
     let (client, _server, _config_tx) = run_vs(index_factory).await;
 
     let info = client.info().await;

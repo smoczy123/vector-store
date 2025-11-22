@@ -104,10 +104,10 @@ fn main() -> anyhow::Result<()> {
 
         let index_factory = if let Some(addr) = opensearch_addr {
             tracing::info!("Using OpenSearch index factory at {addr}");
-            vector_store::new_index_factory_opensearch(addr)?
+            vector_store::new_index_factory_opensearch(addr, config_rx.clone())?
         } else {
             tracing::info!("Using Usearch index factory");
-            vector_store::new_index_factory_usearch(config_rx)?
+            vector_store::new_index_factory_usearch(config_rx.clone())?
         };
 
         let credentials = config.credentials.clone();
