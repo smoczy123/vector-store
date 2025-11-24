@@ -383,36 +383,52 @@ fn new(
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
 
     tokio::spawn(
-        async move {
-            debug!("starting");
+        {
+            let id = id.clone();
+            async move {
+                debug!("starting");
 
-            // bimap between PrimaryKey and Key for an usearch index
-            let keys = Arc::new(RwLock::new(BiMap::new()));
+                // bimap between PrimaryKey and Key for an usearch index
+                let keys = Arc::new(RwLock::new(BiMap::new()));
 
-            // Incremental key for a usearch index
-            let usearch_key = Arc::new(AtomicU64::new(0));
+                // Incremental key for a usearch index
+                let usearch_key = Arc::new(AtomicU64::new(0));
 
-            while let Some(msg) = rx.recv().await {
-                let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
-                tokio::spawn({
-                    let idx = Arc::clone(&idx);
-                    let keys = Arc::clone(&keys);
-                    let usearch_key = Arc::clone(&usearch_key);
-                    let memory = memory.clone();
-                    async move {
-                        crate::move_to_the_end_of_async_runtime_queue().await;
+                let mut allocate_prev = Allocate::Can;
+
+                while let Some(msg) = rx.recv().await {
+                    let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
+                    if matches!(msg, Index::AddOrReplace { .. }) {
                         let allocate = memory.can_allocate().await;
-                        process(msg, dimensions, idx, keys, usearch_key, allocate);
-                        drop(permit);
+                        if allocate == Allocate::Cannot {
+                            if allocate_prev == Allocate::Can {
+                                error!(
+                                    "Unable to add vector for index {id}: not enough memory to reserve more space"
+                                );
+                            }
+                            allocate_prev = allocate;
+                            continue;
+                        }
+                        allocate_prev = allocate;
                     }
-                });
+                    tokio::spawn({
+                        let idx = Arc::clone(&idx);
+                        let keys = Arc::clone(&keys);
+                        let usearch_key = Arc::clone(&usearch_key);
+                        async move {
+                            crate::move_to_the_end_of_async_runtime_queue().await;
+                            process(msg, dimensions, idx, keys, usearch_key);
+                            drop(permit);
+                        }
+                    });
+                }
+
+                idx.stop();
+
+                debug!("finished");
             }
-
-            idx.stop();
-
-            debug!("finished");
         }
-        .instrument(debug_span!("usearch", "{}", id)),
+        .instrument(debug_span!("usearch", "{id}")),
     );
 
     Ok(tx)
@@ -424,7 +440,6 @@ fn process(
     idx: Arc<impl UsearchIndex>,
     keys: Arc<RwLock<BiMap<PrimaryKey, Key>>>,
     usearch_key: Arc<AtomicU64>,
-    allocate: Allocate,
 ) {
     match msg {
         Index::AddOrReplace {
@@ -432,7 +447,7 @@ fn process(
             embedding,
             in_progress: _in_progress,
         } => {
-            add_or_replace(idx, keys, usearch_key, primary_key, embedding, allocate);
+            add_or_replace(idx, keys, usearch_key, primary_key, embedding);
         }
 
         Index::Remove {
@@ -462,7 +477,6 @@ fn add_or_replace(
     usearch_key: Arc<AtomicU64>,
     primary_key: PrimaryKey,
     embedding: Vector,
-    allocate: Allocate,
 ) {
     let key = usearch_key.fetch_add(1, Ordering::Relaxed).into();
 
@@ -480,13 +494,6 @@ fn add_or_replace(
             true,
         )
     };
-
-    if allocate == Allocate::Cannot {
-        error!(
-            "add_or_replace: unable to add embedding for key {key}: not enough memory to reserve more space"
-        );
-        return;
-    }
 
     let remove_key_from_bimap = |key: &Key| {
         keys.write().unwrap().remove_by_right(key);
@@ -574,6 +581,7 @@ fn count(idx: Arc<impl UsearchIndex>, tx: oneshot::Sender<CountR>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
     use crate::Connectivity;
     use crate::ExpansionAdd;
     use crate::ExpansionSearch;
@@ -583,12 +591,14 @@ mod tests {
     use scylla::value::CqlValue;
     use std::num::NonZeroUsize;
     use std::time::Duration;
+    use tokio::sync::watch;
     use tokio::task;
     use tokio::time;
 
     #[tokio::test]
     async fn add_or_replace_size_ann() {
         let (_, config_rx) = watch::channel(Arc::new(Config::default()));
+
         let factory = UsearchIndexFactory {
             semaphore: Arc::new(Semaphore::new(4)),
             mode: Mode::Usearch,
@@ -710,45 +720,45 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_parameter_works() {
-        let options = IndexOptions {
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Connectivity::default().0,
-            expansion_add: ExpansionAdd::default().0,
-            expansion_search: ExpansionSearch::default().0,
-            ..Default::default()
+        let (memory_tx, mut memory_rx) = mpsc::channel(1);
+
+        let factory = UsearchIndexFactory {
+            semaphore: Arc::new(Semaphore::new(4)),
+            mode: Mode::Usearch,
         };
-        let idx = Arc::new(RwLock::new(usearch::Index::new(&options).unwrap()));
-        idx.write().unwrap().reserve(RESERVE_INCREMENT).unwrap();
-        let keys = Arc::new(RwLock::new(BiMap::new()));
-        let usearch_key = Arc::new(AtomicU64::new(0));
-        let primary_key: PrimaryKey =
-            vec![CqlValue::Int(3), CqlValue::Text("three".to_string())].into();
-        let embedding: Vector = vec![2.1, -2.1, 2.1].into();
+        let actor = factory
+            .create_index(
+                IndexConfiguration {
+                    id: IndexId::new(&"vector".to_string().into(), &"store".to_string().into()),
+                    dimensions: NonZeroUsize::new(3).unwrap().into(),
+                    connectivity: Connectivity::default(),
+                    expansion_add: ExpansionAdd::default(),
+                    expansion_search: ExpansionSearch::default(),
+                    space_type: SpaceType::Euclidean,
+                },
+                memory_tx,
+            )
+            .unwrap();
 
-        let (tx, rx) = oneshot::channel();
-        add_or_replace(
-            idx.clone(),
-            keys.clone(),
-            usearch_key.clone(),
-            primary_key.clone(),
-            embedding.clone(),
-            Allocate::Cannot,
-        );
-        count(idx.clone(), tx);
+        let memory_respond = tokio::spawn(async move {
+            let Memory::CanAllocate { tx } = memory_rx.recv().await.unwrap();
+            _ = tx.send(Allocate::Cannot);
+            memory_rx
+        });
+        actor
+            .add_or_replace(vec![CqlValue::Int(1)].into(), vec![1., 1., 1.].into(), None)
+            .await;
+        let mut memory_rx = memory_respond.await.unwrap();
+        assert_eq!(actor.count().await.unwrap(), 0);
 
-        assert_eq!(rx.await.unwrap().unwrap(), 0);
-
-        let (tx, rx) = oneshot::channel();
-        add_or_replace(
-            idx.clone(),
-            keys.clone(),
-            usearch_key.clone(),
-            primary_key.clone(),
-            embedding.clone(),
-            Allocate::Can,
-        );
-        count(idx.clone(), tx);
-
-        assert_eq!(rx.await.unwrap().unwrap(), 1)
+        let memory_respond = tokio::spawn(async move {
+            let Memory::CanAllocate { tx } = memory_rx.recv().await.unwrap();
+            _ = tx.send(Allocate::Can);
+        });
+        actor
+            .add_or_replace(vec![CqlValue::Int(1)].into(), vec![1., 1., 1.].into(), None)
+            .await;
+        memory_respond.await.unwrap();
+        assert_eq!(actor.count().await.unwrap(), 1);
     }
 }
