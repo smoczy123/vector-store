@@ -9,6 +9,7 @@ use itertools::Itertools;
 use secrecy::ExposeSecret;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
 use vector_store::Config;
 
@@ -119,7 +120,7 @@ impl ConfigManager {
             .expect("failed to install SIGHUP handler");
 
         // Check receiver count periodically to allow loop exit even without SIGHUP
-        let mut check_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        let mut check_interval = tokio::time::interval(Duration::from_secs(1));
         check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -261,6 +262,22 @@ where
         .transpose()?
     {
         config.threads = Some(threads);
+    }
+
+    if let Some(memory_limit) = env("VECTOR_STORE_MEMORY_LIMIT")
+        .ok()
+        .map(|v| v.parse())
+        .transpose()?
+    {
+        config.memory_limit = Some(memory_limit);
+    }
+
+    if let Some(memory_usage_check_interval) = env("VECTOR_STORE_MEMORY_USAGE_CHECK_INTERVAL")
+        .ok()
+        .map(|v| v.parse::<humantime::Duration>())
+        .transpose()?
+    {
+        config.memory_usage_check_interval = Some(memory_usage_check_interval.into());
     }
 
     if let Ok(opensearch_addr) = env("VECTOR_STORE_OPENSEARCH_URI") {
@@ -440,6 +457,8 @@ mod tests {
             vector_store_addr: "127.0.0.1:6080".parse().unwrap(),
             scylladb_uri: "127.0.0.1:9042".to_string(),
             threads: None,
+            memory_limit: None,
+            memory_usage_check_interval: None,
             opensearch_addr: None,
             credentials: None,
             usearch_simulator: None,
@@ -494,7 +513,7 @@ mod tests {
         });
 
         // Give tasks time to start waiting
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Reload config
         let env = mock_env(HashMap::from([(
@@ -511,5 +530,36 @@ mod tests {
         assert_eq!(addr1, "192.168.1.100:8080");
         assert_eq!(addr2, "192.168.1.100:8080");
         assert_eq!(addr3, "192.168.1.100:8080");
+    }
+
+    #[tokio::test]
+    async fn load_config_memory_limit() {
+        let env = mock_env(HashMap::new());
+        let config = load_config(env).await.unwrap();
+        assert_eq!(config.memory_limit, None);
+
+        let env = mock_env(HashMap::from([(
+            "VECTOR_STORE_MEMORY_LIMIT",
+            "104857600".into(),
+        )]));
+        let config = load_config(env).await.unwrap();
+        assert_eq!(config.memory_limit, Some(104857600));
+    }
+
+    #[tokio::test]
+    async fn load_config_memory_usage_check_interval() {
+        let env = mock_env(HashMap::new());
+        let config = load_config(env).await.unwrap();
+        assert_eq!(config.memory_usage_check_interval, None);
+
+        let env = mock_env(HashMap::from([(
+            "VECTOR_STORE_MEMORY_USAGE_CHECK_INTERVAL",
+            "100ms".into(),
+        )]));
+        let config = load_config(env).await.unwrap();
+        assert_eq!(
+            config.memory_usage_check_interval,
+            Some(Duration::from_millis(100))
+        );
     }
 }

@@ -65,6 +65,8 @@ pub struct Config {
     pub vector_store_addr: std::net::SocketAddr,
     pub scylladb_uri: String,
     pub threads: Option<usize>,
+    pub memory_limit: Option<u64>,
+    pub memory_usage_check_interval: Option<Duration>,
     pub opensearch_addr: Option<String>,
     pub credentials: Option<Credentials>,
     pub usearch_simulator: Option<Vec<Duration>>,
@@ -77,6 +79,8 @@ impl Default for Config {
             vector_store_addr: "127.0.0.1:6080".parse().unwrap(),
             scylladb_uri: "127.0.0.1:9042".to_string(),
             threads: None,
+            memory_limit: None,
+            memory_usage_check_interval: None,
             opensearch_addr: None,
             credentials: None,
             usearch_simulator: None,
@@ -533,7 +537,14 @@ pub async fn run(
     httpserver::new(
         http_server_config,
         node_state.clone(),
-        engine::new(db_actor, index_factory, node_state, metrics.clone()).await?,
+        engine::new(
+            db_actor,
+            index_factory,
+            node_state,
+            metrics.clone(),
+            config_rx.clone(),
+        )
+        .await?,
         metrics,
         index_engine_version,
         config_rx,

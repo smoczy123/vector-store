@@ -401,10 +401,7 @@ fn new(
                     let memory = memory.clone();
                     async move {
                         crate::move_to_the_end_of_async_runtime_queue().await;
-                        let allocate = memory
-                            .can_allocate()
-                            .await
-                            .unwrap_or(Allocate::CannotAllocate);
+                        let allocate = memory.can_allocate().await;
                         process(msg, dimensions, idx, keys, usearch_key, allocate);
                         drop(permit);
                     }
@@ -484,7 +481,7 @@ fn add_or_replace(
         )
     };
 
-    if allocate == Allocate::CannotAllocate {
+    if allocate == Allocate::Cannot {
         error!(
             "add_or_replace: unable to add embedding for key {key}: not enough memory to reserve more space"
         );
@@ -591,6 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_or_replace_size_ann() {
+        let (_, config_rx) = watch::channel(Arc::new(Config::default()));
         let factory = UsearchIndexFactory {
             semaphore: Arc::new(Semaphore::new(4)),
             mode: Mode::Usearch,
@@ -605,7 +603,7 @@ mod tests {
                     expansion_search: ExpansionSearch::default(),
                     space_type: SpaceType::Euclidean,
                 },
-                memory::new(),
+                memory::new(config_rx),
             )
             .unwrap();
 
@@ -734,7 +732,7 @@ mod tests {
             usearch_key.clone(),
             primary_key.clone(),
             embedding.clone(),
-            Allocate::CannotAllocate,
+            Allocate::Cannot,
         );
         count(idx.clone(), tx);
 
@@ -747,7 +745,7 @@ mod tests {
             usearch_key.clone(),
             primary_key.clone(),
             embedding.clone(),
-            Allocate::CanAllocate,
+            Allocate::Can,
         );
         count(idx.clone(), tx);
 
