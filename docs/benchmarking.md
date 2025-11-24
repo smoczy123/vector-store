@@ -30,7 +30,8 @@ Commands:
   build-index
   drop-table
   drop-index
-  search
+  search-cql
+  search-http
 ```
 
 Each of the cli commands has its own help. Short description of each command:
@@ -40,7 +41,9 @@ Each of the cli commands has its own help. Short description of each command:
   vector-store nodes built it.
 - `drop-index` - drops the vector search index.
 - `drop-table` - drops the table and the keyspace.
-- `search` - runs ANN search queries from the dataset and measures qps &
-  latency.  The basic search is using CQL over scylla. There is also an
-  optional parameter for checking search directly on vector-store nodes.
+- `search-cql` - runs ANN search queries from the dataset and measures qps,
+  latency & recall. This search is using CQL over the scylla.
+- `search-http` - runs ANN search queries from the dataset and measures qps &
+  latency. This search is using HTTP over vector-store directly - it sends no
+  requests to the scylla cluster.
 
