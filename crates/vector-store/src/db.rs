@@ -5,6 +5,7 @@
 
 use crate::AsyncInProgress;
 use crate::ColumnName;
+use crate::Config;
 use crate::Connectivity;
 use crate::Credentials;
 use crate::DbCustomIndex;
@@ -45,7 +46,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
-use tokio::time::sleep;
+use tokio::sync::watch;
+use tokio::time::interval;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
@@ -228,34 +230,148 @@ impl DbExt for mpsc::Sender<Db> {
 }
 
 pub(crate) async fn new(
-    uri: ScyllaDbUri,
     node_state: Sender<NodeState>,
-    credentials: Option<Credentials>,
+    mut config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<mpsc::Sender<Db>> {
     let (tx, mut rx) = mpsc::channel(10);
     tokio::spawn(
         async move {
-            node_state.send_event(Event::ConnectingToDb).await;
-            let mut statements = Statements::new(uri.clone(), credentials.clone()).await;
-            while statements.is_err() {
-                tracing::error!(
-                    "Failed to connect to ScyllaDB (error: {}) at {}, retrying in {}s",
-                    statements.err().unwrap(),
-                    uri.0,
-                    RECONNECT_TIMEOUT.as_secs()
-                );
-                sleep(RECONNECT_TIMEOUT).await;
-                statements = Statements::new(uri.clone(), credentials.clone()).await;
-            }
-            node_state.send_event(Event::ConnectedToDb).await;
-            let statements = Arc::new(statements.unwrap());
-            while let Some(msg) = rx.recv().await {
-                tokio::spawn(process(statements.clone(), msg, node_state.clone()));
+            let config = config_rx.borrow().clone();
+            let mut current_uri = config.scylladb_uri.clone();
+            let mut current_credentials = config.credentials.clone();
+            let mut reconnect_timer = interval(RECONNECT_TIMEOUT);
+            reconnect_timer.tick().await; // Consume the first immediate tick
+
+            // Use watch channel to share session, starting with None
+            let (session_tx, session_rx) = watch::channel(None);
+            let mut statements: Option<Arc<Statements>> = None;
+
+            loop {
+                tokio::select! {
+                    // Reconnection timer - attempt connection if needed
+                    _ = reconnect_timer.tick() => {
+                        if session_rx.borrow().is_none() {
+                            match create_session(
+                                ScyllaDbUri(current_uri.clone()),
+                                current_credentials.clone(),
+                                &node_state
+                            ).await {
+                                Ok(session) => {
+                                    node_state.send_event(Event::ConnectedToDb).await;
+                                    session_tx.send(Some(session)).ok();
+                                    if statements.is_none() {
+                                        statements = Some(Arc::new(Statements::new(session_rx.clone()).await.unwrap()));
+                                    }
+                                    info!("Connected to ScyllaDB at {}", current_uri);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to connect to ScyllaDB (error: {}) at {}, retrying in {}s",
+                                        e,
+                                        current_uri,
+                                        RECONNECT_TIMEOUT.as_secs()
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Config changes - check if URI/credentials changed
+                    result = config_rx.changed() => {
+                        if result.is_ok() {
+                            let config = config_rx.borrow_and_update().clone();
+
+                            // Check if credentials or URI changed
+                            let uri_changed = config.scylladb_uri != current_uri;
+                            let credentials_changed = match (&config.credentials, &current_credentials) {
+                                (None, None) => false,
+                                (Some(_), None) | (None, Some(_)) => true,
+                                (Some(new_creds), Some(old_creds)) => {
+                                    new_creds.username != old_creds.username
+                                        || new_creds.certificate_path != old_creds.certificate_path
+                                        // SecretString doesn't implement PartialEq, so we compare exposed secrets
+                                        || match (&new_creds.password, &old_creds.password) {
+                                            (None, None) => false,
+                                            (Some(_), None) | (None, Some(_)) => true,
+                                            (Some(new_pass), Some(old_pass)) => {
+                                                new_pass.expose_secret() != old_pass.expose_secret()
+                                            }
+                                        }
+                                }
+                            };
+
+                            if uri_changed || credentials_changed {
+                                if uri_changed {
+                                    warn!("ScyllaDB URI changed from {} to {}, will reconnect...",
+                                          current_uri, config.scylladb_uri);
+                                    current_uri = config.scylladb_uri.clone();
+                                }
+                                if credentials_changed {
+                                    warn!("ScyllaDB credentials changed, will reconnect...");
+                                    current_credentials = config.credentials.clone();
+                                }
+
+                                // Cancel existing session and let reconnection timer handle it
+                                session_tx.send(None).ok();
+                                info!("Session canceled, reconnection will occur on next timer tick");
+                            }
+                        }
+                    }
+
+                    // Process incoming messages
+                    msg = rx.recv() => {
+                        match msg {
+                            None => {
+                                // Channel closed, exit loop
+                                break;
+                            }
+                            Some(msg) => {
+                                if let Some(ref stmts) = statements {
+                                    if session_rx.borrow().is_some() {
+                                        tokio::spawn(process(stmts.clone(), msg, node_state.clone()));
+                                    } else {
+                                        warn!("Received message but no valid session");
+                                        respond_with_error(msg, anyhow::anyhow!("No active database session"));
+                                    }
+                                } else {
+                                    warn!("Received message during initialization");
+                                    respond_with_error(msg, anyhow::anyhow!("Database not yet initialized"));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         .instrument(debug_span!("db")),
     );
     Ok(tx)
+}
+
+fn respond_with_error(msg: Db, error: anyhow::Error) {
+    match msg {
+        Db::GetDbIndex { tx, .. } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::LatestSchemaVersion { tx } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::GetIndexes { tx } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::GetIndexVersion { tx, .. } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::GetIndexTargetType { tx, .. } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::GetIndexParams { tx, .. } => {
+            let _ = tx.send(Err(error));
+        }
+        Db::IsValidIndex { tx, .. } => {
+            let _ = tx.send(false);
+        }
+    }
 }
 
 async fn process(statements: Arc<Statements>, msg: Db, node_state: Sender<NodeState>) {
@@ -312,7 +428,7 @@ async fn process(statements: Arc<Statements>, msg: Db, node_state: Sender<NodeSt
 }
 
 struct Statements {
-    session: Arc<Session>,
+    session_rx: watch::Receiver<Option<Arc<Session>>>,
     st_latest_schema_version: PreparedStatement,
     st_get_indexes: PreparedStatement,
     st_get_index_target_type: PreparedStatement,
@@ -320,73 +436,86 @@ struct Statements {
     re_get_index_target_type: Regex,
 }
 
+async fn create_session(
+    uri: ScyllaDbUri,
+    credentials: Option<Credentials>,
+    node_state: &Sender<NodeState>,
+) -> anyhow::Result<Arc<Session>> {
+    node_state.send_event(Event::ConnectingToDb).await;
+    let mut builder = SessionBuilder::new().known_node(uri.0.as_str());
+
+    if let Some(Credentials {
+        username,
+        password,
+        certificate_path,
+    }) = credentials
+    {
+        // Configure username/password authentication if provided
+        if let (Some(username), Some(password)) = (username, password) {
+            builder = builder.user(username, password.expose_secret());
+            debug!("Username/password authentication configured");
+        }
+
+        // Configure TLS if certificate path is provided
+        if let Some(cert_path) = certificate_path {
+            // Load the CA certificates from the PEM file using async tokio fs
+            let cert_pem = tokio::fs::read(&cert_path)
+                .await
+                .with_context(|| format!("Failed to read certificate file at {cert_path:?}"))?;
+
+            let mut reader = Cursor::new(cert_pem);
+            let ca_der: Vec<CertificateDer<'static>> = certs(&mut reader)
+                .collect::<Result<Vec<_>, _>>()
+                .context("Failed to parse certificate PEM")?;
+
+            let mut root_store = RootCertStore::empty();
+            root_store.add_parsable_certificates(ca_der);
+
+            let client_cfg = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+
+            let tls_context = TlsContext::from(Arc::new(client_cfg));
+            builder = builder.tls_context(Some(tls_context));
+
+            debug!("TLS (rustls) enabled with certificate from {:?}", cert_path);
+        }
+    }
+
+    let session = Arc::new(builder.build().await?);
+
+    let cluster_state = session.get_cluster_state();
+
+    let node = &cluster_state.get_nodes_info()[0];
+
+    if !node.is_enabled() {
+        return Err(anyhow::anyhow!("Node is not enabled"));
+    }
+    // From docs: If the node is enabled and does not have a sharder, this means it's not a ScyllaDB node.
+    let connected_to_scylla = node.sharder().is_some();
+
+    if connected_to_scylla {
+        let version: (String,) = session
+            .query_unpaged(
+                "SELECT version FROM system.versions WHERE key = 'local'",
+                &[],
+            )
+            .await?
+            .into_rows_result()?
+            .single_row()?;
+        info!("Connected to ScyllaDB {} at {}", version.0, uri.0);
+    } else {
+        warn!("No ScyllaDB node at {}, please verify the URI", uri.0);
+    }
+
+    Ok(session)
+}
+
 impl Statements {
-    async fn new(uri: ScyllaDbUri, credentials: Option<Credentials>) -> anyhow::Result<Self> {
-        let mut builder = SessionBuilder::new().known_node(uri.0.as_str());
-
-        if let Some(Credentials {
-            username,
-            password,
-            certificate_path,
-        }) = credentials
-        {
-            // Configure username/password authentication if provided
-            if let (Some(username), Some(password)) = (username, password) {
-                builder = builder.user(username, password.expose_secret());
-                debug!("Username/password authentication configured");
-            }
-
-            // Configure TLS if certificate path is provided
-            if let Some(cert_path) = certificate_path {
-                // Load the CA certificates from the PEM file using async tokio fs
-                let cert_pem = tokio::fs::read(&cert_path)
-                    .await
-                    .with_context(|| format!("Failed to read certificate file at {cert_path:?}"))?;
-
-                let mut reader = Cursor::new(cert_pem);
-                let ca_der: Vec<CertificateDer<'static>> = certs(&mut reader)
-                    .collect::<Result<Vec<_>, _>>()
-                    .context("Failed to parse certificate PEM")?;
-
-                let mut root_store = RootCertStore::empty();
-                root_store.add_parsable_certificates(ca_der);
-
-                let client_cfg = ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth();
-
-                let tls_context = TlsContext::from(Arc::new(client_cfg));
-                builder = builder.tls_context(Some(tls_context));
-
-                debug!("TLS (rustls) enabled with certificate from {:?}", cert_path);
-            }
-        }
-
-        let session = Arc::new(builder.build().await?);
-
-        let cluster_state = session.get_cluster_state();
-
-        let node = &cluster_state.get_nodes_info()[0];
-
-        if !node.is_enabled() {
-            return Err(anyhow::anyhow!("Node is not enabled"));
-        }
-        // From docs: If the node is enabled and does not have a sharder, this means it's not a ScyllaDB node.
-        let connected_to_scylla = node.sharder().is_some();
-
-        if connected_to_scylla {
-            let version: (String,) = session
-                .query_unpaged(
-                    "SELECT version FROM system.versions WHERE key = 'local'",
-                    &[],
-                )
-                .await?
-                .into_rows_result()?
-                .single_row()?;
-            info!("Connected to ScyllaDB {} at {}", version.0, uri.0);
-        } else {
-            warn!("No ScyllaDB node at {}, please verify the URI", uri.0);
-        }
+    async fn new(session_rx: watch::Receiver<Option<Arc<Session>>>) -> anyhow::Result<Self> {
+        let session = session_rx.borrow().clone().ok_or_else(|| {
+            anyhow::anyhow!("No session available during Statements initialization")
+        })?;
 
         Ok(Self {
             st_latest_schema_version: session
@@ -412,7 +541,7 @@ impl Statements {
             re_get_index_target_type: Regex::new(Self::RE_GET_INDEX_TARGET_TYPE)
                 .context("RE_GET_INDEX_TARGET_TYPE")?,
 
-            session,
+            session_rx,
         })
     }
 
@@ -421,7 +550,7 @@ impl Statements {
         metadata: IndexMetadata,
         node_state: Sender<NodeState>,
     ) -> GetDbIndexR {
-        db_index::new(Arc::clone(&self.session), metadata, node_state).await
+        db_index::new(self.session_rx.clone(), metadata, node_state).await
     }
 
     const ST_LATEST_SCHEMA_VERSION: &str = "
@@ -433,8 +562,12 @@ impl Statements {
         ";
 
     async fn latest_schema_version(&self) -> LatestSchemaVersionR {
-        Ok(self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+        Ok(session
             .execute_iter(self.st_latest_schema_version.clone(), &[])
             .await?
             .rows_stream::<(CqlTimeuuid,)>()?
@@ -451,8 +584,12 @@ impl Statements {
         ";
 
     async fn get_indexes(&self) -> GetIndexesR {
-        Ok(self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+        Ok(session
             .execute_iter(self.st_get_indexes.clone(), &[])
             .await?
             .rows_stream::<(String, String, String, BTreeMap<String, String>)>()?
@@ -481,8 +618,12 @@ impl Statements {
         table: TableName,
         target_column: ColumnName,
     ) -> GetIndexTargetTypeR {
-        Ok(self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+        Ok(session
             .execute_iter(
                 self.st_get_index_target_type.clone(),
                 (keyspace, table, target_column),
@@ -513,8 +654,12 @@ impl Statements {
         table: TableName,
         index: IndexName,
     ) -> GetIndexVersionR {
-        let options = self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+        let options = session
             .execute_iter(self.st_get_index_options.clone(), (keyspace, table, index))
             .await?
             .rows_stream::<(BTreeMap<String, String>,)>()?
@@ -537,8 +682,12 @@ impl Statements {
         table: TableName,
         index: IndexName,
     ) -> GetIndexParamsR {
-        let options = self
-            .session
+        let session = self
+            .session_rx
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+        let options = session
             .execute_iter(self.st_get_index_options.clone(), (keyspace, table, index))
             .await?
             .rows_stream::<(BTreeMap<String, String>,)>()?
@@ -570,11 +719,15 @@ impl Statements {
     }
 
     async fn is_valid_index(&self, metadata: IndexMetadata) -> IsValidIndexR {
-        let Ok(version_begin) = self.session.await_schema_agreement().await else {
+        let Some(session) = self.session_rx.borrow().clone() else {
+            debug!("is_valid_index: no active session for {}", metadata.id());
+            return false;
+        };
+        let Ok(version_begin) = session.await_schema_agreement().await else {
             debug!("is_valid_index: schema not agreed for {}", metadata.id());
             return false;
         };
-        let cluster_state = self.session.get_cluster_state();
+        let cluster_state = session.get_cluster_state();
 
         // check a keyspace
         let Some(keyspace) = cluster_state.get_keyspace(metadata.keyspace_name.as_ref()) else {
@@ -583,7 +736,7 @@ impl Statements {
                 metadata.id()
             );
             // missing the keyspace in the cluster_state, metadata should be refreshed
-            self.session.refresh_metadata().await.unwrap_or(());
+            session.refresh_metadata().await.unwrap_or(());
             return false;
         };
 
@@ -591,7 +744,7 @@ impl Statements {
         if !keyspace.tables.contains_key(metadata.table_name.as_ref()) {
             debug!("is_valid_index: no table for {}", metadata.id());
             // missing the table in the cluster_state, metadata should be refreshed
-            self.session.refresh_metadata().await.unwrap_or(());
+            session.refresh_metadata().await.unwrap_or(());
             return false;
         }
 
@@ -602,12 +755,12 @@ impl Statements {
         {
             debug!("is_valid_index: no cdc log for {}", metadata.id());
             // missing the cdc log in the cluster_state, metadata should be refreshed
-            self.session.refresh_metadata().await.unwrap_or(());
+            session.refresh_metadata().await.unwrap_or(());
             return false;
         }
 
         // check if schema version changed
-        let Ok(Some(version_end)) = self.session.check_schema_agreement().await else {
+        let Ok(Some(version_end)) = session.check_schema_agreement().await else {
             debug!(
                 "is_valid_index: schema not agreed for {} finally",
                 metadata.id()

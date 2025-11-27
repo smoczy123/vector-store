@@ -526,6 +526,7 @@ pub async fn run(
     node_state: Sender<NodeState>,
     db_actor: Sender<Db>,
     index_factory: Box<dyn IndexFactory + Send + Sync>,
+    config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<(impl Sized, SocketAddr)> {
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
@@ -535,16 +536,16 @@ pub async fn run(
         engine::new(db_actor, index_factory, node_state, metrics.clone()).await?,
         metrics,
         index_engine_version,
+        config_rx,
     )
     .await
 }
 
 pub async fn new_db(
-    uri: ScyllaDbUri,
     node_state: Sender<NodeState>,
-    credentials: Option<Credentials>,
+    config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Sender<Db>> {
-    db::new(uri, node_state, credentials).await
+    db::new(node_state, config_rx).await
 }
 
 pub async fn new_node_state() -> Sender<NodeState> {
@@ -570,8 +571,11 @@ pub fn new_index_factory_usearch(
 
 pub fn new_index_factory_opensearch(
     addr: String,
+    config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::opensearch::new_opensearch(&addr)?))
+    Ok(Box::new(index::opensearch::new_opensearch(
+        &addr, config_rx,
+    )?))
 }
 
 pub async fn wait_for_shutdown() {
