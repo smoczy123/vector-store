@@ -3,25 +3,30 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::Config;
+use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::System;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::info;
 use tracing::trace;
 
-const MEMORY_ALLOCATION_THRESHOLD: f64 = 0.05;
+const MEMORY_ALLOCATION_THRESHOLD: f64 = 0.95;
+const MEMORY_INFO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Allocate {
-    CanAllocate,
-    CannotAllocate,
+    Can,
+    Cannot,
 }
 
-pub(crate) type AllocateR = anyhow::Result<Allocate>;
+pub(crate) type AllocateR = Allocate;
 
 pub enum Memory {
     CanAllocate { tx: oneshot::Sender<AllocateR> },
@@ -34,14 +39,15 @@ pub(crate) trait MemoryExt {
 impl MemoryExt for mpsc::Sender<Memory> {
     async fn can_allocate(&self) -> AllocateR {
         let (tx, rx) = oneshot::channel();
-        self.send(Memory::CanAllocate { tx }).await?;
-        rx.await?
+        self.send(Memory::CanAllocate { tx })
+            .await
+            .expect("MemoryExt::can_allocate: internal actor should receive request");
+        rx.await
+            .expect("MemoryExt::can_allocate: internal actor should send response")
     }
 }
 
-pub(crate) fn new() -> mpsc::Sender<Memory> {
-    const MEMORY_INFO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-
+pub(crate) fn new(mut config_rx: watch::Receiver<Arc<Config>>) -> mpsc::Sender<Memory> {
     // TODO: The value of channel size was taken from initial benchmarks. Needs more testing
     const CHANNEL_SIZE: usize = 10;
     let (tx, mut rx) = mpsc::channel(CHANNEL_SIZE);
@@ -49,21 +55,50 @@ pub(crate) fn new() -> mpsc::Sender<Memory> {
     tokio::spawn(async move {
         debug!("starting");
 
+
+        let mut config = config_rx.borrow_and_update().clone();
+
         let mut system_info = System::new_all();
-        let mut interval = tokio::time::interval(MEMORY_INFO_REFRESH_INTERVAL);
-        let mut allocate = Allocate::CanAllocate;
+        let mut memory_limit = calculate_memory_limit(available_memory(&system_info), &config);
+        info!("Memory limit set to {memory_limit} bytes");
+
+        let mut interval = tokio::time::interval(
+            config
+                .memory_usage_check_interval
+                .unwrap_or(MEMORY_INFO_REFRESH_INTERVAL),
+        );
+        info!("Memory usage check interval set to {:?}", interval.period());
+
+        let mut allocate = can_allocate(used_memory(&system_info), memory_limit, Allocate::Can);
 
         loop {
             select! {
+                _ = config_rx.changed() => {
+                    let config_new = config_rx.borrow_and_update().clone();
+                    if config.memory_limit != config_new.memory_limit {
+                        memory_limit = calculate_memory_limit(available_memory(&system_info), &config_new);
+                        info!("Memory limit updated to {memory_limit} bytes");
+                    }
+                    if config.memory_usage_check_interval != config_new.memory_usage_check_interval {
+                        interval = tokio::time::interval(
+                            config_new
+                            .memory_usage_check_interval
+                            .unwrap_or(MEMORY_INFO_REFRESH_INTERVAL),
+                        );
+                        info!("Memory usage check interval updated to {:?}", interval.period());
+                    }
+                    config = config_new;
+                }
+
                 _ = interval.tick() => {
                     system_info.refresh_memory();
-                    allocate = can_allocate(&system_info)
+                    allocate = can_allocate(used_memory(&system_info), memory_limit, allocate);
                 }
 
                 Some(msg) =  rx.recv() => {
                     match msg {
                         Memory::CanAllocate { tx } => {
-                            tx.send(Ok(allocate.clone())).unwrap_or_else(|_| trace!("can_allocate: unable to send response"));
+                            tx.send(allocate).unwrap_or_else(|_| trace!("can_allocate: unable to send response"));
                         }
                     }
                 }
@@ -79,17 +114,127 @@ pub(crate) fn new() -> mpsc::Sender<Memory> {
     tx
 }
 
-fn can_allocate(system_info: &System) -> Allocate {
+fn available_memory(system_info: &System) -> u64 {
     let cgroup = system_info.cgroup_limits();
-    let (available_memory, total_memory) = if let Some(cgroup) = cgroup {
-        (cgroup.free_memory, cgroup.total_memory)
-    } else {
-        (system_info.available_memory(), system_info.total_memory())
-    };
 
-    if available_memory >= (MEMORY_ALLOCATION_THRESHOLD * total_memory as f64) as u64 {
-        Allocate::CanAllocate
+    if let Some(cgroup) = cgroup {
+        cgroup.total_memory
     } else {
-        Allocate::CannotAllocate
+        system_info.total_memory()
+    }
+}
+
+fn used_memory(system_info: &System) -> u64 {
+    let cgroup = system_info.cgroup_limits();
+
+    if let Some(cgroup) = cgroup {
+        cgroup.rss
+    } else {
+        system_info.used_memory()
+    }
+}
+
+fn calculate_memory_limit(available_memory: u64, config: &Config) -> u64 {
+    let system_limit = (available_memory as f64 * MEMORY_ALLOCATION_THRESHOLD) as u64;
+
+    if let Some(memory_limit) = config.memory_limit {
+        memory_limit.min(system_limit)
+    } else {
+        system_limit
+    }
+}
+
+fn can_allocate(used_memory: u64, memory_limit: u64, current: Allocate) -> Allocate {
+    if used_memory < memory_limit {
+        if current == Allocate::Cannot {
+            info!("Memory usage below limit ({used_memory}), can allocate more memory");
+        }
+        Allocate::Can
+    } else {
+        if current == Allocate::Can {
+            info!("Memory usage above limit ({used_memory}), cannot allocate more memory");
+        }
+        Allocate::Cannot
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_calculate_memory_limit() {
+        let memory_limit = 1000;
+        let config = Config {
+            memory_limit: Some(memory_limit),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            calculate_memory_limit(memory_limit, &config),
+            (memory_limit as f64 * MEMORY_ALLOCATION_THRESHOLD) as u64
+        );
+
+        let edge_below = (memory_limit as f64 / MEMORY_ALLOCATION_THRESHOLD) as u64;
+        assert_eq!(
+            calculate_memory_limit(edge_below, &config),
+            memory_limit - 1
+        );
+        assert_eq!(
+            calculate_memory_limit(edge_below + 1, &config),
+            memory_limit
+        );
+    }
+
+    #[test]
+    fn check_can_allocate() {
+        assert_eq!(can_allocate(99, 100, Allocate::Can), Allocate::Can);
+        assert_eq!(can_allocate(99, 100, Allocate::Cannot), Allocate::Can);
+        assert_eq!(can_allocate(100, 100, Allocate::Can), Allocate::Cannot);
+        assert_eq!(can_allocate(100, 100, Allocate::Cannot), Allocate::Cannot);
+        assert_eq!(can_allocate(101, 100, Allocate::Can), Allocate::Cannot);
+        assert_eq!(can_allocate(101, 100, Allocate::Cannot), Allocate::Cannot);
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn check_configuration_change() {
+        let (config_tx, config_rx) = watch::channel(Arc::new(Config {
+            memory_usage_check_interval: Some(Duration::from_secs(3600)),
+            ..Config::default()
+        }));
+        let memory_actor = new(config_rx);
+
+        // be sure the actor has started
+        assert_eq!(memory_actor.can_allocate().await, Allocate::Can);
+
+        let available_mem = available_memory(&System::new_all());
+        let default_limit = calculate_memory_limit(available_mem, &Config::default());
+        assert!(logs_contain(&format!(
+            "Memory limit set to {default_limit} bytes"
+        )));
+        assert!(logs_contain(&format!(
+            "Memory usage check interval set to {:?}",
+            Duration::from_secs(3600)
+        )));
+
+        config_tx
+            .send(Arc::new(Config {
+                memory_limit: Some(default_limit - 1),
+                memory_usage_check_interval: Some(Duration::from_millis(1)),
+                ..Config::default()
+            }))
+            .unwrap();
+
+        // be sure the configuration reload has taken place
+        assert_eq!(memory_actor.can_allocate().await, Allocate::Can);
+        assert!(logs_contain(&format!(
+            "Memory limit updated to {} bytes",
+            { default_limit - 1 }
+        )));
+        assert!(logs_contain(&format!(
+            "Memory usage check interval updated to {:?}",
+            Duration::from_millis(1)
+        )));
     }
 }

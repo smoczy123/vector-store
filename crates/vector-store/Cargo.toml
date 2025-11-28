@@ -64,4 +64,5 @@ reqwest.workspace = true
 httpclient.workspace = true
 tempfile.workspace = true
 temp-env = "0.3.6"
+tracing-test.workspace = true
 rcgen = "0.14.5"

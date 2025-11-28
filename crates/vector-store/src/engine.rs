@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::Config;
 use crate::IndexId;
 use crate::IndexMetadata;
 use crate::Metrics;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::debug_span;
@@ -106,11 +108,12 @@ pub(crate) async fn new(
     index_factory: Box<dyn IndexFactory + Send + Sync>,
     node_state: Sender<NodeState>,
     metrics: Arc<Metrics>,
+    config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<mpsc::Sender<Engine>> {
     let (tx, mut rx) = mpsc::channel(10);
 
     let monitor_actor = monitor_indexes::new(db.clone(), tx.clone(), node_state).await?;
-    let memory_actor = memory::new();
+    let memory_actor = memory::new(config_rx);
 
     tokio::spawn(
         async move {
