@@ -1362,7 +1362,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpclient"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1824,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "macros"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "quote",
  "syn 2.0.110",
@@ -3720,7 +3720,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector-search-benchmark"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "arrow-array",
  "clap",
@@ -3742,14 +3742,14 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "vector-search-validator-engine",
 ]
 
 [[package]]
 name = "vector-search-validator-engine"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "hickory-server",
@@ -3775,7 +3775,7 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-tests"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "futures",
  "httpclient",
@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-vector-store"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "httpclient",
  "scylla",
@@ -3800,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "vector-store"
-version = "0.7.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
