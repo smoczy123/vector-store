@@ -42,15 +42,15 @@ def chdir(template_dir):
         print('cd ', dir)
     os.chdir(dir)
 
-def install_vector_store(version):
-    run('sudo -u {_USER} curl -L -o {_HOME}/vector-store.tar.gz  https://github.com/scylladb/vector-store/releases/download/{VERSION}/vector-store-{VERSION}.tar.gz'.format(VERSION=version, _HOME=HOME_DIR, _USER=USER))
-    name = 'vector-store-{VERSION}'.format(VERSION=version)
+def install_vector_store(version, arch):
+    name = 'vector-store-{VERSION}-{ARC}'.format(VERSION=version, ARC=arch)
+    run('sudo -u {_USER} curl -L -o {_HOME}/vector-store.tar.gz  https://github.com/scylladb/vector-store/releases/download/{VERSION}/{NAME}.tar.gz'.format(VERSION=version, _HOME=HOME_DIR, _USER=USER, NAME=name))
     run('sudo -u {_USER} tar -xvf {_HOME}/vector-store.tar.gz -C {_HOME}/')
     run('sudo -u {_USER} {_COPY_OR_MOVE} {_HOME}/{NAME} {_HOME}/vector-store'.format(NAME=name, _HOME=HOME_DIR, _USER=USER, _COPY_OR_MOVE=COPY_OR_MOVE))
 
-def install_node_exporter():
+def install_node_exporter(arch):
     try:
-        run('{_HOME}/node_exporter_install')
+        run('{_HOME}/node_exporter_install --arch {arch}'.format(arch=arch, _HOME=HOME_DIR,))
     except Exception as e:
         print("node_exporter_install failed" + str(e))
         print(e.output)
@@ -62,6 +62,13 @@ def install_node_exporter():
     run('systemctl daemon-reload')
     run('systemctl enable node-exporter.service')
     run('systemctl start node-exporter.service')
+
+def install_process_exporter():
+    try:
+        run('{_HOME}/install_process_exporter.sh'.format(_HOME=HOME_DIR,))
+    except Exception as e:
+        print("process_exporter_install failed" + str(e))
+        print(e.output)
 
 def install_service():
     run('cp {_HOME}/vector-store.service /etc/systemd/system/')
@@ -78,6 +85,7 @@ if __name__ == '__main__':
         sys.exit(1)
     parser = argparse.ArgumentParser(description='Construct a vector store image')
     parser.add_argument('--version', default="0.1.0", help='Monitoring version to install')
+    parser.add_argument('--arch', default="amd64", help='Architecture to use (amd64/arm64)')
     parser.add_argument('--cloud', default="aws", choices=['aws','gce'], help='What cloud we are running on')
     parser.add_argument('--verbose', action='store_true', default=False, help='Verbose trace mode')
     parser.add_argument('--do-not-move', action='store_true', default=False, help='For testing, do not move files, copy them instead')
@@ -89,6 +97,7 @@ if __name__ == '__main__':
 
     if args.do_not_move:
         COPY_OR_MOVE='cp'
-    install_vector_store(args.version)
+    install_vector_store(args.version, args.arch)
     install_service()
-    install_node_exporter()
+    install_node_exporter(arch=args.arch)
+    install_process_exporter()

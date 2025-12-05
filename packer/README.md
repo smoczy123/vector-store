@@ -25,6 +25,13 @@ packer build -only=amazon-ebs -var vector_version="0.1.0" vector-store-template.
 # GCP only
 packer build -only=googlecompute -var vector_version="0.1.0" vector-store-template.json
 ```
+# Architecture
+By default the image will be created for x86 Architecture, you can override it with the arch variable
+```shell
+packer build -var-file=variables.json -var vector_version="0.4.0" -var 'arch=arm64' vector-store-template.json
+```
+
+
 ## Variables
 
 

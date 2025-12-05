@@ -30,9 +30,11 @@ def run(cmd, shell=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Download and install prometheus node_exporter')
+    parser.add_argument('--arch', default="amd64", help='Architecture to use (amd64/arm64)')
     parser.add_argument('-F', '--force', action='store_true', default=False, help='Force re-installation when node_exporter is already installed')
     args = parser.parse_args()
     force = args.force
+    arch = args.arch
     if os.getuid() > 0:
         print('Requires root permission.')
         sys.exit(1)
@@ -49,12 +51,12 @@ if __name__ == '__main__':
             print('node_exporter already installed, you can use `--force` to force reinstallation')
             sys.exit(1)
 
-    run('curl -L -o /var/tmp/node_exporter.tar.gz https://github.com/prometheus/node_exporter/releases/download/v{version}/node_exporter-{version}.linux-amd64.tar.gz'.format(version=VERSION))
+    run('curl -L -o /var/tmp/node_exporter.tar.gz https://github.com/prometheus/node_exporter/releases/download/v{version}/node_exporter-{version}.linux-{arch}.tar.gz'.format(version=VERSION, arch=arch))
     run('tar -xvf /var/tmp/node_exporter.tar.gz  --wildcards --no-anchored -C {install_dir} node_exporter'.format(install_dir=INSTALL_DIR))
     os.remove('/var/tmp/node_exporter.tar.gz')
 
     if node_exporter_p.exists():
         node_exporter_p.unlink()
-    os.rename('{install_dir}/node_exporter-{version}.linux-amd64/node_exporter'.format(install_dir=INSTALL_DIR, version=VERSION), '/usr/bin/node_exporter')
-    run('rm -rf {install_dir}/node_exporter-{version}.linux-amd64'.format(install_dir=INSTALL_DIR, version=VERSION))
+    os.rename('{install_dir}/node_exporter-{version}.linux-{arch}/node_exporter'.format(install_dir=INSTALL_DIR, version=VERSION, arch=arch), '/usr/bin/node_exporter')
+    run('rm -rf {install_dir}/node_exporter-{version}.linux-{arch}'.format(install_dir=INSTALL_DIR, version=VERSION, arch=arch))
     print('node_exporter successfully installed')
