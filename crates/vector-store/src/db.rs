@@ -31,7 +31,7 @@ use regex::Regex;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
-use rustls_pemfile::certs;
+use rustls_pki_types::pem::PemObject;
 use scylla::client::session::Session;
 use scylla::client::session::TlsContext;
 use scylla::client::session_builder::SessionBuilder;
@@ -39,7 +39,6 @@ use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlTimeuuid;
 use secrecy::ExposeSecret;
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -463,8 +462,7 @@ async fn create_session(
                 .await
                 .with_context(|| format!("Failed to read certificate file at {cert_path:?}"))?;
 
-            let mut reader = Cursor::new(cert_pem);
-            let ca_der: Vec<CertificateDer<'static>> = certs(&mut reader)
+            let ca_der = CertificateDer::pem_slice_iter(&cert_pem)
                 .collect::<Result<Vec<_>, _>>()
                 .context("Failed to parse certificate PEM")?;
 
