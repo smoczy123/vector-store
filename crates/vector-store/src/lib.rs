@@ -353,6 +353,7 @@ impl Default for ExpansionSearch {
     PartialEq,
     Eq,
     Hash,
+    Default,
     serde::Serialize,
     serde::Deserialize,
     derive_more::From,
@@ -360,14 +361,9 @@ impl Default for ExpansionSearch {
 )]
 pub enum SpaceType {
     Euclidean,
+    #[default]
     Cosine,
     DotProduct,
-}
-
-impl Default for SpaceType {
-    fn default() -> Self {
-        Self::Cosine
-    }
 }
 
 impl FromStr for SpaceType {
@@ -382,17 +378,6 @@ impl FromStr for SpaceType {
         }
     }
 }
-
-#[derive(
-    Copy,
-    Clone,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::AsRef,
-    derive_more::From,
-    derive_more::Display,
-)]
-struct ParamM(usize);
 
 #[derive(
     Clone,

@@ -512,11 +512,9 @@ fn add_or_replace(
         debug!("add_or_replace: reserved index capacity for {capacity}");
     }
 
-    if remove {
-        if let Err(err) = idx.remove(key) {
-            debug!("add_or_replace: unable to remove embedding for key {key}: {err}");
-            return;
-        };
+    if remove && let Err(err) = idx.remove(key) {
+        debug!("add_or_replace: unable to remove embedding for key {key}: {err}");
+        return;
     }
     if let Err(err) = idx.add(key, &embedding) {
         debug!("add_or_replace: unable to add embedding for key {key}: {err}");

@@ -61,16 +61,14 @@ pub fn derive_to_enum_schema(input: TokenStream) -> TokenStream {
 
 fn get_variant_doc(variant: &syn::Variant) -> Option<String> {
     variant.attrs.iter().find_map(|attr| {
-        if attr.path().is_ident("doc") {
-            if let syn::Meta::NameValue(nv) = &attr.meta {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit),
-                    ..
-                }) = &nv.value
-                {
-                    return Some(lit.value().trim().to_string());
-                }
-            }
+        if attr.path().is_ident("doc")
+            && let syn::Meta::NameValue(nv) = &attr.meta
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit),
+                ..
+            }) = &nv.value
+        {
+            return Some(lit.value().trim().to_string());
         }
         None
     })
@@ -82,16 +80,15 @@ fn get_enum_doc(input: &DeriveInput) -> Option<String> {
         .iter()
         .filter(|attr| matches!(attr.meta, syn::Meta::NameValue(ref nv) if nv.path.is_ident("doc")))
         .filter_map(|attr| {
-            if let syn::Meta::NameValue(nv) = &attr.meta {
-                if let syn::Expr::Lit(syn::ExprLit {
+            if let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
                     lit: syn::Lit::Str(lit),
                     ..
                 }) = &nv.value
-                {
-                    let value = lit.value().trim().to_string();
-                    if !value.is_empty() {
-                        return Some(value);
-                    }
+            {
+                let value = lit.value().trim().to_string();
+                if !value.is_empty() {
+                    return Some(value);
                 }
             }
             None
