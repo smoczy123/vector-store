@@ -28,7 +28,13 @@ jobs:
     - name: Print release toolchain rustc version
       run: ./scripts/run-with-release-toolchain rustc --version
 
-    - name: Build release
+    - name: Try to build release for the first time
+      id: build-release-1
+      continue-on-error: true
+      run: ./scripts/run-with-release-toolchain cargo build --release --workspace
+
+    - name: Try to build release for the second time
+      if: steps.build-release-1.outcome == 'failure'
       run: ./scripts/run-with-release-toolchain cargo build --release --workspace
 
     - name: Setup AIO requirements for Scylla
