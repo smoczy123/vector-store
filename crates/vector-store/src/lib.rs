@@ -494,6 +494,13 @@ impl From<SocketAddr> for HttpServerConfig {
 pub struct AsyncInProgress(mpsc::Sender<()>);
 
 pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output) -> Output {
+    if let Some(threads @ 1..) = threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .unwrap();
+    }
+
     let mut builder = match threads {
         Some(0) | None => Builder::new_multi_thread(),
         Some(1) => Builder::new_current_thread(),
@@ -557,12 +564,20 @@ async fn move_to_the_end_of_async_runtime_queue() {
 pub fn new_index_factory_usearch(
     config_tx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    // This semaphore decides how many tasks are queued for an usearch process. It is
+    // These semaphores decide how many tasks are queued for an usearch process. They are
     // calculated as a number of threads, to be sure that there is always a new
     // task waiting in the queue.
-    let semaphore = Arc::new(Semaphore::new(Handle::current().metrics().num_workers()));
 
-    Ok(Box::new(index::usearch::new_usearch(semaphore, config_tx)?))
+    // Semaphore for async index operations: search (ANN) and count
+    let tokio_semaphore = Arc::new(Semaphore::new(Handle::current().metrics().num_workers()));
+    // Semaphore for background index operations (add, remove) on rayon threads
+    let rayon_semaphore = Arc::new(Semaphore::new(Handle::current().metrics().num_workers()));
+
+    Ok(Box::new(index::usearch::new_usearch(
+        tokio_semaphore,
+        rayon_semaphore,
+        config_tx,
+    )?))
 }
 
 pub fn new_index_factory_opensearch(
