@@ -85,15 +85,9 @@ pub(crate) async fn setup_store(
     let run = {
         let node_state = node_state.clone();
         async move {
-            let (server, addr) = vector_store::run(
-                SocketAddr::from(([127, 0, 0, 1], 0)).into(),
-                node_state,
-                db_actor,
-                index_factory,
-                config_rx,
-            )
-            .await
-            .unwrap();
+            let (server, addr) = vector_store::run(node_state, db_actor, index_factory, config_rx)
+                .await
+                .unwrap();
 
             (HttpClient::new(addr), server, config_tx)
         }
@@ -109,7 +103,11 @@ pub(crate) async fn setup_store_and_wait_for_index() -> (
     impl Sized,
     Sender<NodeState>,
 ) {
-    let (run, index, db, node_state) = setup_store(Config::default()).await;
+    let (run, index, db, node_state) = setup_store(Config {
+        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        ..Default::default()
+    })
+    .await;
     let (client, server, _config_tx) = run.await;
 
     wait_for(
@@ -125,7 +123,11 @@ pub(crate) async fn setup_store_and_wait_for_index() -> (
 async fn simple_create_search_delete_index() {
     crate::enable_tracing();
 
-    let (run, index, db, _node_state) = setup_store(Config::default()).await;
+    let (run, index, db, _node_state) = setup_store(Config {
+        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        ..Default::default()
+    })
+    .await;
     let (client, _server, _config_tx) = run.await;
 
     db.insert_values(
@@ -218,17 +220,15 @@ async fn failed_db_index_create() {
     let (_, rx) = watch::channel(Arc::new(Config::default()));
     let index_factory = vector_store::new_index_factory_usearch(rx).unwrap();
 
-    let (_config_tx, config_rx) = watch::channel(Arc::new(vector_store::Config::default()));
+    let config = vector_store::Config {
+        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        ..Default::default()
+    };
+    let (_config_tx, config_rx) = watch::channel(Arc::new(config));
 
-    let (_server_actor, addr) = vector_store::run(
-        SocketAddr::from(([127, 0, 0, 1], 0)).into(),
-        node_state,
-        db_actor,
-        index_factory,
-        config_rx,
-    )
-    .await
-    .unwrap();
+    let (_server_actor, addr) = vector_store::run(node_state, db_actor, index_factory, config_rx)
+        .await
+        .unwrap();
 
     let client = HttpClient::new(addr);
 
@@ -351,7 +351,11 @@ async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimen
 #[tokio::test]
 async fn ann_fail_while_building() {
     crate::enable_tracing();
-    let (run, index, db, _node_state) = setup_store(Config::default()).await;
+    let (run, index, db, _node_state) = setup_store(Config {
+        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        ..Default::default()
+    })
+    .await;
     db.set_next_full_scan_progress(vector_store::Progress::InProgress(
         Percentage::try_from(33.333).unwrap(),
     ));
@@ -401,6 +405,7 @@ async fn ann_works_with_embedding_field_name() {
 async fn http_server_is_responsive_when_index_add_hangs() {
     crate::enable_tracing();
     let config = Config {
+        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         usearch_simulator: Some(vec![
             Duration::from_secs(0),
             Duration::from_secs(20), // Simulate long add operation (longer than test timeout).
