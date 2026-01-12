@@ -8,6 +8,7 @@ use crate::db_basic::Index;
 use crate::db_basic::Table;
 use ::time::OffsetDateTime;
 use httpclient::HttpClient;
+use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlValue;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -42,10 +43,10 @@ async fn memory_limit_during_index_build() {
     let (db_actor, db) = db_basic::new(node_state.clone());
 
     let index = IndexMetadata {
-        keyspace_name: "ksp".to_string().into(),
-        table_name: "tbl".to_string().into(),
-        index_name: "idx".to_string().into(),
-        target_column: "v".to_string().into(),
+        keyspace_name: "ksp".into(),
+        table_name: "tbl".into(),
+        index_name: "idx".into(),
+        target_column: "v".into(),
         dimensions: NonZeroUsize::new(3).unwrap().into(),
         connectivity: Connectivity::default(),
         expansion_add: ExpansionAdd::default(),
@@ -58,7 +59,8 @@ async fn memory_limit_during_index_build() {
         index.keyspace_name.clone(),
         index.table_name.clone(),
         Table {
-            primary_keys: vec!["pk".to_string().into()],
+            primary_keys: Arc::new(vec!["pk".into()]),
+            columns: Arc::new([("pk".into(), NativeType::Int)].into_iter().collect()),
             dimensions: [(index.target_column.clone(), index.dimensions)]
                 .into_iter()
                 .collect(),

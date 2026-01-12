@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::ColumnName;
 use crate::Connectivity;
 use crate::Dimensions;
 use crate::Distance;
@@ -85,6 +86,7 @@ impl IndexFactory for OpenSearchIndexFactory {
     fn create_index(
         &self,
         index: IndexConfiguration,
+        _: Arc<Vec<ColumnName>>,
         _: mpsc::Sender<Memory>,
     ) -> anyhow::Result<mpsc::Sender<Index>> {
         new(
@@ -310,6 +312,7 @@ async fn process(
             limit,
             tx,
         } => ann(id, tx, keys, embedding, dimensions, limit, client).await,
+        Index::FilteredAnn { tx, .. } => filtered_ann(tx).await,
         Index::Count { tx } => count(id, tx, client).await,
     }
 }
@@ -482,6 +485,10 @@ async fn ann(
     tx_ann
         .send(Ok((keys, distances)))
         .unwrap_or_else(|_| trace!("ann: unable to send response"));
+}
+
+async fn filtered_ann(tx_ann: oneshot::Sender<AnnR>) {
+    _ = tx_ann.send(Err(anyhow!("Filtering not supported")));
 }
 
 async fn count(id: Arc<IndexId>, tx: oneshot::Sender<CountR>, client: Arc<OpenSearch>) {

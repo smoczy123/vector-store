@@ -9,6 +9,7 @@ use futures::Stream;
 use futures::StreamExt;
 use futures::stream;
 use itertools::Itertools;
+use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlTimeuuid;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,7 +75,8 @@ impl TableStore {
 }
 
 pub(crate) struct Table {
-    pub(crate) primary_keys: Vec<ColumnName>,
+    pub(crate) primary_keys: Arc<Vec<ColumnName>>,
+    pub(crate) columns: Arc<HashMap<ColumnName, NativeType>>,
     pub(crate) dimensions: HashMap<ColumnName, Dimensions>,
 }
 
@@ -392,15 +394,18 @@ pub(crate) fn new_db_index(
                 )))
                 .await
                 .unwrap();
-            while !rx_index.is_closed() {
+            while !rx_index.is_closed() && !tx_embeddings.is_closed() {
                 tokio::select! {
                     item = items.next() => {
                         let Some(item) = item else {
                             break;
                         };
-                        if tx_embeddings.send((item, None)).await.is_err() {
-                            break;
-                        }
+                        tokio::spawn({
+                            let tx_embeddings = tx_embeddings.clone();
+                            async move {
+                                _ = tx_embeddings.send((item, None)).await;
+                            }
+                        });
                     }
                     Some(msg) = rx_index.recv() => {
                         process_db_index(&db, &metadata, msg).await;
@@ -450,6 +455,20 @@ async fn process_db_index(db: &DbBasic, metadata: &IndexMetadata, msg: DbIndex) 
             )
             .map_err(|_| anyhow!("DbIndex::GetPrimaryKeyColumns: unable to send response"))
             .unwrap(),
+
+        DbIndex::GetTableColumns { tx } => tx
+            .send(
+                db.0.read()
+                    .unwrap()
+                    .keyspaces
+                    .get(&metadata.keyspace_name)
+                    .and_then(|keyspace| keyspace.tables.get(&metadata.table_name))
+                    .map(|table| table.table.columns.clone())
+                    .unwrap_or_default(),
+            )
+            .map_err(|_| anyhow!("DbIndex::GetPrimaryKeyColumns: unable to send response"))
+            .unwrap(),
+
         DbIndex::FullScanProgress { tx } => tx
             .send({
                 let mut db = db.0.write().unwrap();

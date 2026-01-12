@@ -9,28 +9,39 @@ use crate::db_basic::DbBasic;
 use crate::db_basic::Index;
 use crate::db_basic::Table;
 use crate::wait_for;
+use crate::wait_for_value;
 use ::time::OffsetDateTime;
 use httpclient::HttpClient;
 use reqwest::StatusCode;
+use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlValue;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::watch;
 use uuid::Uuid;
+use vector_store::ColumnName;
 use vector_store::Config;
 use vector_store::Connectivity;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::IndexMetadata;
 use vector_store::Percentage;
+use vector_store::PrimaryKey;
 use vector_store::SpaceType;
+use vector_store::Timestamp;
 use vector_store::Vector;
+use vector_store::httproutes::PostIndexAnnFilter;
+use vector_store::httproutes::PostIndexAnnRestriction;
 use vector_store::node_state::NodeState;
 
 pub(crate) async fn setup_store(
     config: Config,
+    primary_keys: impl IntoIterator<Item = ColumnName>,
+    columns: impl IntoIterator<Item = (ColumnName, NativeType)>,
+    values: impl IntoIterator<Item = (PrimaryKey, Option<Vector>, Timestamp)>,
 ) -> (
     impl std::future::Future<Output = (HttpClient, impl Sized, impl Sized)>,
     IndexMetadata,
@@ -42,15 +53,15 @@ pub(crate) async fn setup_store(
     let (db_actor, db) = db_basic::new(node_state.clone());
 
     let index = IndexMetadata {
-        keyspace_name: "vector".to_string().into(),
-        table_name: "items".to_string().into(),
-        index_name: "ann".to_string().into(),
-        target_column: "embedding".to_string().into(),
+        keyspace_name: "vector".into(),
+        table_name: "items".into(),
+        index_name: "ann".into(),
+        target_column: "embedding".into(),
         dimensions: NonZeroUsize::new(3).unwrap().into(),
         connectivity: Connectivity::default(),
         expansion_add: ExpansionAdd::default(),
         expansion_search: ExpansionSearch::default(),
-        space_type: SpaceType::default(),
+        space_type: SpaceType::Euclidean,
         version: Uuid::new_v4().into(),
     };
 
@@ -58,13 +69,23 @@ pub(crate) async fn setup_store(
         index.keyspace_name.clone(),
         index.table_name.clone(),
         Table {
-            primary_keys: vec!["pk".to_string().into(), "ck".to_string().into()],
+            primary_keys: Arc::new(primary_keys.into_iter().collect()),
+            columns: Arc::new(columns.into_iter().collect()),
             dimensions: [(index.target_column.clone(), index.dimensions)]
                 .into_iter()
                 .collect(),
         },
     )
     .unwrap();
+
+    db.insert_values(
+        &index.keyspace_name,
+        &index.table_name,
+        &index.target_column,
+        values,
+    )
+    .unwrap();
+
     db.add_index(
         &index.keyspace_name,
         index.index_name.clone(),
@@ -96,17 +117,26 @@ pub(crate) async fn setup_store(
     (run, index, db, node_state)
 }
 
-pub(crate) async fn setup_store_and_wait_for_index() -> (
+pub(crate) async fn setup_store_and_wait_for_index(
+    primary_keys: impl IntoIterator<Item = ColumnName>,
+    columns: impl IntoIterator<Item = (ColumnName, NativeType)>,
+    values: impl IntoIterator<Item = (PrimaryKey, Option<Vector>, Timestamp)>,
+) -> (
     IndexMetadata,
     HttpClient,
     DbBasic,
     impl Sized,
     Sender<NodeState>,
 ) {
-    let (run, index, db, node_state) = setup_store(Config {
-        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-        ..Default::default()
-    })
+    let (run, index, db, node_state) = setup_store(
+        Config {
+            vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ..Default::default()
+        },
+        primary_keys,
+        columns,
+        values,
+    )
     .await;
     let (client, server, _config_tx) = run.await;
 
@@ -123,18 +153,17 @@ pub(crate) async fn setup_store_and_wait_for_index() -> (
 async fn simple_create_search_delete_index() {
     crate::enable_tracing();
 
-    let (run, index, db, _node_state) = setup_store(Config {
-        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-        ..Default::default()
-    })
-    .await;
-    let (client, _server, _config_tx) = run.await;
-
-    db.insert_values(
-        &index.keyspace_name,
-        &index.table_name,
-        &index.target_column,
-        vec![
+    let (run, index, db, _node_state) = setup_store(
+        Config {
+            vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ..Default::default()
+        },
+        ["pk".into(), "ck".into()],
+        [
+            ("pk".to_string().into(), NativeType::Int),
+            ("ck".to_string().into(), NativeType::Text),
+        ],
+        [
             (
                 vec![CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
                 Some(vec![1., 1., 1.].into()),
@@ -152,7 +181,8 @@ async fn simple_create_search_delete_index() {
             ),
         ],
     )
-    .unwrap();
+    .await;
+    let (client, _server, _config_tx) = run.await;
 
     wait_for(
         || async {
@@ -176,12 +206,13 @@ async fn simple_create_search_delete_index() {
             &index.keyspace_name,
             &index.index_name,
             vec![2.1, -2., 2.].into(),
+            None,
             NonZeroUsize::new(1).unwrap().into(),
         )
         .await;
     assert_eq!(distances.len(), 1);
-    let primary_keys_pk = primary_keys.get(&"pk".to_string().into()).unwrap();
-    let primary_keys_ck = primary_keys.get(&"ck".to_string().into()).unwrap();
+    let primary_keys_pk = primary_keys.get(&"pk".into()).unwrap();
+    let primary_keys_ck = primary_keys.get(&"ck".into()).unwrap();
     assert_eq!(distances.len(), primary_keys_pk.len());
     assert_eq!(distances.len(), primary_keys_ck.len());
     assert_eq!(primary_keys_pk.first().unwrap().as_i64().unwrap(), 2);
@@ -205,10 +236,10 @@ async fn failed_db_index_create() {
     let (db_actor, db) = db_basic::new(node_state.clone());
 
     let index = IndexMetadata {
-        keyspace_name: "vector".to_string().into(),
-        table_name: "items".to_string().into(),
-        index_name: "ann".to_string().into(),
-        target_column: "embedding".to_string().into(),
+        keyspace_name: "vector".into(),
+        table_name: "items".into(),
+        index_name: "ann".into(),
+        target_column: "embedding".into(),
         dimensions: NonZeroUsize::new(3).unwrap().into(),
         connectivity: Default::default(),
         expansion_add: Default::default(),
@@ -238,7 +269,15 @@ async fn failed_db_index_create() {
         index.keyspace_name.clone(),
         index.table_name.clone(),
         Table {
-            primary_keys: vec!["pk".to_string().into(), "ck".to_string().into()],
+            primary_keys: Arc::new(vec!["pk".into(), "ck".into()]),
+            columns: Arc::new(
+                [
+                    ("pk".into(), NativeType::Int),
+                    ("ck".into(), NativeType::Text),
+                ]
+                .into_iter()
+                .collect(),
+            ),
             dimensions: [(index.target_column.clone(), index.dimensions)]
                 .into_iter()
                 .collect(),
@@ -267,7 +306,7 @@ async fn failed_db_index_create() {
 
     db.add_index(
         &index.keyspace_name,
-        "ann2".to_string().into(),
+        "ann2".into(),
         Index {
             table_name: index.table_name.clone(),
             target_column: index.target_column.clone(),
@@ -292,7 +331,7 @@ async fn failed_db_index_create() {
 
     db.add_index(
         &index.keyspace_name,
-        "ann3".to_string().into(),
+        "ann3".into(),
         Index {
             table_name: index.table_name.clone(),
             target_column: index.target_column.clone(),
@@ -316,8 +355,7 @@ async fn failed_db_index_create() {
     assert!(indexes.contains(&vector_store::IndexInfo::new("vector", "ann2")));
     assert!(indexes.contains(&vector_store::IndexInfo::new("vector", "ann3")));
 
-    db.del_index(&index.keyspace_name, &"ann2".to_string().into())
-        .unwrap();
+    db.del_index(&index.keyspace_name, &"ann2".into()).unwrap();
 
     wait_for(
         || async { client.indexes().await.len() == 2 },
@@ -334,13 +372,22 @@ async fn failed_db_index_create() {
 #[tokio::test]
 async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimensions() {
     crate::enable_tracing();
-    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        ["pk".into(), "ck".into()],
+        [
+            ("pk".to_string().into(), NativeType::Int),
+            ("ck".to_string().into(), NativeType::Text),
+        ],
+        [],
+    )
+    .await;
 
     let result = client
         .post_ann(
             &index.keyspace_name,
             &index.index_name,
             vec![1.0, 2.0].into(), // Only 2 dimensions, should be 3 (index.dimensions)
+            None,
             NonZeroUsize::new(1).unwrap().into(),
         )
         .await;
@@ -351,10 +398,18 @@ async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimen
 #[tokio::test]
 async fn ann_fail_while_building() {
     crate::enable_tracing();
-    let (run, index, db, _node_state) = setup_store(Config {
-        vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-        ..Default::default()
-    })
+    let (run, index, db, _node_state) = setup_store(
+        Config {
+            vector_store_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ..Default::default()
+        },
+        ["pk".into(), "ck".into()],
+        [
+            ("pk".to_string().into(), NativeType::Int),
+            ("ck".to_string().into(), NativeType::Text),
+        ],
+        [],
+    )
     .await;
     db.set_next_full_scan_progress(vector_store::Progress::InProgress(
         Percentage::try_from(33.333).unwrap(),
@@ -366,6 +421,7 @@ async fn ann_fail_while_building() {
             &index.keyspace_name,
             &index.index_name,
             vec![1.0, 2.0, 3.0].into(),
+            None,
             NonZeroUsize::new(1).unwrap().into(),
         )
         .await;
@@ -381,7 +437,15 @@ async fn ann_fail_while_building() {
 async fn ann_works_with_embedding_field_name() {
     // Ensure backward compatibility with the old field name "embedding".
     crate::enable_tracing();
-    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index().await;
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        ["pk".into(), "ck".into()],
+        [
+            ("pk".to_string().into(), NativeType::Int),
+            ("ck".to_string().into(), NativeType::Text),
+        ],
+        [],
+    )
+    .await;
     #[derive(serde::Serialize)]
     struct EmbeddingRequest {
         embedding: Vector,
@@ -401,6 +465,429 @@ async fn ann_works_with_embedding_field_name() {
 }
 
 #[tokio::test]
+async fn ann_failed_when_wrong_number_of_primary_keys() {
+    crate::enable_tracing();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        vec!["pk".into()],
+        [("pk".into(), NativeType::Int)],
+        [(
+            vec![CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
+            Some(vec![1., 1., 1.].into()),
+            OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+        )],
+    )
+    .await;
+
+    let response = client
+        .post_ann(
+            &index.keyspace_name,
+            &index.index_name,
+            vec![1.0, 2.0, 3.0].into(),
+            None,
+            NonZeroUsize::new(1).unwrap().into(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_partition_key_int_eq() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key "pk" = 1
+    let pk_ck_values = wait_for_value(
+        || async {
+            let (primary_keys, _) = client
+                .ann(
+                    &index.keyspace_name,
+                    &index.index_name,
+                    vec![1.0, 2.0, 3.0].into(),
+                    Some(PostIndexAnnFilter {
+                        restrictions: vec![PostIndexAnnRestriction::Eq {
+                            lhs: pk_column.clone(),
+                            rhs: 1.into(),
+                        }],
+                        allow_filtering: false,
+                    }),
+                    NonZeroUsize::new(100).unwrap().into(),
+                )
+                .await;
+            let pk_ck_values: HashSet<_> = primary_keys
+                .get(&pk_column)
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as usize)
+                .zip(
+                    primary_keys
+                        .get(&ck_column)
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_i64().unwrap() as usize),
+                )
+                .collect();
+            (pk_ck_values.len() == 10).then_some(pk_ck_values)
+        },
+        "Waiting for ANN to return 10 results",
+    )
+    .await;
+    (0..10).for_each(|i| {
+        assert!(
+            pk_ck_values.contains(&(1, i)),
+            "Expected ck_values to contain value (1, {i})"
+        );
+    });
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_clustering_key_int_eq() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key "ck" = 1
+    let pk_ck_values = wait_for_value(
+        || async {
+            let (primary_keys, _) = client
+                .ann(
+                    &index.keyspace_name,
+                    &index.index_name,
+                    vec![1.0, 2.0, 3.0].into(),
+                    Some(PostIndexAnnFilter {
+                        restrictions: vec![PostIndexAnnRestriction::Eq {
+                            lhs: ck_column.clone(),
+                            rhs: 1.into(),
+                        }],
+                        allow_filtering: false,
+                    }),
+                    NonZeroUsize::new(100).unwrap().into(),
+                )
+                .await;
+            let pk_ck_values: HashSet<_> = primary_keys
+                .get(&pk_column)
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as usize)
+                .zip(
+                    primary_keys
+                        .get(&ck_column)
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_i64().unwrap() as usize),
+                )
+                .collect();
+            (pk_ck_values.len() == 3).then_some(pk_ck_values)
+        },
+        "Waiting for ANN to return 3 results",
+    )
+    .await;
+    (0..3).for_each(|i| {
+        assert!(
+            pk_ck_values.contains(&(i, 1)),
+            "Expected pk_values to contain value ({i}, 1)"
+        );
+    });
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_partition_key_int_in() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key "pk" IN (1, 2)
+    let pk_ck_values = wait_for_value(
+        || async {
+            let (primary_keys, _) = client
+                .ann(
+                    &index.keyspace_name,
+                    &index.index_name,
+                    vec![1.0, 2.0, 3.0].into(),
+                    Some(PostIndexAnnFilter {
+                        restrictions: vec![PostIndexAnnRestriction::In {
+                            lhs: pk_column.clone(),
+                            rhs: vec![1.into(), 2.into()],
+                        }],
+                        allow_filtering: false,
+                    }),
+                    NonZeroUsize::new(100).unwrap().into(),
+                )
+                .await;
+            let pk_ck_values: HashSet<_> = primary_keys
+                .get(&pk_column)
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as usize)
+                .zip(
+                    primary_keys
+                        .get(&ck_column)
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_i64().unwrap() as usize),
+                )
+                .collect();
+            (pk_ck_values.len() == 20).then_some(pk_ck_values)
+        },
+        "Waiting for ANN to return 20 results",
+    )
+    .await;
+    (0..10).for_each(|i| {
+        assert!(
+            pk_ck_values.contains(&(1, i)),
+            "Expected pk_ck_values to contain value (1, {i})"
+        );
+        assert!(
+            pk_ck_values.contains(&(2, i)),
+            "Expected pk_ck_values to contain value (2, {i})"
+        );
+    });
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_clustering_key_int_in() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key "ck" IN (1, 3)
+    let pk_ck_values = wait_for_value(
+        || async {
+            let (primary_keys, _) = client
+                .ann(
+                    &index.keyspace_name,
+                    &index.index_name,
+                    vec![1.0, 2.0, 3.0].into(),
+                    Some(PostIndexAnnFilter {
+                        restrictions: vec![PostIndexAnnRestriction::In {
+                            lhs: ck_column.clone(),
+                            rhs: vec![1.into(), 3.into()],
+                        }],
+                        allow_filtering: false,
+                    }),
+                    NonZeroUsize::new(100).unwrap().into(),
+                )
+                .await;
+            let pk_ck_values: HashSet<_> = primary_keys
+                .get(&pk_column)
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as usize)
+                .zip(
+                    primary_keys
+                        .get(&ck_column)
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_i64().unwrap() as usize),
+                )
+                .collect();
+            (pk_ck_values.len() == 6).then_some(pk_ck_values)
+        },
+        "Waiting for ANN to return 6 results",
+    )
+    .await;
+    (0..3).for_each(|i| {
+        assert!(
+            pk_ck_values.contains(&(i, 1)),
+            "Expected pk_ck_values to contain value ({i}, 1)"
+        );
+        assert!(
+            pk_ck_values.contains(&(i, 3)),
+            "Expected pk_ck_values to contain value ({i}, 3)"
+        );
+    });
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_primary_key_int_eq_tuple() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key ("pk", "ck") = (1, 5)
+    let (primary_keys, _) = client
+        .ann(
+            &index.keyspace_name,
+            &index.index_name,
+            vec![1.0, 2.0, 3.0].into(),
+            Some(PostIndexAnnFilter {
+                restrictions: vec![PostIndexAnnRestriction::EqTuple {
+                    lhs: vec![pk_column.clone(), ck_column.clone()],
+                    rhs: vec![1.into(), 5.into()],
+                }],
+                allow_filtering: false,
+            }),
+            NonZeroUsize::new(100).unwrap().into(),
+        )
+        .await;
+    let pk_values: Vec<_> = primary_keys
+        .get(&pk_column)
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as usize)
+        .collect();
+    let ck_values: Vec<_> = primary_keys
+        .get(&ck_column)
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as usize)
+        .collect();
+    assert_eq!(pk_values.len(), 1);
+    assert_eq!(ck_values.len(), 1);
+    assert_eq!(pk_values.first(), Some(&1));
+    assert_eq!(ck_values.first(), Some(&5));
+}
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn ann_filter_primary_key_int_in_tuple() {
+    crate::enable_tracing();
+
+    let pk_column: ColumnName = "pk".into();
+    let ck_column: ColumnName = "ck".into();
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        [pk_column.clone(), ck_column.clone()],
+        [
+            (pk_column.clone(), NativeType::Int),
+            (ck_column.clone(), NativeType::Int),
+        ],
+        (0..30).map(|i| {
+            (
+                vec![CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
+                Some(vec![i as f32, i as f32, i as f32].into()),
+                OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
+            )
+        }),
+    )
+    .await;
+
+    // Search for nearest neighbors with a filter on primary key ("pk", "ck") IN ((0,7), (1, 5))
+    let (primary_keys, _) = client
+        .ann(
+            &index.keyspace_name,
+            &index.index_name,
+            vec![1.0, 2.0, 3.0].into(),
+            Some(PostIndexAnnFilter {
+                restrictions: vec![PostIndexAnnRestriction::InTuple {
+                    lhs: vec![pk_column.clone(), ck_column.clone()],
+                    rhs: vec![vec![0.into(), 7.into()], vec![1.into(), 5.into()]],
+                }],
+                allow_filtering: false,
+            }),
+            NonZeroUsize::new(100).unwrap().into(),
+        )
+        .await;
+    let pk_ck_values: HashSet<_> = primary_keys
+        .get(&pk_column)
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as usize)
+        .zip(
+            primary_keys
+                .get(&ck_column)
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as usize),
+        )
+        .collect();
+    assert_eq!(pk_ck_values.len(), 2);
+    assert!(
+        pk_ck_values.contains(&(0, 7)),
+        "Expected pk_ck_values to contain value (0, 7)"
+    );
+    assert!(
+        pk_ck_values.contains(&(1, 5)),
+        "Expected pk_ck_values to contain value (1, 5)"
+    );
+}
+
+#[tokio::test]
 #[ntest::timeout(10_000)]
 async fn http_server_is_responsive_when_index_add_hangs() {
     crate::enable_tracing();
@@ -413,20 +900,21 @@ async fn http_server_is_responsive_when_index_add_hangs() {
         ]),
         ..Default::default()
     };
-    let (run, index, db, _node_state) = setup_store(config).await;
-    // Insert a value before starting the vector store. The DbBasic test implementation does not support
-    // adding embeddings while it's running, so it must be populated beforehand.
-    db.insert_values(
-        &index.keyspace_name,
-        &index.table_name,
-        &index.target_column,
-        vec![(
+    let (run, _index, _db, _node_state) = setup_store(
+        config,
+        ["pk".into(), "ck".into()],
+        [
+            ("pk".to_string().into(), NativeType::Int),
+            ("ck".to_string().into(), NativeType::Text),
+        ],
+        [(
             vec![CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
             Some(vec![1., 1., 1.].into()),
             OffsetDateTime::from_unix_timestamp(10).unwrap().into(),
         )],
     )
-    .unwrap();
+    .await;
+
     let (client, _server, _config_tx) = run.await;
 
     // Ensure the HTTP server stays responsive while the (simulated) embedding add is long-running.

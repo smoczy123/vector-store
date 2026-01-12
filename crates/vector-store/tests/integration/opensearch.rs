@@ -10,6 +10,7 @@ use crate::mock_opensearch;
 use crate::wait_for;
 use ::time::OffsetDateTime;
 use httpclient::HttpClient;
+use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlValue;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -25,10 +26,10 @@ async fn simple_create_search_delete_index() {
     let (db_actor, db) = db_basic::new(node_state.clone());
 
     let index = IndexMetadata {
-        keyspace_name: "vector".to_string().into(),
-        table_name: "items".to_string().into(),
-        index_name: "ann".to_string().into(),
-        target_column: "embedding".to_string().into(),
+        keyspace_name: "vector".into(),
+        table_name: "items".into(),
+        index_name: "ann".into(),
+        target_column: "embedding".into(),
         dimensions: NonZeroUsize::new(3).unwrap().into(),
         connectivity: Default::default(),
         expansion_add: Default::default(),
@@ -58,7 +59,15 @@ async fn simple_create_search_delete_index() {
         index.keyspace_name.clone(),
         index.table_name.clone(),
         Table {
-            primary_keys: vec!["pk".to_string().into(), "ck".to_string().into()],
+            primary_keys: Arc::new(vec!["pk".into(), "ck".into()]),
+            columns: Arc::new(
+                [
+                    ("pk".into(), NativeType::Int),
+                    ("ck".into(), NativeType::Text),
+                ]
+                .into_iter()
+                .collect(),
+            ),
             dimensions: [(index.target_column.clone(), index.dimensions)]
                 .into_iter()
                 .collect(),
@@ -124,12 +133,13 @@ async fn simple_create_search_delete_index() {
             &index.keyspace_name,
             &index.index_name,
             vec![2.1, -2., 2.].into(),
+            None,
             NonZeroUsize::new(1).unwrap().into(),
         )
         .await;
     assert_eq!(distances.len(), 1);
-    let primary_keys_pk = primary_keys.get(&"pk".to_string().into()).unwrap();
-    let primary_keys_ck = primary_keys.get(&"ck".to_string().into()).unwrap();
+    let primary_keys_pk = primary_keys.get(&"pk".into()).unwrap();
+    let primary_keys_ck = primary_keys.get(&"ck".into()).unwrap();
     assert_eq!(distances.len(), primary_keys_pk.len());
     assert_eq!(distances.len(), primary_keys_ck.len());
     assert_eq!(primary_keys_pk.first().unwrap().as_i64().unwrap(), 2);

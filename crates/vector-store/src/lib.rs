@@ -57,6 +57,7 @@ use utoipa::openapi::schema::Type;
 use uuid::Uuid;
 
 #[derive(Clone, derive_more::From, derive_more::Display)]
+#[from(String, &str)]
 pub struct ScyllaDbUri(String);
 
 #[derive(Clone, Debug)]
@@ -141,6 +142,7 @@ impl SerializeValue for IndexId {
     serde::Serialize,
     utoipa::ToSchema,
 )]
+#[from(String, &str)]
 /// A keyspace name in a db.
 pub struct KeyspaceName(String);
 
@@ -167,6 +169,7 @@ impl SerializeValue for KeyspaceName {
     derive_more::Display,
     utoipa::ToSchema,
 )]
+#[from(String, &str)]
 /// A name of the vector index in a db.
 pub struct IndexName(String);
 
@@ -193,6 +196,7 @@ impl SerializeValue for IndexName {
     derive_more::Display,
     utoipa::ToSchema,
 )]
+#[from(String, &str)]
 /// A table name of the table with vectors in a db
 pub struct TableName(String);
 
@@ -219,6 +223,7 @@ impl SerializeValue for TableName {
     derive_more::Display,
     utoipa::ToSchema,
 )]
+#[from(String, &str)]
 /// Name of the column in a db table.
 pub struct ColumnName(String);
 
@@ -425,6 +430,67 @@ impl Default for Limit {
     fn default() -> Self {
         Self(NonZeroUsize::new(1).unwrap())
     }
+}
+
+/// A restriction provided in a CQL query for filtering ANN search results.
+#[derive(Debug)]
+pub enum Restriction {
+    Eq {
+        lhs: ColumnName,
+        rhs: CqlValue,
+    },
+    In {
+        lhs: ColumnName,
+        rhs: Vec<CqlValue>,
+    },
+    Lt {
+        lhs: ColumnName,
+        rhs: CqlValue,
+    },
+    Lte {
+        lhs: ColumnName,
+        rhs: CqlValue,
+    },
+    Gt {
+        lhs: ColumnName,
+        rhs: CqlValue,
+    },
+    Gte {
+        lhs: ColumnName,
+        rhs: CqlValue,
+    },
+    EqTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<CqlValue>,
+    },
+    InTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<Vec<CqlValue>>,
+    },
+    LtTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<CqlValue>,
+    },
+    LteTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<CqlValue>,
+    },
+    GtTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<CqlValue>,
+    },
+    GteTuple {
+        lhs: Vec<ColumnName>,
+        rhs: Vec<CqlValue>,
+    },
+}
+
+/// A filter to apply to an ANN search. It contains restrictions from a CQL query and a flag to
+/// indicate whether ALLOW FILTERING was specified in the CQL query.
+#[derive(Debug)]
+pub struct Filter {
+    pub restrictions: Vec<Restriction>,
+    pub allow_filtering: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, derive_more::From)]
