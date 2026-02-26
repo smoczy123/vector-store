@@ -14,6 +14,7 @@ use crate::Progress;
 use crate::TableName;
 use crate::Timestamp;
 use crate::db_cdc;
+use crate::db_cdc::CdcReaderConfig;
 use crate::internals::Internals;
 use crate::invariant_key::InvariantKey;
 use crate::node_state::Event;
@@ -144,18 +145,32 @@ pub(crate) async fn new(
     let (tx_index, mut rx_index) = mpsc::channel(CHANNEL_SIZE);
     let (tx_embeddings, rx_embeddings) = mpsc::channel(CHANNEL_SIZE);
 
-    // Create CDC actor
-    let cdc = db_cdc::new(
+    // Create wide-framed CDC actor
+    let cdc_wide = db_cdc::new(
         config_rx.clone(),
         session_rx.clone(),
         metadata.clone(),
         internals.clone(),
         tx_embeddings.clone(),
+        CdcReaderConfig::Wide,
+    );
+
+    // Create fine-grained CDC actor
+    let cdc_fine = db_cdc::new(
+        config_rx,
+        session_rx.clone(),
+        metadata.clone(),
+        internals,
+        tx_embeddings.clone(),
+        CdcReaderConfig::Fine,
     );
 
     // Monitor CDC actor channels for closure to notify about errors
     tokio::spawn(async move {
-        cdc.closed().await;
+        tokio::select! {
+            _ = cdc_wide.closed() => {},
+            _ = cdc_fine.closed() => {},
+        }
         cdc_error_notify.notify_one();
     });
 

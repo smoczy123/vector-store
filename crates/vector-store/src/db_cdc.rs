@@ -29,7 +29,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
-use tap::Pipe;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -44,7 +43,65 @@ use tracing::warn;
 
 const CHECKPOINT_TIMESTAMP_OFFSET: Duration = Duration::from_mins(10);
 
+// Default parameters for the wide-framed CDC reader (consistency-focused).
+const DEFAULT_CONSISTENT_SAFETY_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_CONSISTENT_SLEEP_INTERVAL: Duration = Duration::from_secs(10);
+
+// Default parameters for the fine-grained CDC reader (latency-focused).
+const DEFAULT_REALTIME_SAFETY_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_REALTIME_SLEEP_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Parameters for a CDC reader instance.
+#[derive(Clone, Debug)]
+struct CdcReaderParams {
+    /// Safety interval: how far behind "now" to read CDC log.
+    /// Higher values ensure data consistency but increase latency.
+    safety_interval: Duration,
+    /// Sleep interval: how often to poll for new CDC data.
+    /// Lower values reduce latency but increase system load.
+    sleep_interval: Duration,
+}
+
+impl CdcReaderParams {
+    fn wide(config: &Config) -> Self {
+        Self {
+            safety_interval: config
+                .cdc_safety_interval
+                .unwrap_or(DEFAULT_CONSISTENT_SAFETY_INTERVAL),
+            sleep_interval: config
+                .cdc_sleep_interval
+                .unwrap_or(DEFAULT_CONSISTENT_SLEEP_INTERVAL),
+        }
+    }
+
+    fn fine(config: &Config) -> Self {
+        Self {
+            safety_interval: config
+                .cdc_fine_safety_interval
+                .unwrap_or(DEFAULT_REALTIME_SAFETY_INTERVAL),
+            sleep_interval: config
+                .cdc_fine_sleep_interval
+                .unwrap_or(DEFAULT_REALTIME_SLEEP_INTERVAL),
+        }
+    }
+}
+
 pub(crate) enum DbCdc {}
+
+/// Preset configurations for CDC reader actors.
+pub(crate) enum CdcReaderConfig {
+    Wide,
+    Fine,
+}
+
+impl From<CdcReaderConfig> for CdcReaderState {
+    fn from(config: CdcReaderConfig) -> Self {
+        match config {
+            CdcReaderConfig::Wide => Self::new("wide", CdcReaderParams::wide),
+            CdcReaderConfig::Fine => Self::new("fine", CdcReaderParams::fine),
+        }
+    }
+}
 
 /// Spawns a CDC actor that watches for session changes and manages a CDC reader.
 pub(crate) fn new(
@@ -53,6 +110,7 @@ pub(crate) fn new(
     metadata: IndexMetadata,
     internals: Sender<Internals>,
     tx_embeddings: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+    config: CdcReaderConfig,
 ) -> mpsc::Sender<DbCdc> {
     // TODO: The value of channel size was taken from initial benchmarks. Needs more testing
     let (tx, mut rx) = mpsc::channel::<DbCdc>(10);
@@ -60,7 +118,8 @@ pub(crate) fn new(
     // Mark the receiver to ensure first session update is visible
     session_rx.mark_changed();
 
-    let mut reader = CdcReaderState::new();
+    let mut reader: CdcReaderState = config.into();
+    let name = reader.name;
     let actor_key = metadata.key();
     tokio::spawn(
         async move {
@@ -95,7 +154,7 @@ pub(crate) fn new(
 
             debug!("finished");
         }
-        .instrument(error_span!("db_cdc", "{}", actor_key)),
+        .instrument(error_span!("db_cdc", "{}-{}", actor_key, name)),
     );
 
     tx
@@ -108,16 +167,20 @@ struct CdcReaderState {
     shutdown_notify: Arc<Notify>,
     error_notify: Arc<Notify>,
     start: Duration,
+    name: &'static str,
+    params_fn: fn(&Config) -> CdcReaderParams,
 }
 
 impl CdcReaderState {
-    fn new() -> Self {
+    fn new(name: &'static str, params_fn: fn(&Config) -> CdcReaderParams) -> Self {
         Self {
             reader: None,
             handler_task: None,
             shutdown_notify: Arc::new(Notify::new()),
             error_notify: Arc::new(Notify::new()),
             start: cdc_now(),
+            name,
+            params_fn,
         }
     }
 
@@ -135,7 +198,7 @@ impl CdcReaderState {
     /// Stops the current reader, drains stale notifications, and starts a new reader with the given parameters.
     async fn restart(
         &mut self,
-        config: &Arc<Config>,
+        params: CdcReaderParams,
         session: &Arc<Session>,
         metadata: &IndexMetadata,
         tx_embeddings: &mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
@@ -146,10 +209,11 @@ impl CdcReaderState {
 
         match create_cdc_reader(
             self.start,
-            Arc::clone(config),
+            params.clone(),
             Arc::clone(session),
             metadata.clone(),
             tx_embeddings.clone(),
+            self.name,
         )
         .await
         {
@@ -161,17 +225,19 @@ impl CdcReaderState {
                     Arc::clone(&self.error_notify),
                     internals.clone(),
                     metadata,
+                    self.name,
                 ));
 
                 info!(
-                    "CDC reader created successfully for {} (safety: {:?}, sleep: {:?})",
+                    "{} CDC reader created successfully for {} (safety: {:?}, sleep: {:?})",
+                    self.name,
                     metadata.key(),
-                    config.cdc_safety_interval,
-                    config.cdc_sleep_interval
+                    params.safety_interval,
+                    params.sleep_interval
                 );
             }
             Err(e) => {
-                error!("Failed to create CDC reader: {e}");
+                error!("Failed to create {} CDC reader: {e}", self.name);
             }
         }
     }
@@ -188,18 +254,21 @@ impl CdcReaderState {
         match session {
             Some(session) => {
                 info!(
-                    "Session available, creating CDC reader for {}",
+                    "Session available, creating {} CDC reader for {}",
+                    self.name,
                     metadata.key()
                 );
 
                 let config = config_rx.borrow().clone();
 
-                self.restart(&config, &session, metadata, tx_embeddings, internals)
+                let params = (self.params_fn)(&config);
+                self.restart(params, &session, metadata, tx_embeddings, internals)
                     .await;
             }
             None => {
                 info!(
-                    "Session became None, stopping CDC reader for {}",
+                    "Session became None, stopping {} CDC reader for {}",
+                    self.name,
                     metadata.key()
                 );
 
@@ -225,50 +294,38 @@ async fn drain_pending_notifications(notify: &Notify) {
     }
 }
 
-/// Creates a CDC log reader and its handler future.
+/// Creates a CDC log reader with the given parameters.
 async fn create_cdc_reader(
-    cdc_start: Duration,
-    config: Arc<Config>,
+    start: Duration,
+    params: CdcReaderParams,
     session: Arc<Session>,
     metadata: IndexMetadata,
     tx_embeddings: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+    reader_name: &str,
 ) -> anyhow::Result<(
     scylla_cdc::log_reader::CDCLogReader,
     impl std::future::Future<Output = anyhow::Result<()>>,
 )> {
     let consumer_factory = CdcConsumerFactory::new(Arc::clone(&session), &metadata, tx_embeddings)?;
 
-    let cdc_start = cdc_start - CHECKPOINT_TIMESTAMP_OFFSET;
+    let cdc_start = start - CHECKPOINT_TIMESTAMP_OFFSET;
     info!(
-        "Creating CDC log reader for {} starting from {:?}",
+        "Creating {reader_name} CDC log reader for {} starting from {:?}",
         metadata.key(),
         OffsetDateTime::UNIX_EPOCH + cdc_start
     );
+
     CDCLogReaderBuilder::new()
         .session(session)
         .keyspace(metadata.keyspace_name.as_ref())
         .table_name(metadata.table_name.as_ref())
         .consumer_factory(Arc::new(consumer_factory))
         .start_timestamp(chrono::Duration::from_std(cdc_start)?)
-        .pipe(|builder| {
-            if let Some(interval) = config.cdc_safety_interval {
-                info!("Setting CDC safety interval to {interval:?}");
-                builder.safety_interval(interval)
-            } else {
-                builder
-            }
-        })
-        .pipe(|builder| {
-            if let Some(interval) = config.cdc_sleep_interval {
-                info!("Setting CDC sleep interval to {interval:?}");
-                builder.sleep_interval(interval)
-            } else {
-                builder
-            }
-        })
+        .safety_interval(params.safety_interval)
+        .sleep_interval(params.sleep_interval)
         .build()
         .await
-        .context("Failed to build CDC log reader")
+        .context(format!("Failed to build {reader_name} CDC log reader"))
 }
 
 /// Spawns a task that runs the CDC handler future until completion or shutdown.
@@ -278,10 +335,11 @@ fn spawn_handler_task(
     cdc_error_notify: Arc<Notify>,
     internals: Sender<Internals>,
     metadata: &IndexMetadata,
+    reader_name: &str,
 ) -> tokio::task::JoinHandle<Duration> {
     let handler_key = metadata.key();
-    let span_name = format!("cdc_handler");
-    let counter_name = format!("{handler_key}-cdc-handler-errors");
+    let span_name = format!("{reader_name}_cdc_handler");
+    let counter_name = format!("{handler_key}-{reader_name}-cdc-handler-errors");
 
     tokio::spawn(
         async move {
