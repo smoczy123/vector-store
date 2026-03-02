@@ -49,6 +49,7 @@ enum MetricType {
 }
 
 struct IndexOption {
+    local: bool,
     metric_type: MetricType,
     m: usize,
     ef_construction: usize,
@@ -57,6 +58,12 @@ struct IndexOption {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build buckets from the dataset: [50%, 20%, 10%, 5%, 2%, 1%, 0.5%, 0.2%, 0.1%]")]
+    BuildBuckets {
+        #[clap(long)]
+        data_dir: PathBuf,
+    },
+
     BuildTable {
         #[clap(long)]
         data_dir: PathBuf,
@@ -107,6 +114,9 @@ enum Command {
 
         #[clap(long, required = true)]
         vector_store: Vec<SocketAddr>,
+
+        #[clap(long)]
+        local: bool,
 
         #[clap(long)]
         metric_type: MetricType,
@@ -177,6 +187,10 @@ enum Command {
         #[clap(long, default_value = TABLE)]
         table: String,
 
+        /// Filter queries by bucket (0..=8): [50%, 20%, 10%, 5%, 2%, 1%, 0.5%, 0.2%, 0.1%]
+        #[clap(long, value_parser = clap::value_parser!(u8).range(0..=8))]
+        bucket: Option<u8>,
+
         #[clap(long, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
 
@@ -232,6 +246,10 @@ async fn main() {
         .init();
 
     match Args::parse().command {
+        Command::BuildBuckets { data_dir } => {
+            data::build_and_write_buckets(data_dir).await;
+        }
+
         Command::BuildTable {
             data_dir,
             data_multiplicity,
@@ -255,6 +273,7 @@ async fn main() {
                         .upload_vectors(
                             &keyspace,
                             &table,
+                            dataset.buckets(),
                             dataset.vector_stream().await,
                             concurrency as usize,
                         )
@@ -273,6 +292,7 @@ async fn main() {
             table,
             index,
             vector_store,
+            local,
             metric_type,
             m,
             ef_construction,
@@ -287,6 +307,7 @@ async fn main() {
                         &table,
                         &index,
                         IndexOption {
+                            local,
                             metric_type,
                             m,
                             ef_construction,
@@ -338,6 +359,7 @@ async fn main() {
             passwd_path,
             keyspace,
             table,
+            bucket,
             limit,
             duration,
             concurrency,
@@ -345,7 +367,7 @@ async fn main() {
             delay,
         } => {
             let dataset = data::new(data_dir).await;
-            let queries = Arc::new(dataset.queries(limit as usize).await);
+            let queries = Arc::new(dataset.queries(bucket, limit as usize).await);
             let notify = Arc::new(Notify::new());
             let scylla = Scylla::new(scylla, user, passwd_path, &keyspace, &table).await;
 
@@ -364,7 +386,8 @@ async fn main() {
                         notify.notified().await;
                         while SystemTime::now() < stop {
                             let query = random(&queries);
-                            let (duration, recall) = measure_duration(scylla.search(query)).await;
+                            let (duration, recall) =
+                                measure_duration(scylla.search(bucket, query)).await;
                             measurement.record(duration, recall);
                             if let Some(delay) = delay {
                                 let start = Instant::now();
@@ -412,7 +435,7 @@ async fn main() {
             let dataset = data::new(data_dir).await;
             let keyspace = Arc::new(keyspace.into());
             let index = Arc::new(index.into());
-            let queries = Arc::new(dataset.queries(limit as usize).await);
+            let queries = Arc::new(dataset.queries(None, limit as usize).await);
             let notify = Arc::new(Notify::new());
             assert!(!vector_store.is_empty());
             let clients = Arc::new(vs::new_http_clients(vector_store));

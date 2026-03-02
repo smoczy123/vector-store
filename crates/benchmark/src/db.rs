@@ -14,6 +14,7 @@ use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,11 +25,10 @@ use tokio::sync::Semaphore;
 use tokio::time;
 use tracing::error;
 use tracing::info;
-use uuid::Uuid;
 
-const ID: &str = "id";
 const VECTOR_ID: &str = "vector_id";
 const VECTOR: &str = "vector";
+const BUCKET: &str = "bucket";
 
 #[derive(Clone)]
 pub(crate) struct Scylla(Arc<State>);
@@ -36,6 +36,7 @@ pub(crate) struct Scylla(Arc<State>);
 struct State {
     session: Session,
     st_search: Option<PreparedStatement>,
+    st_search_local: Option<PreparedStatement>,
 }
 
 impl Scylla {
@@ -80,8 +81,18 @@ impl Scylla {
             ))
             .await
             .ok();
+        let st_search_local = session
+            .prepare(format!(
+                "SELECT {VECTOR_ID} FROM {keyspace}.{table} WHERE {BUCKET} = ? ORDER BY {VECTOR} ANN OF ? LIMIT ?"
+            ))
+            .await
+            .ok();
 
-        Self(Arc::new(State { session, st_search }))
+        Self(Arc::new(State {
+            session,
+            st_search,
+            st_search_local,
+        }))
     }
 
     pub(crate) async fn create_table(
@@ -110,9 +121,10 @@ impl Scylla {
                 format!(
                     "
                 CREATE TABLE {keyspace}.{table} (
-                    {ID} uuid PRIMARY KEY,
+                    {BUCKET} bigint,
                     {VECTOR_ID} bigint,
                     {VECTOR} vector<float, {dimension}>,
+                    PRIMARY KEY (({BUCKET}, {VECTOR_ID}))
                 )
                 ",
                 ),
@@ -142,12 +154,17 @@ impl Scylla {
             MetricType::Cosine => "COSINE",
             MetricType::DotProduct => "DOT_PRODUCT",
         };
+        let local = if config.local {
+            format!("({BUCKET}), ")
+        } else {
+            String::new()
+        };
         self.0
             .session
             .query_unpaged(
                 format!(
                     "
-                    CREATE CUSTOM INDEX {index} ON {keyspace}.{table} ({VECTOR})
+                    CREATE CUSTOM INDEX {index} ON {keyspace}.{table} ({local}{VECTOR})
                     USING 'vector_index' WITH OPTIONS = {{
                         'similarity_function': '{metric_type}',
                         'maximum_node_connections': '{m}',
@@ -177,6 +194,7 @@ impl Scylla {
         &self,
         keyspace: &str,
         table: &str,
+        buckets: Arc<HashMap<i64, u8>>,
         mut stream: BoxStream<'static, (i64, Vec<f32>)>,
         concurrency: usize,
     ) {
@@ -184,7 +202,7 @@ impl Scylla {
             .0
             .session
             .prepare(format!(
-                "INSERT INTO {keyspace}.{table} ({ID}, {VECTOR_ID}, {VECTOR}) VALUES (?, ?, ?)"
+                "INSERT INTO {keyspace}.{table} ({BUCKET}, {VECTOR_ID}, {VECTOR}) VALUES (?, ?, ?)"
             ))
             .await
             .unwrap();
@@ -203,10 +221,11 @@ impl Scylla {
                 info!("Uploading vector {}M", count / 1_000_000);
             }
 
+            let bucket = *buckets.get(&vector_id).unwrap_or(&u8::MAX) as i64;
             tokio::spawn(async move {
                 scylla
                     .session
-                    .execute_unpaged(&st_insert, (Uuid::new_v4(), vector_id, vector))
+                    .execute_unpaged(&st_insert, (bucket, vector_id, vector))
                     .await
                     .unwrap();
                 drop(permit);
@@ -215,24 +234,44 @@ impl Scylla {
         _ = semaphore.acquire_many(concurrency as u32).await.unwrap();
     }
 
-    pub(crate) async fn search(&self, query: &Query) -> f64 {
-        let found = time::timeout(Duration::from_secs(10), async move {
-            self.0
-                .session
-                .execute_iter(
-                    self.0.st_search.as_ref().unwrap().clone(),
-                    (&query.query, query.neighbors.len() as i32),
-                )
-                .await
-                .unwrap()
-                .rows_stream::<(i64,)>()
-                .unwrap()
-                .map_ok(|(vector_id,)| vector_id)
-                .try_collect()
-                .await
-                .unwrap()
-        })
-        .await;
+    pub(crate) async fn search(&self, bucket: Option<u8>, query: &Query) -> f64 {
+        let found = if let Some(bucket) = bucket {
+            time::timeout(Duration::from_secs(10), async move {
+                self.0
+                    .session
+                    .execute_iter(
+                        self.0.st_search_local.as_ref().unwrap().clone(),
+                        (bucket as i64, &query.query, query.neighbors.len() as i32),
+                    )
+                    .await
+                    .unwrap()
+                    .rows_stream::<(i64,)>()
+                    .unwrap()
+                    .map_ok(|(vector_id,)| vector_id)
+                    .try_collect()
+                    .await
+                    .unwrap()
+            })
+            .await
+        } else {
+            time::timeout(Duration::from_secs(10), async move {
+                self.0
+                    .session
+                    .execute_iter(
+                        self.0.st_search.as_ref().unwrap().clone(),
+                        (&query.query, query.neighbors.len() as i32),
+                    )
+                    .await
+                    .unwrap()
+                    .rows_stream::<(i64,)>()
+                    .unwrap()
+                    .map_ok(|(vector_id,)| vector_id)
+                    .try_collect()
+                    .await
+                    .unwrap()
+            })
+            .await
+        };
         let Ok(found) = found else {
             error!("Search query timed out");
             return 0.0;
