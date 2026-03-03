@@ -82,6 +82,43 @@ main {
   color: var(--clr-primary);
 }
 
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: .25rem;
+}
+
+.panel-header h2 {
+  margin-bottom: 0;
+}
+
+.btn-copy-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .78rem;
+  font-weight: 600;
+  padding: .35rem .7rem;
+  border: 1px solid var(--clr-border);
+  border-radius: 999px;
+  background: var(--clr-surface);
+  color: var(--clr-text);
+  cursor: pointer;
+  transition: all .15s ease;
+  white-space: nowrap;
+}
+
+.btn-copy-link:hover {
+  border-color: var(--clr-primary);
+  color: var(--clr-primary);
+}
+
+.btn-copy-link.copied {
+  border-color: var(--clr-accent);
+  color: var(--clr-accent);
+}
+
 /* ── Form Fields ────────────────────────────────────────── */
 
 .field {

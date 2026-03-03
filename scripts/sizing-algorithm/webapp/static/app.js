@@ -352,7 +352,97 @@
       });
   }
 
+  // ── Shareable URL ───────────────────────────────────────
+
+  /** Build a URL with all current input values as query parameters. */
+  function buildShareUrl() {
+    var input = collectInput();
+    var params = new URLSearchParams();
+    params.set("num_vectors",      input.num_vectors);
+    params.set("dimensions",       input.dimensions);
+    params.set("target_qps",       input.target_qps);
+    params.set("recall",           input.recall);
+    params.set("k",                input.k);
+    params.set("quantization",     input.quantization);
+    params.set("metadata_bytes",   input.metadata_bytes_per_vector);
+    params.set("filtering_columns", input.filtering_columns);
+    return window.location.origin + window.location.pathname + "?" + params.toString();
+  }
+
+  /** Restore inputs from URL query parameters (if present). */
+  function restoreFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.toString() === "") return;
+
+    var v;
+
+    v = parseInt(params.get("num_vectors"), 10);
+    if (!isNaN(v) && v >= 1) {
+      overrides.num_vectors = v;
+      elNumVectors.value = clamp(valueToLog(v),
+        parseFloat(elNumVectors.min), parseFloat(elNumVectors.max));
+    }
+
+    v = parseInt(params.get("dimensions"), 10);
+    if (!isNaN(v)) elDimensions.value = clamp(v,
+      parseInt(elDimensions.min, 10), parseInt(elDimensions.max, 10));
+
+    v = parseInt(params.get("target_qps"), 10);
+    if (!isNaN(v)) elTargetQps.value = clamp(v,
+      parseInt(elTargetQps.min, 10), parseInt(elTargetQps.max, 10));
+
+    v = parseInt(params.get("recall"), 10);
+    if (!isNaN(v)) elRecall.value = clamp(v,
+      parseInt(elRecall.min, 10), parseInt(elRecall.max, 10));
+
+    v = parseInt(params.get("k"), 10);
+    if (!isNaN(v)) elK.value = clamp(v,
+      parseInt(elK.min, 10), parseInt(elK.max, 10));
+
+    var q = params.get("quantization");
+    if (q) {
+      var radio = document.querySelector('input[name="quantization"][value="' + q + '"]');
+      if (radio) {
+        document.querySelectorAll(".radio-card").forEach(function (c) {
+          c.classList.remove("selected");
+        });
+        radio.checked = true;
+        radio.closest(".radio-card").classList.add("selected");
+      }
+    }
+
+    v = parseInt(params.get("metadata_bytes"), 10);
+    if (!isNaN(v) && v >= 1) {
+      overrides.metadata_bytes = v;
+      elMetadataBytes.value = clamp(valueToLog(v),
+        parseFloat(elMetadataBytes.min), parseFloat(elMetadataBytes.max));
+    }
+
+    v = parseInt(params.get("filtering_columns"), 10);
+    if (!isNaN(v)) elFilteringCols.value = clamp(v,
+      parseInt(elFilteringCols.min, 10), parseInt(elFilteringCols.max, 10));
+  }
+
+  // Copy Link button.
+  var elCopyBtn   = document.getElementById("copy-link-btn");
+  var elCopyLabel = document.getElementById("copy-link-label");
+
+  if (elCopyBtn) {
+    elCopyBtn.addEventListener("click", function () {
+      var url = buildShareUrl();
+      navigator.clipboard.writeText(url).then(function () {
+        elCopyLabel.textContent = "Copied!";
+        elCopyBtn.classList.add("copied");
+        setTimeout(function () {
+          elCopyLabel.textContent = "Copy Link";
+          elCopyBtn.classList.remove("copied");
+        }, 1500);
+      });
+    });
+  }
+
   // ── Initialise ──────────────────────────────────────────
+  restoreFromUrl();
   updateDisplays();
 
   // Auto-compute on load with defaults.
