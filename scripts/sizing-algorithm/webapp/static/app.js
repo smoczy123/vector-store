@@ -21,6 +21,28 @@
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GiB";
   }
 
+  /** Parse a human-readable byte string back to a number of bytes. */
+  function parseBytes(str) {
+    str = str.trim();
+    var m = str.match(/^([0-9.,]+)\s*(B|KiB|KB|MiB|MB|GiB|GB)?$/i);
+    if (!m) return NaN;
+    var num = parseFloat(m[1].replace(/,/g, ""));
+    if (isNaN(num)) return NaN;
+    var unit = (m[2] || "B").toLowerCase();
+    switch (unit) {
+      case "b":   return num;
+      case "kib": case "kb": return num * 1024;
+      case "mib": case "mb": return num * 1024 * 1024;
+      case "gib": case "gb": return num * 1024 * 1024 * 1024;
+      default: return num;
+    }
+  }
+
+  /** Parse a formatted number string (strip commas, whitespace). */
+  function parseNum(str) {
+    return parseFloat(String(str).replace(/[,%\s]/g, ""));
+  }
+
   /** Convert a log10 slider value to the actual integer. */
   function logToValue(logVal) {
     return Math.round(Math.pow(10, parseFloat(logVal)));
@@ -61,14 +83,25 @@
 
   // ── Value display updaters ──────────────────────────────
 
+  /** Auto-size a text input to fit its content. */
+  function autoSize(input) {
+    // Use a minimum of 3ch and add 1ch padding
+    var len = Math.max(input.value.length, 3);
+    input.style.width = (len + 1) + "ch";
+  }
+
   function updateDisplays() {
-    elNumVectorsVal.textContent    = fmt(logToValue(elNumVectors.value));
-    elDimensionsVal.textContent    = fmt(elDimensions.value);
-    elTargetQpsVal.textContent     = fmt(elTargetQps.value);
-    elRecallVal.textContent        = elRecall.value + " %";
-    elKVal.textContent             = fmt(elK.value);
-    elMetadataBytesVal.textContent = fmtBytes(logToValue(elMetadataBytes.value));
-    elFilteringColsVal.textContent = elFilteringCols.value;
+    elNumVectorsVal.value    = fmt(logToValue(elNumVectors.value));
+    elDimensionsVal.value    = fmt(elDimensions.value);
+    elTargetQpsVal.value     = fmt(elTargetQps.value);
+    elRecallVal.value        = elRecall.value + " %";
+    elKVal.value             = fmt(elK.value);
+    elMetadataBytesVal.value = fmtBytes(logToValue(elMetadataBytes.value));
+    elFilteringColsVal.value = elFilteringCols.value;
+
+    // Auto-size all value inputs.
+    [elNumVectorsVal, elDimensionsVal, elTargetQpsVal, elRecallVal, elKVal,
+     elMetadataBytesVal, elFilteringColsVal].forEach(autoSize);
 
     // Highlight active dimension chip.
     document.querySelectorAll('.chip[data-target="dimensions"]').forEach(function (chip) {
@@ -89,6 +122,70 @@
     .forEach(function (el) {
       el.addEventListener("input", onInputChange);
     });
+
+  // ── Text input → slider sync ────────────────────────────
+
+  /** Clamp a value between min and max. */
+  function clamp(val, min, max) {
+    return Math.min(Math.max(val, min), max);
+  }
+
+  /**
+   * Wire a text input so that on Enter or blur, the typed value is parsed
+   * and pushed back into the corresponding slider.  *parseFn* converts the
+   * raw text to the slider's native value (which may be log-scale).
+   */
+  function wireTextInput(textEl, sliderEl, parseFn) {
+    function commit() {
+      var parsed = parseFn(textEl.value);
+      if (isNaN(parsed)) {
+        // Revert to current slider value.
+        updateDisplays();
+        return;
+      }
+      var lo = parseFloat(sliderEl.min);
+      var hi = parseFloat(sliderEl.max);
+      sliderEl.value = clamp(parsed, lo, hi);
+      onInputChange();
+    }
+
+    textEl.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        textEl.blur();
+      }
+    });
+    textEl.addEventListener("blur", commit);
+  }
+
+  // num_vectors — log-scale: user types the real number, we convert to log10.
+  wireTextInput(elNumVectorsVal, elNumVectors, function (str) {
+    return valueToLog(parseNum(str));
+  });
+
+  // dimensions — linear.
+  wireTextInput(elDimensionsVal, elDimensions, parseNum);
+
+  // target_qps — linear.
+  wireTextInput(elTargetQpsVal, elTargetQps, parseNum);
+
+  // recall — strip "%" suffix.
+  wireTextInput(elRecallVal, elRecall, function (str) {
+    return parseNum(str.replace(/%/g, ""));
+  });
+
+  // k — linear.
+  wireTextInput(elKVal, elK, parseNum);
+
+  // metadata_bytes — log-scale with byte units.
+  wireTextInput(elMetadataBytesVal, elMetadataBytes, function (str) {
+    var bytes = parseBytes(str);
+    if (isNaN(bytes)) bytes = parseNum(str);
+    return valueToLog(bytes);
+  });
+
+  // filtering_columns — linear.
+  wireTextInput(elFilteringColsVal, elFilteringCols, parseNum);
 
   // ── Preset chips ────────────────────────────────────────
 

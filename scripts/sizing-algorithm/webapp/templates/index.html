@@ -24,7 +24,7 @@
     <div class="field">
       <div class="field-header">
         <label for="num_vectors">Number of Vectors</label>
-        <output id="num_vectors_val" class="field-value"></output>
+        <input type="text" id="num_vectors_val" class="field-value field-input">
       </div>
       <input type="range" id="num_vectors" min="4" max="9.60206" step="0.01" value="7.69897">
       <div class="field-range"><span>10 K</span><span>4 B</span></div>
@@ -35,7 +35,7 @@
     <div class="field">
       <div class="field-header">
         <label for="dimensions">Dimensions</label>
-        <output id="dimensions_val" class="field-value"></output>
+        <input type="text" id="dimensions_val" class="field-value field-input">
       </div>
       <input type="range" id="dimensions" min="1" max="16000" step="1" value="1536">
       <div class="field-range"><span>1</span><span>16 000</span></div>
@@ -52,7 +52,7 @@
     <div class="field">
       <div class="field-header">
         <label for="target_qps">Target QPS</label>
-        <output id="target_qps_val" class="field-value"></output>
+        <input type="text" id="target_qps_val" class="field-value field-input">
       </div>
       <input type="range" id="target_qps" min="10" max="1000000" step="10" value="1000">
       <div class="field-range"><span>10</span><span>1 000 000</span></div>
@@ -63,7 +63,7 @@
     <div class="field">
       <div class="field-header">
         <label for="recall">Recall Target</label>
-        <output id="recall_val" class="field-value"></output>
+        <input type="text" id="recall_val" class="field-value field-input">
       </div>
       <input type="range" id="recall" min="70" max="99" step="1" value="90">
       <div class="field-range"><span>70 %</span><span>99 %</span></div>
@@ -74,7 +74,7 @@
     <div class="field">
       <div class="field-header">
         <label for="k">K (results per query)</label>
-        <output id="k_val" class="field-value"></output>
+        <input type="text" id="k_val" class="field-value field-input">
       </div>
       <input type="range" id="k" min="1" max="1000" step="1" value="10">
       <div class="field-range"><span>1</span><span>1 000</span></div>
@@ -109,7 +109,7 @@
     <div class="field">
       <div class="field-header">
         <label for="metadata_bytes">Metadata per Vector</label>
-        <output id="metadata_bytes_val" class="field-value"></output>
+        <input type="text" id="metadata_bytes_val" class="field-value field-input">
       </div>
       <input type="range" id="metadata_bytes" min="0.60206" max="6.0206" step="0.01" value="2">
       <div class="field-range"><span>4 B</span><span>1 MiB</span></div>
@@ -120,7 +120,7 @@
     <div class="field">
       <div class="field-header">
         <label for="filtering_columns">Filtering Columns</label>
-        <output id="filtering_columns_val" class="field-value"></output>
+        <input type="text" id="filtering_columns_val" class="field-value field-input">
       </div>
       <input type="range" id="filtering_columns" min="0" max="20" step="1" value="0">
       <div class="field-range"><span>0</span><span>20</span></div>

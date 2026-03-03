@@ -107,6 +107,33 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+/* Editable value inputs next to sliders */
+.field-input {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  text-align: right;
+  padding: .1rem .35rem;
+  width: auto;
+  min-width: 3rem;
+  max-width: 10rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s ease, background .15s ease;
+  cursor: text;
+}
+
+.field-input:hover {
+  border-color: var(--clr-border);
+  background: var(--clr-bg);
+}
+
+.field-input:focus {
+  border-color: var(--clr-primary);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(74, 47, 189, .15);
+}
+
 .field-range {
   display: flex;
   justify-content: space-between;
