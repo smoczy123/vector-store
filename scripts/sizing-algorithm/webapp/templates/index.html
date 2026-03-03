@@ -20,6 +20,25 @@
   <section class="panel inputs-panel">
     <h2>Configuration</h2>
 
+    <!-- cloud_provider -->
+    <div class="field">
+      <div class="field-header">
+        <label>Cloud Provider</label>
+      </div>
+      <div class="radio-group cloud-provider-group">
+        <label class="radio-card selected" data-value="aws">
+          <input type="radio" name="cloud_provider" value="aws" checked>
+          <span class="radio-label">AWS</span>
+          <span class="radio-desc">Amazon Web Services</span>
+        </label>
+        <label class="radio-card" data-value="gcp">
+          <input type="radio" name="cloud_provider" value="gcp">
+          <span class="radio-label">GCP</span>
+          <span class="radio-desc">Google Cloud Platform</span>
+        </label>
+      </div>
+    </div>
+
     <!-- num_vectors (log scale) -->
     <div class="field">
       <div class="field-header">

@@ -47,6 +47,9 @@ def compute():
             filtering_columns=int(
                 data.get("filtering_columns", vs.MIN_FILTERING_COLUMNS)
             ),
+            cloud_provider=vs.CloudProvider(
+                data.get("cloud_provider", vs.CloudProvider.AWS.value)
+            ),
         )
     except (ValueError, KeyError) as exc:
         return jsonify({"error": str(exc)}), 400

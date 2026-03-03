@@ -228,7 +228,9 @@
 
   document.querySelectorAll(".radio-card").forEach(function (card) {
     card.addEventListener("click", function () {
-      document.querySelectorAll(".radio-card").forEach(function (c) {
+      // Only affect radio cards within the same group.
+      var group = card.closest(".radio-group");
+      group.querySelectorAll(".radio-card").forEach(function (c) {
         c.classList.remove("selected");
       });
       card.classList.add("selected");
@@ -241,6 +243,7 @@
 
   function collectInput() {
     var quantEl = document.querySelector('input[name="quantization"]:checked');
+    var cloudEl = document.querySelector('input[name="cloud_provider"]:checked');
     return {
       num_vectors:            overrides.num_vectors != null
                                 ? overrides.num_vectors
@@ -254,6 +257,7 @@
                                   ? overrides.metadata_bytes
                                   : logToValue(elMetadataBytes.value),
       filtering_columns:      parseInt(elFilteringCols.value, 10),
+      cloud_provider:         cloudEl ? cloudEl.value : "aws",
     };
   }
 
@@ -366,6 +370,7 @@
     params.set("quantization",     input.quantization);
     params.set("metadata_bytes",   input.metadata_bytes_per_vector);
     params.set("filtering_columns", input.filtering_columns);
+    params.set("cloud_provider",    input.cloud_provider);
     return window.location.origin + window.location.pathname + "?" + params.toString();
   }
 
@@ -421,6 +426,18 @@
     v = parseInt(params.get("filtering_columns"), 10);
     if (!isNaN(v)) elFilteringCols.value = clamp(v,
       parseInt(elFilteringCols.min, 10), parseInt(elFilteringCols.max, 10));
+
+    var cp = params.get("cloud_provider");
+    if (cp) {
+      var cpRadio = document.querySelector('input[name="cloud_provider"][value="' + cp + '"]');
+      if (cpRadio) {
+        document.querySelectorAll('.cloud-provider-group .radio-card').forEach(function (c) {
+          c.classList.remove("selected");
+        });
+        cpRadio.checked = true;
+        cpRadio.closest(".radio-card").classList.add("selected");
+      }
+    }
   }
 
   // Copy Link button.

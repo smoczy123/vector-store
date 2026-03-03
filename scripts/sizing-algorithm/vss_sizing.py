@@ -64,6 +64,16 @@ from enum import Enum
 # Enums & constants
 # ---------------------------------------------------------------------------
 
+class CloudProvider(Enum):
+    """Cloud provider for instance selection.
+
+    * ``AWS`` - Amazon Web Services instances
+    * ``GCP`` - Google Cloud Platform instances
+    """
+    AWS = "aws"
+    GCP = "gcp"
+
+
 class Quantization(Enum):
     """Vector element quantization strategy.
 
@@ -172,7 +182,7 @@ DEFAULT_METADATA_BYTES = 100
 
 @dataclass(frozen=True)
 class InstanceType:
-    """An AWS instance type available for search-node deployment."""
+    """A cloud instance type available for search-node deployment."""
     name: str
     vcpus: int
     ram_gb: float
@@ -180,7 +190,7 @@ class InstanceType:
 
 # ScyllaDB Cloud currently supports the following instance
 # types for search nodes. Prices as of 2026-02-26.
-AVAILABLE_INSTANCES: list[InstanceType] = [
+AWS_INSTANCES: list[InstanceType] = [
     InstanceType("t4g.medium",     2,    4,    0.134),
     InstanceType("r7g.medium",     1,    8,    0.214),
     InstanceType("r7g.large",      2,   16,    0.428),
@@ -193,6 +203,28 @@ AVAILABLE_INSTANCES: list[InstanceType] = [
     InstanceType("r7i.24xlarge",  96,  768,   25.402),
     InstanceType("r7i.48xlarge", 192, 1536,   50.803),
 ]
+
+GCP_INSTANCES: list[InstanceType] = [
+    InstanceType("e2-medium",      2,    4,    0.134),
+    InstanceType("n4-highmem-2",   2,   16,    0.476),
+    InstanceType("n4-highmem-4",   4,   32,    0.952),
+    InstanceType("n4-highmem-8",   8,   64,    1.904),
+    InstanceType("n4-highmem-16", 16,  128,    3.809),
+    InstanceType("n4-highmem-32", 32,  256,    7.617),
+    InstanceType("n4-highmem-48", 48,  384,   11.426),
+    InstanceType("n4-highmem-64", 64,  512,   15.235),
+    InstanceType("n4-highmem-80", 80,  640,   19.043),
+]
+
+# Default instance list (AWS) for backward compatibility.
+AVAILABLE_INSTANCES: list[InstanceType] = AWS_INSTANCES
+
+
+def get_instances(cloud_provider: CloudProvider = CloudProvider.AWS) -> list[InstanceType]:
+    """Return the list of available instances for the given cloud provider."""
+    if cloud_provider is CloudProvider.GCP:
+        return GCP_INSTANCES
+    return AWS_INSTANCES
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +270,7 @@ class SizingInput:
     quantization: Quantization = Quantization.NONE
     metadata_bytes_per_vector: int = DEFAULT_METADATA_BYTES
     filtering_columns: int = MIN_FILTERING_COLUMNS
+    cloud_provider: CloudProvider = CloudProvider.AWS
 
     def __post_init__(self) -> None:
         if not MIN_VECTORS <= self.num_vectors <= MAX_VECTORS:
@@ -503,6 +536,7 @@ def _effective_qps_per_vcpu(
 def _select_instance(
     index_ram_gb: float,
     required_vcpus: int,
+    cloud_provider: CloudProvider = CloudProvider.AWS,
 ) -> InstanceSelection:
     """Select the cheapest instance configuration for search-node replicas.
 
@@ -522,9 +556,10 @@ def _select_instance(
     ValueError
         If no available instance has enough RAM for the index.
     """
+    instances = get_instances(cloud_provider)
     best: InstanceSelection | None = None
 
-    for inst in AVAILABLE_INSTANCES:
+    for inst in instances:
         if inst.ram_gb < index_ram_gb:
             continue
 
@@ -632,7 +667,9 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     )
 
     # --- Step 2b: Instance selection (search nodes) ---
-    instance_sel = _select_instance(total_search_ram_gb, search_vcpus)
+    instance_sel = _select_instance(
+        total_search_ram_gb, search_vcpus, inp.cloud_provider,
+    )
 
     # --- Step 3: Data node sizing ---
     embedding_storage = inp.num_vectors * inp.dimensions * FLOAT32_BYTES

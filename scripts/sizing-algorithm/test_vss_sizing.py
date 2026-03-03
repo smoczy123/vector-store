@@ -29,6 +29,32 @@ class TestQuantizationEnum(unittest.TestCase):
         self.assertEqual(vs.Quantization.BINARY.value, "binary")
 
 
+class TestCloudProviderEnum(unittest.TestCase):
+    """Tests for the vs.CloudProvider enum."""
+
+    def test_values(self) -> None:
+        self.assertEqual(vs.CloudProvider.AWS.value, "aws")
+        self.assertEqual(vs.CloudProvider.GCP.value, "gcp")
+
+
+class TestGetInstances(unittest.TestCase):
+    """Tests for vs.get_instances helper."""
+
+    def test_aws_returns_aws_instances(self) -> None:
+        instances = vs.get_instances(vs.CloudProvider.AWS)
+        self.assertIs(instances, vs.AWS_INSTANCES)
+        self.assertTrue(any("r7g" in i.name for i in instances))
+
+    def test_gcp_returns_gcp_instances(self) -> None:
+        instances = vs.get_instances(vs.CloudProvider.GCP)
+        self.assertIs(instances, vs.GCP_INSTANCES)
+        self.assertTrue(any("n4-highmem" in i.name for i in instances))
+
+    def test_default_is_aws(self) -> None:
+        instances = vs.get_instances()
+        self.assertIs(instances, vs.AWS_INSTANCES)
+
+
 class TestRoundUpM(unittest.TestCase):
     """Tests for vs._round_up_m helper."""
 
@@ -255,7 +281,7 @@ class TestSelectInstance(unittest.TestCase):
         self.assertGreaterEqual(sel.total_vcpus, 64)
 
     def test_no_instance_large_enough_raises(self) -> None:
-        largest = max(i.ram_gb for i in vs.AVAILABLE_INSTANCES)
+        largest = max(i.ram_gb for i in vs.AWS_INSTANCES)
         with self.assertRaises(ValueError):
             vs._select_instance(index_ram_gb=largest + 100, required_vcpus=1)
 
@@ -268,6 +294,35 @@ class TestSelectInstance(unittest.TestCase):
         sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2)
         # With 2 replicas of a cheap instance, total cost should be reasonable.
         self.assertLess(sel.total_cost_per_hour, 10.0)
+
+    def test_gcp_small_deployment(self) -> None:
+        sel = vs._select_instance(
+            index_ram_gb=2.0, required_vcpus=2,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        self.assertGreaterEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
+        self.assertGreaterEqual(sel.instance_type.ram_gb, 2.0)
+        # Should pick a GCP instance name.
+        self.assertTrue(
+            sel.instance_type.name.startswith("e2-") or
+            sel.instance_type.name.startswith("n4-")
+        )
+
+    def test_gcp_large_deployment(self) -> None:
+        sel = vs._select_instance(
+            index_ram_gb=100.0, required_vcpus=64,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        self.assertGreaterEqual(sel.instance_type.ram_gb, 100.0)
+        self.assertGreaterEqual(sel.total_vcpus, 64)
+
+    def test_gcp_no_instance_large_enough_raises(self) -> None:
+        largest = max(i.ram_gb for i in vs.GCP_INSTANCES)
+        with self.assertRaises(ValueError):
+            vs._select_instance(
+                index_ram_gb=largest + 100, required_vcpus=1,
+                cloud_provider=vs.CloudProvider.GCP,
+            )
 
 
 class TestSizingInputValidation(unittest.TestCase):
@@ -677,6 +732,21 @@ class TestInstanceSelection(unittest.TestCase):
         sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=1)
         self.assertEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
 
+    def test_gcp_vcpu_requirement_met(self) -> None:
+        sel = vs._select_instance(
+            index_ram_gb=2.0, required_vcpus=100,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        self.assertGreaterEqual(sel.total_vcpus, 100)
+
+    def test_gcp_more_than_two_replicas_divisible_by_three(self) -> None:
+        sel = vs._select_instance(
+            index_ram_gb=2.0, required_vcpus=100,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        if sel.num_instances > vs.MIN_SEARCH_REPLICAS:
+            self.assertEqual(sel.num_instances % 3, 0)
+
 
 class TestEndToEndRAG(unittest.TestCase):
     """End-to-end scenario: RAG application."""
@@ -770,6 +840,58 @@ class TestSummaryFormat(unittest.TestCase):
         for q in vs.Quantization:
             result = vs.compute_sizing(vs.SizingInput(quantization=q))
             self.assertIn(q.value, result.summary)
+
+
+class TestGCPEndToEnd(unittest.TestCase):
+    """End-to-end tests using GCP cloud provider."""
+
+    def test_default_input_gcp(self) -> None:
+        result = vs.compute_sizing(vs.SizingInput(
+            cloud_provider=vs.CloudProvider.GCP,
+        ))
+        self.assertIsInstance(result, vs.SizingResult)
+        self.assertEqual(result.instance_selection.instance_type.name, "n4-highmem-48")
+        self.assertEqual(result.instance_selection.num_instances, 2)
+
+    def test_gcp_small_deployment(self) -> None:
+        inp = vs.SizingInput(
+            num_vectors=100_000,
+            dimensions=128,
+            target_qps=100,
+            recall=90,
+            k=10,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        result = vs.compute_sizing(inp)
+        self.assertEqual(result.instance_selection.instance_type.name, "e2-medium")
+        self.assertEqual(result.instance_selection.num_instances, 2)
+
+    def test_gcp_large_deployment(self) -> None:
+        inp = vs.SizingInput(
+            num_vectors=50_000_000,
+            dimensions=1536,
+            target_qps=5_000,
+            recall=95,
+            k=10,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        result = vs.compute_sizing(inp)
+        self.assertGreater(result.search_node.total_ram_gb, 100)
+        self.assertEqual(result.instance_selection.instance_type.name, "n4-highmem-48")
+        self.assertEqual(result.instance_selection.num_instances, 2)
+
+    def test_gcp_no_instance_for_huge_index(self) -> None:
+        """GCP max RAM is 640 GB; index requiring more should raise."""
+        with self.assertRaises(ValueError):
+            vs.compute_sizing(vs.SizingInput(
+                num_vectors=4_000_000_000,
+                dimensions=4096,
+                cloud_provider=vs.CloudProvider.GCP,
+            ))
+
+    def test_cloud_provider_default_is_aws(self) -> None:
+        inp = vs.SizingInput()
+        self.assertEqual(inp.cloud_provider, vs.CloudProvider.AWS)
 
 
 if __name__ == "__main__":
