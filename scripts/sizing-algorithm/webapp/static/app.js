@@ -81,6 +81,16 @@
   const elResultsContent   = document.getElementById("results-content");
   const elErrorBox         = document.getElementById("error-box");
 
+  // ── Exact-value overrides for log-scale fields ──────────
+  // When the user types an exact number the slider cannot represent
+  // precisely (due to step quantisation), we store the real value here
+  // so that collectInput() and the display use it instead of
+  // round-tripping through the slider.
+  var overrides = {
+    num_vectors: null,      // integer or null
+    metadata_bytes: null,   // integer (bytes) or null
+  };
+
   // ── Value display updaters ──────────────────────────────
 
   /** Auto-size a text input to fit its content. */
@@ -91,12 +101,16 @@
   }
 
   function updateDisplays() {
-    elNumVectorsVal.value    = fmt(logToValue(elNumVectors.value));
+    elNumVectorsVal.value    = fmt(overrides.num_vectors != null
+                                   ? overrides.num_vectors
+                                   : logToValue(elNumVectors.value));
     elDimensionsVal.value    = fmt(elDimensions.value);
     elTargetQpsVal.value     = fmt(elTargetQps.value);
     elRecallVal.value        = elRecall.value + " %";
     elKVal.value             = fmt(elK.value);
-    elMetadataBytesVal.value = fmtBytes(logToValue(elMetadataBytes.value));
+    elMetadataBytesVal.value = fmtBytes(overrides.metadata_bytes != null
+                                         ? overrides.metadata_bytes
+                                         : logToValue(elMetadataBytes.value));
     elFilteringColsVal.value = elFilteringCols.value;
 
     // Auto-size all value inputs.
@@ -118,9 +132,14 @@
   }
 
   // Wire up real-time display updates + auto-compute.
+  // Moving a slider manually clears any exact-value override for that field.
   [elNumVectors, elDimensions, elTargetQps, elRecall, elK, elMetadataBytes, elFilteringCols]
     .forEach(function (el) {
-      el.addEventListener("input", onInputChange);
+      el.addEventListener("input", function () {
+        if (el === elNumVectors)   overrides.num_vectors = null;
+        if (el === elMetadataBytes) overrides.metadata_bytes = null;
+        onInputChange();
+      });
     });
 
   // ── Text input → slider sync ────────────────────────────
@@ -158,9 +177,12 @@
     textEl.addEventListener("blur", commit);
   }
 
-  // num_vectors — log-scale: user types the real number, we convert to log10.
+  // num_vectors — log-scale with exact override.
   wireTextInput(elNumVectorsVal, elNumVectors, function (str) {
-    return valueToLog(parseNum(str));
+    var n = Math.round(parseNum(str));
+    if (isNaN(n) || n < 1) return NaN;
+    overrides.num_vectors = n;
+    return valueToLog(n);
   });
 
   // dimensions — linear.
@@ -177,10 +199,13 @@
   // k — linear.
   wireTextInput(elKVal, elK, parseNum);
 
-  // metadata_bytes — log-scale with byte units.
+  // metadata_bytes — log-scale with exact override.
   wireTextInput(elMetadataBytesVal, elMetadataBytes, function (str) {
     var bytes = parseBytes(str);
     if (isNaN(bytes)) bytes = parseNum(str);
+    if (isNaN(bytes) || bytes < 1) return NaN;
+    bytes = Math.round(bytes);
+    overrides.metadata_bytes = bytes;
     return valueToLog(bytes);
   });
 
@@ -217,13 +242,17 @@
   function collectInput() {
     var quantEl = document.querySelector('input[name="quantization"]:checked');
     return {
-      num_vectors:            logToValue(elNumVectors.value),
+      num_vectors:            overrides.num_vectors != null
+                                ? overrides.num_vectors
+                                : logToValue(elNumVectors.value),
       dimensions:             parseInt(elDimensions.value, 10),
       target_qps:             parseInt(elTargetQps.value, 10),
       recall:                 parseInt(elRecall.value, 10),
       k:                      parseInt(elK.value, 10),
       quantization:           quantEl ? quantEl.value : "none",
-      metadata_bytes_per_vector: logToValue(elMetadataBytes.value),
+      metadata_bytes_per_vector: overrides.metadata_bytes != null
+                                  ? overrides.metadata_bytes
+                                  : logToValue(elMetadataBytes.value),
       filtering_columns:      parseInt(elFilteringCols.value, 10),
     };
   }
