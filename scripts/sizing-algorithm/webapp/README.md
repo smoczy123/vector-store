@@ -59,6 +59,6 @@ webapp/
 3. The frontend `POST`s the current values to `/api/compute`.
 3. The Flask backend instantiates a `SizingInput`, calls
    `compute_sizing()`, and returns the full recommendation as JSON.
-4. The frontend renders the results: instance selection, search-node RAM /
-   vCPU requirements, HNSW parameters, data-node sizing, and estimated
+4. The frontend renders the results: instance selection, Vector Store-node RAM /
+   vCPU requirements, HNSW parameters, ScyllaDB-node sizing, and estimated
    monthly cost.

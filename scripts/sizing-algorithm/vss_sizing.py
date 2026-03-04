@@ -5,12 +5,12 @@ ScyllaDB Vector Similarity Search (VSS) Sizing Algorithm
 Calculates infrastructure requirements for deploying ScyllaDB Vector Search,
 covering three main components:
 
-1. **Search Node Baseline** - RAM needed to hold the HNSW (USearch) index
-   entirely in memory.
-2. **Throughput Sizing** - vCPUs required on search nodes to meet a target
-   QPS at P99 ≤ 15 ms latency.
-3. **Data Node Sizing** - vCPUs and storage for the ScyllaDB data nodes that
-   back the search nodes.
+1. **Vector Store Node Baseline** - RAM needed to hold the HNSW (USearch)
+   index entirely in memory.
+2. **Throughput Sizing** - vCPUs required on Vector Store nodes to meet a
+   target QPS at P99 ≤ 15 ms latency.
+3. **ScyllaDB Node Sizing** - vCPUs and storage for the ScyllaDB nodes that
+   back the Vector Store nodes.
 
 The formulas and heuristics are derived from internal ScyllaDB sizing
 guidelines and benchmarks.
@@ -39,11 +39,11 @@ Input Parameters
   SCALAR quantization doubles the effective K for throughput sizing because of oversampling.
   BINARY quantization quadruples the effective QPS for throughput sizing because of rescoring.
 - **metadata_bytes_per_vector** (int) - Average payload stored alongside each
-  embedding on data nodes (used only for data-node storage calculation).
+  embedding on ScyllaDB nodes (used only for ScyllaDB-node storage calculation).
   Min: 4, Max: 1 048 576 (1 MiB), Default: 100.
   UI note: should be visualized on a logarithmic scale.
 - **filtering_columns** (int) - Number of filtering columns used in queries.
-  Each column adds 30 bytes per vector to search-node RAM.
+  Each column adds 30 bytes per vector to Vector Store-node RAM.
   Min: 0, Max: 20, Default: 0.
 
 References
@@ -114,10 +114,10 @@ _QPS_BUCKETS: list[tuple[str, int, int, int]] = [
     ("xlarge+",       4_000_000_000, 1024,  80),
 ]
 
-# Ratio of search-node vCPUs to data-node vCPUs.
-SEARCH_TO_DATA_VCPU_RATIO = 6
+# Ratio of Vector Store-node vCPUs to ScyllaDB-node vCPUs.
+VS_TO_SCYLLADB_VCPU_RATIO = 6
 
-# ScyllaDB data-node replication factor (always 3 for production).
+# ScyllaDB-node replication factor (always 3 for production).
 REPLICATION_FACTOR = 3
 
 # Overhead factor applied to raw index size (metadata, alignment, etc.).
@@ -126,8 +126,8 @@ INDEX_OVERHEAD_FACTOR = 1.1
 # Bytes per float32 element.
 FLOAT32_BYTES = 4
 
-# Minimum number of search node replicas for production availability.
-MIN_SEARCH_REPLICAS = 2
+# Minimum number of Vector Store node replicas for production availability.
+MIN_VECTOR_STORE_REPLICAS = 2
 
 # Dimensionality bounds.
 MIN_DIMENSIONS = 1
@@ -182,14 +182,14 @@ DEFAULT_METADATA_BYTES = 100
 
 @dataclass(frozen=True)
 class InstanceType:
-    """A cloud instance type available for search-node deployment."""
+    """A cloud instance type available for Vector Store-node deployment."""
     name: str
     vcpus: int
     ram_gb: float
     cost_per_hour: float
 
 # ScyllaDB Cloud currently supports the following instance
-# types for search nodes. Prices as of 2026-02-26.
+# types for Vector Store nodes. Prices as of 2026-02-26.
 AWS_INSTANCES: list[InstanceType] = [
     InstanceType("t4g.medium",     2,    4,    0.134),
     InstanceType("r7g.medium",     1,    8,    0.214),
@@ -256,11 +256,11 @@ class SizingInput:
         Compression strategy applied to vector elements (default ``NONE``).
     metadata_bytes_per_vector : int
         Average additional payload stored alongside each embedding on the
-        data nodes (used only for data-node storage calculation).
+        ScyllaDB nodes (used only for ScyllaDB-node storage calculation).
         Min: 4, Max: 1 048 576 (1 MiB), Default: 100.
     filtering_columns : int
         Number of filtering columns.  Each column adds 30 bytes per vector
-        to search-node RAM.  Min: 0, Max: 20, Default: 0.
+        to Vector Store-node RAM.  Min: 0, Max: 20, Default: 0.
     """
     num_vectors: int = DEFAULT_NUM_VECTORS
     dimensions: int = DEFAULT_DIMENSIONS
@@ -315,8 +315,8 @@ class HNSWParams:
 
 
 @dataclass
-class SearchNodeSizing:
-    """Sizing result for a single VSS (uSearch) search node replica."""
+class VectorStoreNodeSizing:
+    """Sizing result for a single VSS (uSearch) Vector Store node replica."""
     index_ram_bytes: int
     filtering_ram_bytes: int
     total_ram_bytes: int
@@ -329,12 +329,12 @@ class SearchNodeSizing:
 
 @dataclass
 class InstanceSelection:
-    """Result of the search-node instance type selection.
+    """Result of the Vector Store-node instance type selection.
 
     The algorithm picks the cheapest instance configuration that satisfies
     both the per-replica RAM requirement (every replica holds the full HNSW
     index) and the aggregate vCPU requirement (query load is distributed
-    across replicas).  At least ``MIN_SEARCH_REPLICAS`` instances are
+    across replicas).  At least ``MIN_VECTOR_STORE_REPLICAS`` instances are
     always provisioned for high availability.
     """
     instance_type: InstanceType
@@ -345,8 +345,8 @@ class InstanceSelection:
 
 
 @dataclass
-class DataNodeSizing:
-    """Sizing result for the ScyllaDB data-node tier."""
+class ScyllaDBNodeSizing:
+    """Sizing result for the ScyllaDB-node tier."""
     total_vcpus: int
     vcpus_per_node: int
     num_nodes: int
@@ -362,10 +362,10 @@ class SizingResult:
     input: SizingInput
     hnsw_params: HNSWParams
     compression_ratio: float
-    search_node: SearchNodeSizing
-    data_node: DataNodeSizing
+    vector_store_node: VectorStoreNodeSizing
+    scylladb_node: ScyllaDBNodeSizing
     instance_selection: InstanceSelection
-    search_replicas: int
+    vector_store_replicas: int
     summary: str = field(default="", repr=False)
 
 
@@ -538,14 +538,14 @@ def _select_instance(
     required_vcpus: int,
     cloud_provider: CloudProvider = CloudProvider.AWS,
 ) -> InstanceSelection:
-    """Select the cheapest instance configuration for search-node replicas.
+    """Select the cheapest instance configuration for Vector Store-node replicas.
 
-    Each search replica holds the full HNSW index in RAM, so every instance
-    must have at least *index_ram_gb* of memory.  The query load is
+    Each Vector Store replica holds the full HNSW index in RAM, so every
+    instance must have at least *index_ram_gb* of memory.  The query load is
     distributed across all replicas, so the aggregate vCPU count must meet
-    *required_vcpus*.  At least ``MIN_SEARCH_REPLICAS`` instances are always
-    provisioned for high availability.  When more than two replicas are
-    needed, the count is rounded up to the next multiple of 3 so that
+    *required_vcpus*.  At least ``MIN_VECTOR_STORE_REPLICAS`` instances are
+    always provisioned for high availability.  When more than two replicas
+    are needed, the count is rounded up to the next multiple of 3 so that
     replicas can be evenly distributed across availability zones.
 
     The function evaluates every entry in ``AVAILABLE_INSTANCES`` and returns
@@ -565,15 +565,15 @@ def _select_instance(
 
         if required_vcpus > 0 and inst.vcpus > 0:
             num = max(
-                MIN_SEARCH_REPLICAS,
+                MIN_VECTOR_STORE_REPLICAS,
                 math.ceil(required_vcpus / inst.vcpus),
             )
         else:
-            num = MIN_SEARCH_REPLICAS
+            num = MIN_VECTOR_STORE_REPLICAS
 
         # When more than 2 replicas are needed, round up to the next
         # multiple of 3 for even distribution across availability zones.
-        if num > MIN_SEARCH_REPLICAS and num % 3 != 0:
+        if num > MIN_VECTOR_STORE_REPLICAS and num % 3 != 0:
             num = num + (3 - num % 3)
 
         total_cost = num * inst.cost_per_hour
@@ -604,9 +604,10 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
 
     Steps
     -----
-    1. **Search-node baseline** - compute RAM per search-node replica.
-    2. **Throughput sizing** - compute vCPUs required on search nodes.
-    3. **Data-node sizing** - compute vCPUs and storage for ScyllaDB data
+    1. **Vector Store-node baseline** - compute RAM per Vector Store-node
+       replica.
+    2. **Throughput sizing** - compute vCPUs required on Vector Store nodes.
+    3. **ScyllaDB-node sizing** - compute vCPUs and storage for ScyllaDB
        nodes.
 
     Parameters
@@ -623,7 +624,7 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     m = _estimate_m(inp.num_vectors, inp.recall)
     hnsw = HNSWParams(m=m)
 
-    # --- Step 1: Search node baseline (RAM) ---
+    # --- Step 1: Vector Store node baseline (RAM) ---
     compression = _get_compression_ratio(inp.quantization)
     index_ram = _compute_index_ram(
         inp.num_vectors, inp.dimensions, m, compression,
@@ -635,7 +636,7 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     total_search_ram = index_ram + filtering_ram
     total_search_ram_gb = total_search_ram / (1024 ** 3)
 
-    # --- Step 2: Throughput sizing (search node vCPUs) ---
+    # --- Step 2: Throughput sizing (Vector Store node vCPUs) ---
     bucket_label, base_qps = _get_base_qps_per_vcpu(
         inp.num_vectors, inp.dimensions,
     )
@@ -653,32 +654,32 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
         else inp.target_qps
     )
 
-    search_vcpus = math.ceil(effective_target_qps / eff_qps) if eff_qps > 0 else 0
+    vs_vcpus = math.ceil(effective_target_qps / eff_qps) if eff_qps > 0 else 0
 
-    search_node = SearchNodeSizing(
+    vector_store_node = VectorStoreNodeSizing(
         index_ram_bytes=index_ram,
         filtering_ram_bytes=filtering_ram,
         total_ram_bytes=total_search_ram,
         total_ram_gb=round(total_search_ram_gb, 2),
-        required_vcpus=search_vcpus,
+        required_vcpus=vs_vcpus,
         base_qps_per_vcpu=base_qps,
         effective_qps_per_vcpu=round(eff_qps, 2),
         throughput_bucket=bucket_label,
     )
 
-    # --- Step 2b: Instance selection (search nodes) ---
+    # --- Step 2b: Instance selection (Vector Store nodes) ---
     instance_sel = _select_instance(
-        total_search_ram_gb, search_vcpus, inp.cloud_provider,
+        total_search_ram_gb, vs_vcpus, inp.cloud_provider,
     )
 
-    # --- Step 3: Data node sizing ---
+    # --- Step 3: ScyllaDB node sizing ---
     embedding_storage = inp.num_vectors * inp.dimensions * FLOAT32_BYTES
     metadata_storage = inp.num_vectors * inp.metadata_bytes_per_vector
     total_storage = embedding_storage + metadata_storage
     total_storage_gb = total_storage / (1024 ** 3)
 
     data_total_vcpus = max(
-        1, math.ceil(search_vcpus / SEARCH_TO_DATA_VCPU_RATIO),
+        1, math.ceil(vs_vcpus / VS_TO_SCYLLADB_VCPU_RATIO),
     )
     # Distribute across replication factor; each node needs a fair share.
     vcpus_per_node = max(
@@ -687,7 +688,7 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     # Re-derive actual total so it's consistent.
     actual_total_vcpus = vcpus_per_node * REPLICATION_FACTOR
 
-    data_node = DataNodeSizing(
+    scylladb_node = ScyllaDBNodeSizing(
         total_vcpus=actual_total_vcpus,
         vcpus_per_node=vcpus_per_node,
         num_nodes=REPLICATION_FACTOR,
@@ -711,23 +712,23 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
         "--- HNSW Parameters (computed) ---",
         f"  M              = {hnsw.m}",
         "",
-        "--- Search Nodes (computed, per replica) ---",
+        "--- Vector Store Nodes (computed, per replica) ---",
         f"  Index RAM      = {index_ram / (1024**3):.2f} GB",
         f"  Filtering RAM  = {filtering_ram / (1024**3):.2f} GB",
-        f"  Total RAM      = {search_node.total_ram_gb:.2f} GB",
-        f"  vCPUs required = {search_node.required_vcpus}",
-        f"  QPS/vCPU       = {search_node.effective_qps_per_vcpu:.1f}"
-        f"  (base {search_node.base_qps_per_vcpu:.1f},"
+        f"  Total RAM      = {vector_store_node.total_ram_gb:.2f} GB",
+        f"  vCPUs required = {vector_store_node.required_vcpus}",
+        f"  QPS/vCPU       = {vector_store_node.effective_qps_per_vcpu:.1f}"
+        f"  (base {vector_store_node.base_qps_per_vcpu:.1f},"
         f" bucket: {bucket_label})",
         f"  Replicas       = {instance_sel.num_instances}",
         f"  Instance type  = {instance_sel.instance_type.name}",
         f"  Total cost     = ${instance_sel.total_cost_per_hour:.3f}/hr",
         "",
-        "--- ScyllaDB Data Nodes (computed) ---",
-        f"  Nodes          = {data_node.num_nodes}"
+        "--- ScyllaDB Nodes (computed) ---",
+        f"  Nodes          = {scylladb_node.num_nodes}"
         f"  (RF={REPLICATION_FACTOR})",
-        f"  vCPUs / node   = {data_node.vcpus_per_node}",
-        f"  Total storage  = {data_node.total_storage_gb:.2f} GB"
+        f"  vCPUs / node   = {scylladb_node.vcpus_per_node}",
+        f"  Total storage  = {scylladb_node.total_storage_gb:.2f} GB"
         f"  (embeddings {embedding_storage / (1024**3):.2f} GB"
         f" + metadata {metadata_storage / (1024**3):.2f} GB)",
     ]
@@ -737,10 +738,10 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
         input=inp,
         hnsw_params=hnsw,
         compression_ratio=compression,
-        search_node=search_node,
-        data_node=data_node,
+        vector_store_node=vector_store_node,
+        scylladb_node=scylladb_node,
         instance_selection=instance_sel,
-        search_replicas=instance_sel.num_instances,
+        vector_store_replicas=instance_sel.num_instances,
         summary=summary,
     )
 
@@ -764,7 +765,8 @@ def estimate_index_ram_gb(
     quantization: Quantization = Quantization.NONE,
     filtering_columns: int = 0,
 ) -> float:
-    """Quick helper: estimate search-node RAM in GB without the full sizing.
+    """Quick helper: estimate Vector Store-node RAM in GB without the full
+    sizing.
 
     Includes both HNSW index and filtering-column overhead.
     """

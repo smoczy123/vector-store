@@ -7,7 +7,7 @@ Tests cover:
 - Compression ratios and quantization
 - Throughput sizing and bucket selection
 - Instance selection
-- Data-node sizing
+- ScyllaDB-node sizing
 - End-to-end scenarios
 - Edge cases and regression tests
 """
@@ -272,7 +272,7 @@ class TestSelectInstance(unittest.TestCase):
 
     def test_small_deployment(self) -> None:
         sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2)
-        self.assertGreaterEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
+        self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 2.0)
 
     def test_large_deployment(self) -> None:
@@ -287,7 +287,7 @@ class TestSelectInstance(unittest.TestCase):
 
     def test_min_replicas_enforced(self) -> None:
         sel = vs._select_instance(index_ram_gb=1.0, required_vcpus=1)
-        self.assertGreaterEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
+        self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
 
     def test_cheapest_option_selected(self) -> None:
         # Small footprint — should pick a cheap instance.
@@ -300,7 +300,7 @@ class TestSelectInstance(unittest.TestCase):
             index_ram_gb=2.0, required_vcpus=2,
             cloud_provider=vs.CloudProvider.GCP,
         )
-        self.assertGreaterEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
+        self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 2.0)
         # Should pick a GCP instance name.
         self.assertTrue(
@@ -430,9 +430,9 @@ class TestComputeSizingBasic(unittest.TestCase):
     def test_default_input(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
         self.assertIsInstance(result, vs.SizingResult)
-        self.assertAlmostEqual(result.search_node.total_ram_gb, 356.63, delta=0.01)
-        self.assertEqual(result.search_node.required_vcpus, 5)
-        self.assertAlmostEqual(result.data_node.total_storage_gb, 290.76, delta=0.01)
+        self.assertAlmostEqual(result.vector_store_node.total_ram_gb, 356.63, delta=0.01)
+        self.assertEqual(result.vector_store_node.required_vcpus, 5)
+        self.assertAlmostEqual(result.scylladb_node.total_storage_gb, 290.76, delta=0.01)
 
     def test_summary_populated(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
@@ -442,8 +442,8 @@ class TestComputeSizingBasic(unittest.TestCase):
     def test_returns_all_components(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
         self.assertIsInstance(result.hnsw_params, vs.HNSWParams)
-        self.assertIsInstance(result.search_node, vs.SearchNodeSizing)
-        self.assertIsInstance(result.data_node, vs.DataNodeSizing)
+        self.assertIsInstance(result.vector_store_node, vs.VectorStoreNodeSizing)
+        self.assertIsInstance(result.scylladb_node, vs.ScyllaDBNodeSizing)
         self.assertIsInstance(result.instance_selection, vs.InstanceSelection)
 
 
@@ -462,8 +462,8 @@ class TestComputeSizingQuantization(unittest.TestCase):
         )
         result = vs.compute_sizing(inp)
         self.assertLess(
-            result.search_node.index_ram_bytes,
-            self.base_result.search_node.index_ram_bytes,
+            result.vector_store_node.index_ram_bytes,
+            self.base_result.vector_store_node.index_ram_bytes,
         )
 
     def test_binary_reduces_ram_most(self) -> None:
@@ -480,8 +480,8 @@ class TestComputeSizingQuantization(unittest.TestCase):
         scalar_result = vs.compute_sizing(scalar_inp)
         binary_result = vs.compute_sizing(binary_inp)
         self.assertLess(
-            binary_result.search_node.index_ram_bytes,
-            scalar_result.search_node.index_ram_bytes,
+            binary_result.vector_store_node.index_ram_bytes,
+            scalar_result.vector_store_node.index_ram_bytes,
         )
 
     def test_scalar_compression_ratio(self) -> None:
@@ -522,8 +522,8 @@ class TestScalarQuantizationDoubleK(unittest.TestCase):
         scalar_r = vs.compute_sizing(scalar_inp)
         # SCALAR should have lower effective_qps_per_vcpu because K is doubled.
         self.assertLess(
-            scalar_r.search_node.effective_qps_per_vcpu,
-            none_r.search_node.effective_qps_per_vcpu,
+            scalar_r.vector_store_node.effective_qps_per_vcpu,
+            none_r.vector_store_node.effective_qps_per_vcpu,
         )
 
 
@@ -550,8 +550,8 @@ class TestBinaryQuantizationQuadrupleQps(unittest.TestCase):
         none_result = vs.compute_sizing(none_inp)
         # BINARY should need significantly more search vCPUs due to 4x QPS.
         self.assertGreater(
-            result.search_node.required_vcpus,
-            none_result.search_node.required_vcpus,
+            result.vector_store_node.required_vcpus,
+            none_result.vector_store_node.required_vcpus,
         )
 
 
@@ -560,14 +560,14 @@ class TestFilteringColumns(unittest.TestCase):
 
     def test_zero_filtering_columns(self) -> None:
         result = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
-        self.assertEqual(result.search_node.filtering_ram_bytes, 0)
+        self.assertEqual(result.vector_store_node.filtering_ram_bytes, 0)
 
     def test_filtering_columns_adds_ram(self) -> None:
         no_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
         with_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=5))
         self.assertGreater(
-            with_filter.search_node.total_ram_bytes,
-            no_filter.search_node.total_ram_bytes,
+            with_filter.vector_store_node.total_ram_bytes,
+            no_filter.vector_store_node.total_ram_bytes,
         )
 
     def test_filtering_ram_formula(self) -> None:
@@ -577,14 +577,14 @@ class TestFilteringColumns(unittest.TestCase):
             num_vectors=n, filtering_columns=cols,
         ))
         expected = cols * vs.FILTERING_COLUMN_BYTES_PER_VECTOR * n
-        self.assertEqual(result.search_node.filtering_ram_bytes, expected)
+        self.assertEqual(result.vector_store_node.filtering_ram_bytes, expected)
 
     def test_filtering_ram_does_not_affect_index_ram(self) -> None:
         r0 = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
         r5 = vs.compute_sizing(vs.SizingInput(filtering_columns=5))
         self.assertEqual(
-            r0.search_node.index_ram_bytes,
-            r5.search_node.index_ram_bytes,
+            r0.vector_store_node.index_ram_bytes,
+            r5.vector_store_node.index_ram_bytes,
         )
 
 
@@ -606,7 +606,7 @@ class TestRecallLevels(unittest.TestCase):
         for r in [70, 90, 95, 99]:
             inp = vs.SizingInput(recall=r)
             results[r] = vs.compute_sizing(inp)
-        qps = [results[r].search_node.effective_qps_per_vcpu for r in [70, 90, 95, 99]]
+        qps = [results[r].vector_store_node.effective_qps_per_vcpu for r in [70, 90, 95, 99]]
         for i in range(len(qps) - 1):
             self.assertGreaterEqual(qps[i], qps[i + 1])
 
@@ -618,25 +618,25 @@ class TestKValues(unittest.TestCase):
         r1 = vs.compute_sizing(vs.SizingInput(k=1))
         r100 = vs.compute_sizing(vs.SizingInput(k=100))
         self.assertGreater(
-            r1.search_node.effective_qps_per_vcpu,
-            r100.search_node.effective_qps_per_vcpu,
+            r1.vector_store_node.effective_qps_per_vcpu,
+            r100.vector_store_node.effective_qps_per_vcpu,
         )
 
     def test_k10_equals_baseline_throughput(self) -> None:
         result = vs.compute_sizing(vs.SizingInput(k=10, recall=90))
         self.assertAlmostEqual(
-            result.search_node.effective_qps_per_vcpu,
-            result.search_node.base_qps_per_vcpu,
+            result.vector_store_node.effective_qps_per_vcpu,
+            result.vector_store_node.base_qps_per_vcpu,
             places=2,
         )
 
 
-class TestDataNodeSizingComputation(unittest.TestCase):
-    """Tests for data-node sizing."""
+class TestScyllaDBNodeSizingComputation(unittest.TestCase):
+    """Tests for ScyllaDB-node sizing."""
 
-    def test_data_nodes_equal_replication_factor(self) -> None:
+    def test_scylladb_nodes_equal_replication_factor(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
-        self.assertEqual(result.data_node.num_nodes, vs.REPLICATION_FACTOR)
+        self.assertEqual(result.scylladb_node.num_nodes, vs.REPLICATION_FACTOR)
 
     def test_storage_breakdown(self) -> None:
         n, d = 10_000_000, 768
@@ -646,26 +646,26 @@ class TestDataNodeSizingComputation(unittest.TestCase):
         expected_embedding = n * d * vs.FLOAT32_BYTES
         expected_metadata = n * 100
         self.assertEqual(
-            result.data_node.embedding_storage_bytes, expected_embedding
+            result.scylladb_node.embedding_storage_bytes, expected_embedding
         )
         self.assertEqual(
-            result.data_node.metadata_storage_bytes, expected_metadata
+            result.scylladb_node.metadata_storage_bytes, expected_metadata
         )
         self.assertEqual(
-            result.data_node.total_storage_bytes,
+            result.scylladb_node.total_storage_bytes,
             expected_embedding + expected_metadata,
         )
 
-    def test_data_vcpus_derived_from_search_vcpus(self) -> None:
+    def test_scylladb_vcpus_derived_from_search_vcpus(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
-        search_vcpus = result.search_node.required_vcpus
+        vs_vcpus = result.vector_store_node.required_vcpus
         expected_total = max(
-            1, math.ceil(search_vcpus / vs.SEARCH_TO_DATA_VCPU_RATIO),
+            1, math.ceil(vs_vcpus / vs.VS_TO_SCYLLADB_VCPU_RATIO),
         )
         expected_per_node = max(
             1, math.ceil(expected_total / vs.REPLICATION_FACTOR),
         )
-        self.assertEqual(result.data_node.vcpus_per_node, expected_per_node)
+        self.assertEqual(result.scylladb_node.vcpus_per_node, expected_per_node)
 
 
 class TestRecommendHnswParams(unittest.TestCase):
@@ -724,13 +724,13 @@ class TestInstanceSelection(unittest.TestCase):
         """When more than 2 replicas are needed, count must be divisible by 3."""
         # 100 vCPUs on a 2-vCPU instance -> ceil(100/2) = 50 -> rounded to 51.
         sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100)
-        if sel.num_instances > vs.MIN_SEARCH_REPLICAS:
+        if sel.num_instances > vs.MIN_VECTOR_STORE_REPLICAS:
             self.assertEqual(sel.num_instances % 3, 0)
 
     def test_exactly_two_replicas_not_rounded(self) -> None:
         """Two replicas (the HA minimum) should stay at 2, not be rounded to 3."""
         sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=1)
-        self.assertEqual(sel.num_instances, vs.MIN_SEARCH_REPLICAS)
+        self.assertEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
 
     def test_gcp_vcpu_requirement_met(self) -> None:
         sel = vs._select_instance(
@@ -744,7 +744,7 @@ class TestInstanceSelection(unittest.TestCase):
             index_ram_gb=2.0, required_vcpus=100,
             cloud_provider=vs.CloudProvider.GCP,
         )
-        if sel.num_instances > vs.MIN_SEARCH_REPLICAS:
+        if sel.num_instances > vs.MIN_VECTOR_STORE_REPLICAS:
             self.assertEqual(sel.num_instances % 3, 0)
 
 
@@ -765,10 +765,10 @@ class TestEndToEndRAG(unittest.TestCase):
         result = vs.compute_sizing(inp)
 
         # Basic sanity checks for a RAG-scale deployment.
-        self.assertGreater(result.search_node.total_ram_gb, 100)
-        self.assertGreater(result.search_node.required_vcpus, 10)
-        self.assertGreater(result.data_node.total_storage_gb, 100)
-        self.assertGreaterEqual(result.search_replicas, vs.MIN_SEARCH_REPLICAS)
+        self.assertGreater(result.vector_store_node.total_ram_gb, 100)
+        self.assertGreater(result.vector_store_node.required_vcpus, 10)
+        self.assertGreater(result.scylladb_node.total_storage_gb, 100)
+        self.assertGreaterEqual(result.vector_store_replicas, vs.MIN_VECTOR_STORE_REPLICAS)
         self.assertEqual(result.instance_selection.instance_type.name, "r7i.48xlarge")
         self.assertEqual(result.instance_selection.num_instances, 2)
 
@@ -789,9 +789,9 @@ class TestEndToEndImageSearch(unittest.TestCase):
         result = vs.compute_sizing(inp)
 
         # RAM should be relatively modest (128d, SCALAR compressed).
-        self.assertLess(result.search_node.total_ram_gb, 50)
+        self.assertLess(result.vector_store_node.total_ram_gb, 50)
         self.assertEqual(result.compression_ratio, vs.SCALAR_COMPRESSION_RATIO)
-        self.assertGreater(result.search_node.required_vcpus, 0)
+        self.assertGreater(result.vector_store_node.required_vcpus, 0)
         self.assertEqual(result.instance_selection.instance_type.name, "r7g.4xlarge")
         self.assertEqual(result.instance_selection.num_instances, 3)
 
@@ -819,7 +819,7 @@ class TestEndToEndLargeScale(unittest.TestCase):
             2 * vs.FILTERING_COLUMN_BYTES_PER_VECTOR * 1_000_000_000
         )
         self.assertEqual(
-            result.search_node.filtering_ram_bytes, expected_filter_ram
+            result.vector_store_node.filtering_ram_bytes, expected_filter_ram
         )
         self.assertEqual(result.instance_selection.instance_type.name, "r7g.16xlarge")
         self.assertEqual(result.instance_selection.num_instances, 21)
@@ -876,7 +876,7 @@ class TestGCPEndToEnd(unittest.TestCase):
             cloud_provider=vs.CloudProvider.GCP,
         )
         result = vs.compute_sizing(inp)
-        self.assertGreater(result.search_node.total_ram_gb, 100)
+        self.assertGreater(result.vector_store_node.total_ram_gb, 100)
         self.assertEqual(result.instance_selection.instance_type.name, "n4-highmem-48")
         self.assertEqual(result.instance_selection.num_instances, 2)
 

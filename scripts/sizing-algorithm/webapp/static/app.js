@@ -264,23 +264,23 @@
   // ── Render results ──────────────────────────────────────
 
   function renderResults(data) {
-    var s  = data.search_node;
+    var s  = data.vector_store_node;
     var i  = data.instance_selection;
-    var d  = data.data_node;
+    var d  = data.scylladb_node;
     var h  = data.hnsw;
 
     var html = "";
 
     // Cost banner
     html += '<div class="cost-banner">';
-    html += '  <div class="small-label">Estimated Search-Node Cost</div>';
+    html += '  <div class="small-label">Estimated Vector Store Node Cost</div>';
     html += '  <div class="big-number">$' + fmt(i.total_cost_per_month) + " / mo</div>";
     html += '  <div class="small-label">$' + i.total_cost_per_hour.toFixed(3) + " / hr</div>";
     html += "</div>";
 
     // Instance Selection
     html += '<div class="result-card">';
-    html += '  <div class="result-section-title">Search Node Instances</div>';
+    html += '  <div class="result-section-title">Vector Store Node Instances</div>';
     html += resultRow("Instance type",       i.instance_type);
     html += resultRow("Instances",           i.num_instances);
     html += resultRow("vCPUs per instance",  i.instance_vcpus);
@@ -289,9 +289,9 @@
     html += resultRow("Total RAM",           fmt(i.total_ram_gb) + " GB");
     html += "</div>";
 
-    // Search Node Sizing
+    // Vector Store Node Sizing
     html += '<div class="result-card">';
-    html += '  <div class="result-section-title">Search Node Sizing (per replica)</div>';
+    html += '  <div class="result-section-title">Vector Store Node Sizing (per replica)</div>';
     html += resultRow("Index RAM",           s.index_ram_gb.toFixed(2) + " GB");
     html += resultRow("Filtering RAM",       s.filtering_ram_gb.toFixed(2) + " GB");
     html += resultRow("Total RAM required",  s.total_ram_gb.toFixed(2) + " GB", true);
@@ -308,9 +308,9 @@
     html += resultRow("Compression ratio",   data.compression_ratio + "×");
     html += "</div>";
 
-    // Data Nodes
+    // ScyllaDB Nodes
     html += '<div class="result-card">';
-    html += '  <div class="result-section-title">ScyllaDB Data Nodes</div>';
+    html += '  <div class="result-section-title">ScyllaDB Nodes</div>';
     html += resultRow("Nodes (RF=3)",        d.num_nodes);
     html += resultRow("vCPUs per node",      d.vcpus_per_node);
     html += resultRow("Total vCPUs",         fmt(d.total_vcpus));

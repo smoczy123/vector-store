@@ -64,16 +64,16 @@ def compute():
             "m": result.hnsw_params.m,
         },
         "compression_ratio": result.compression_ratio,
-        "search_node": {
-            "index_ram_gb": round(result.search_node.index_ram_bytes / (1024**3), 2),
+        "vector_store_node": {
+            "index_ram_gb": round(result.vector_store_node.index_ram_bytes / (1024**3), 2),
             "filtering_ram_gb": round(
-                result.search_node.filtering_ram_bytes / (1024**3), 2
+                result.vector_store_node.filtering_ram_bytes / (1024**3), 2
             ),
-            "total_ram_gb": result.search_node.total_ram_gb,
-            "required_vcpus": result.search_node.required_vcpus,
-            "base_qps_per_vcpu": round(result.search_node.base_qps_per_vcpu, 1),
-            "effective_qps_per_vcpu": result.search_node.effective_qps_per_vcpu,
-            "throughput_bucket": result.search_node.throughput_bucket,
+            "total_ram_gb": result.vector_store_node.total_ram_gb,
+            "required_vcpus": result.vector_store_node.required_vcpus,
+            "base_qps_per_vcpu": round(result.vector_store_node.base_qps_per_vcpu, 1),
+            "effective_qps_per_vcpu": result.vector_store_node.effective_qps_per_vcpu,
+            "throughput_bucket": result.vector_store_node.throughput_bucket,
         },
         "instance_selection": {
             "instance_type": result.instance_selection.instance_type.name,
@@ -87,19 +87,19 @@ def compute():
                 result.instance_selection.total_cost_per_hour * 730, 2
             ),
         },
-        "data_node": {
-            "num_nodes": result.data_node.num_nodes,
-            "vcpus_per_node": result.data_node.vcpus_per_node,
-            "total_vcpus": result.data_node.total_vcpus,
-            "total_storage_gb": result.data_node.total_storage_gb,
+        "scylladb_node": {
+            "num_nodes": result.scylladb_node.num_nodes,
+            "vcpus_per_node": result.scylladb_node.vcpus_per_node,
+            "total_vcpus": result.scylladb_node.total_vcpus,
+            "total_storage_gb": result.scylladb_node.total_storage_gb,
             "embedding_storage_gb": round(
-                result.data_node.embedding_storage_bytes / (1024**3), 2
+                result.scylladb_node.embedding_storage_bytes / (1024**3), 2
             ),
             "metadata_storage_gb": round(
-                result.data_node.metadata_storage_bytes / (1024**3), 2
+                result.scylladb_node.metadata_storage_bytes / (1024**3), 2
             ),
         },
-        "search_replicas": result.search_replicas,
+        "vector_store_replicas": result.vector_store_replicas,
         "summary": result.summary,
     })
 
