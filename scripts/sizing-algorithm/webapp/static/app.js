@@ -87,7 +87,7 @@
   // so that collectInput() and the display use it instead of
   // round-tripping through the slider.
   var overrides = {
-    num_vectors: null,      // integer or null
+    num_vectors: 50000000,  // integer or null
     metadata_bytes: null,   // integer (bytes) or null
   };
 
