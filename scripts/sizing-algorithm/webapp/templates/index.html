@@ -61,6 +61,7 @@
       <div class="preset-chips">
         <button class="chip" data-target="dimensions" data-value="128">128</button>
         <button class="chip" data-target="dimensions" data-value="768">768</button>
+        <button class="chip" data-target="dimensions" data-value="1024">1024</button>
         <button class="chip" data-target="dimensions" data-value="1536">1536</button>
         <button class="chip" data-target="dimensions" data-value="4096">4096</button>
       </div>
@@ -78,13 +79,25 @@
       <p class="hint">Desired queries per second at P99 ≤ 15 ms latency.</p>
     </div>
 
+  </section>
+
+  <!-- ───────── Advanced Parameters Panel ───────── -->
+  <section class="panel inputs-panel advanced-panel">
+    <h2 class="advanced-toggle" id="advanced-toggle">
+      Advanced Parameters
+      <svg class="toggle-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4 6 8 10 12 6"/>
+      </svg>
+    </h2>
+    <div class="advanced-body" id="advanced-body">
+
     <!-- recall (slider) -->
     <div class="field">
       <div class="field-header">
         <label for="recall">Recall Target</label>
         <input type="text" id="recall_val" class="field-value field-input">
       </div>
-      <input type="range" id="recall" min="70" max="99" step="1" value="90">
+      <input type="range" id="recall" min="70" max="99" step="1" value="95">
       <div class="field-range"><span>70 %</span><span>99 %</span></div>
       <p class="hint">Higher recall dramatically reduces throughput per vCPU.</p>
     </div>
@@ -145,6 +158,8 @@
       <div class="field-range"><span>0</span><span>20</span></div>
       <p class="hint">Each column adds 30 bytes per vector to Vector Store-node RAM.</p>
     </div>
+
+    </div><!-- /.advanced-body -->
   </section>
 
   <!-- ───────── Results Panel ───────── -->

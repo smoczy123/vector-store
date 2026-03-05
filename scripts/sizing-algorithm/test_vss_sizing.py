@@ -166,6 +166,14 @@ class TestComputeIndexRam(unittest.TestCase):
         ratio = none / scalar
         self.assertAlmostEqual(ratio, vs.SCALAR_COMPRESSION_RATIO, delta=0.5)
 
+    def test_compression_ratio_roughly_correct_binary(self) -> None:
+        n, d, m = 100_000, 768, 16
+        none = vs._compute_index_ram(n, d, m, 1.0)
+        binary = vs._compute_index_ram(n, d, m, vs.BINARY_COMPRESSION_RATIO)
+        # Should be roughly 10x reduction
+        ratio = none / binary
+        self.assertAlmostEqual(ratio, vs.BINARY_COMPRESSION_RATIO, delta=0.5)
+
 
 class TestRecallQpsMultiplier(unittest.TestCase):
     """Tests for vs._recall_qps_multiplier interpolation."""
@@ -430,8 +438,8 @@ class TestComputeSizingBasic(unittest.TestCase):
     def test_default_input(self) -> None:
         result = vs.compute_sizing(vs.SizingInput())
         self.assertIsInstance(result, vs.SizingResult)
-        self.assertAlmostEqual(result.vector_store_node.total_ram_gb, 356.63, delta=0.01)
-        self.assertEqual(result.vector_store_node.required_vcpus, 5)
+        self.assertAlmostEqual(result.vector_store_node.total_ram_gb, 381.79, delta=0.01)
+        self.assertEqual(result.vector_store_node.required_vcpus, 13)
         self.assertAlmostEqual(result.scylladb_node.total_storage_gb, 290.76, delta=0.01)
 
     def test_summary_populated(self) -> None:
@@ -668,44 +676,6 @@ class TestScyllaDBNodeSizingComputation(unittest.TestCase):
         self.assertEqual(result.scylladb_node.vcpus_per_node, expected_per_node)
 
 
-class TestRecommendHnswParams(unittest.TestCase):
-    """Tests for vs.recommend_hnsw_params convenience helper."""
-
-    def test_returns_hnsw_params(self) -> None:
-        result = vs.recommend_hnsw_params(1_000_000, 95)
-        self.assertIsInstance(result, vs.HNSWParams)
-        self.assertEqual(result.m, 32)
-
-    def test_power_of_two(self) -> None:
-        for n in [10_000, 1_000_000, 100_000_000]:
-            for r in [70, 90, 95, 99]:
-                m = vs.recommend_hnsw_params(n, r).m
-                self.assertEqual(m & (m - 1), 0, f"{n=}, {r=}, {m=}")
-
-
-class TestEstimateIndexRamGb(unittest.TestCase):
-    """Tests for vs.estimate_index_ram_gb convenience helper."""
-
-    def test_default_params(self) -> None:
-        r = vs.estimate_index_ram_gb(10_000_000, 768)
-        self.assertAlmostEqual(r, 39.09, delta=0.01)
-
-    def test_custom_params(self) -> None:
-        r = vs.estimate_index_ram_gb(
-            5_000_000, 256, m=16,
-            quantization=vs.Quantization.SCALAR, filtering_columns=3,
-        )
-        self.assertAlmostEqual(r, 2.98, delta=0.01)
-
-    def test_with_quantization(self) -> None:
-        none = vs.estimate_index_ram_gb(10_000_000, 768, quantization=vs.Quantization.NONE)
-        scalar = vs.estimate_index_ram_gb(10_000_000, 768, quantization=vs.Quantization.SCALAR)
-        self.assertGreater(none, scalar)
-
-    def test_with_filtering_columns(self) -> None:
-        r0 = vs.estimate_index_ram_gb(10_000_000, 768, filtering_columns=0)
-        r5 = vs.estimate_index_ram_gb(10_000_000, 768, filtering_columns=5)
-        self.assertGreater(r5, r0)
 
 
 class TestInstanceSelection(unittest.TestCase):
@@ -792,8 +762,8 @@ class TestEndToEndImageSearch(unittest.TestCase):
         self.assertLess(result.vector_store_node.total_ram_gb, 50)
         self.assertEqual(result.compression_ratio, vs.SCALAR_COMPRESSION_RATIO)
         self.assertGreater(result.vector_store_node.required_vcpus, 0)
-        self.assertEqual(result.instance_selection.instance_type.name, "r7g.4xlarge")
-        self.assertEqual(result.instance_selection.num_instances, 3)
+        self.assertEqual(result.instance_selection.instance_type.name, "r7g.xlarge")
+        self.assertEqual(result.instance_selection.num_instances, 12)
 
 
 class TestEndToEndLargeScale(unittest.TestCase):

@@ -56,14 +56,21 @@ header h1 {
 main {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto 1fr;
   gap: 1.5rem;
   max-width: 1280px;
   margin: 1.5rem auto;
   padding: 0 1.5rem;
+  align-items: start;
 }
 
+.inputs-panel  { grid-column: 1; }
+.advanced-panel { grid-column: 1; }
+.results-panel { grid-column: 2; grid-row: 1 / -1; }
+
 @media (max-width: 900px) {
-  main { grid-template-columns: 1fr; }
+  main { grid-template-columns: 1fr; grid-template-rows: auto; }
+  .inputs-panel, .advanced-panel, .results-panel { grid-column: 1; grid-row: auto; }
 }
 
 /* ── Panels ─────────────────────────────────────────────── */
@@ -385,6 +392,19 @@ input[type="range"]::-moz-range-thumb {
   opacity: .8;
 }
 
+.cost-banner .pricing-region {
+  font-size: .7rem;
+  opacity: .65;
+  margin-top: .35rem;
+  font-style: italic;
+}
+
+.cost-banner .cost-ondemand {
+  font-size: .78rem;
+  opacity: .7;
+  margin-top: .4rem;
+}
+
 /* ── Error box ──────────────────────────────────────────── */
 
 .error-box {
@@ -398,6 +418,42 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .hidden { display: none; }
+
+/* ── Advanced panel toggle ──────────────────────────────── */
+
+.advanced-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  user-select: none;
+  margin-bottom: 0;
+}
+
+.advanced-panel:not(.collapsed) .advanced-toggle {
+  margin-bottom: 1.25rem;
+}
+
+.toggle-chevron {
+  transition: transform .2s ease;
+  flex-shrink: 0;
+}
+
+.advanced-panel.collapsed .toggle-chevron {
+  transform: rotate(-90deg);
+}
+
+.advanced-body {
+  overflow: hidden;
+  transition: max-height .25s ease, opacity .2s ease;
+  max-height: 800px;
+  opacity: 1;
+}
+
+.advanced-panel.collapsed .advanced-body {
+  max-height: 0;
+  opacity: 0;
+}
 
 /* ── Footer ─────────────────────────────────────────────── */
 

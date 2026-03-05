@@ -37,13 +37,15 @@ Input Parameters
   BINARY (1-bit, ~10x memory savings).
   Default: NONE.
   SCALAR quantization doubles the effective K for throughput sizing because of oversampling.
-  BINARY quantization quadruples the effective QPS for throughput sizing because of rescoring.
+  BINARY quantization quadruples the effective QPS for throughput sizing because of rescoring
+  so that the system needs more compute resources to achieve the same latency.
 - **metadata_bytes_per_vector** (int) - Average payload stored alongside each
   embedding on ScyllaDB nodes (used only for ScyllaDB-node storage calculation).
   Min: 4, Max: 1 048 576 (1 MiB), Default: 100.
   UI note: should be visualized on a logarithmic scale.
 - **filtering_columns** (int) - Number of filtering columns used in queries.
   Each column adds 30 bytes per vector to Vector Store-node RAM.
+  All reasonable filtering fields should be smaller.
   Min: 0, Max: 20, Default: 0.
 
 References
@@ -171,7 +173,7 @@ BINARY_COMPRESSION_RATIO = 10.0
 DEFAULT_NUM_VECTORS = 50_000_000
 DEFAULT_DIMENSIONS = 1_536
 DEFAULT_TARGET_QPS = 1_000
-DEFAULT_RECALL = 90
+DEFAULT_RECALL = 95
 DEFAULT_K = 10
 DEFAULT_METADATA_BYTES = 100
 
@@ -187,33 +189,36 @@ class InstanceType:
     vcpus: int
     ram_gb: float
     cost_per_hour: float
+    cost_per_hour_yearly: float
 
 # ScyllaDB Cloud currently supports the following instance
-# types for Vector Store nodes. Prices as of 2026-02-26.
+# types for Vector Store nodes.
+# AWS prices as of 2026-02-26 (us-east-1 region).
 AWS_INSTANCES: list[InstanceType] = [
-    InstanceType("t4g.medium",     2,    4,    0.134),
-    InstanceType("r7g.medium",     1,    8,    0.214),
-    InstanceType("r7g.large",      2,   16,    0.428),
-    InstanceType("r7g.xlarge",     4,   32,    0.857),
-    InstanceType("r7g.2xlarge",    8,   64,    1.714),
-    InstanceType("r7g.4xlarge",   16,  128,    3.427),
-    InstanceType("r7g.8xlarge",   32,  256,    6.854),
-    InstanceType("r7g.12xlarge",  48,  384,   10.282),
-    InstanceType("r7g.16xlarge",  64,  512,   13.709),
-    InstanceType("r7i.24xlarge",  96,  768,   25.402),
-    InstanceType("r7i.48xlarge", 192, 1536,   50.803),
+    InstanceType("t4g.medium",     2,    4,    0.134,    0.0784),
+    InstanceType("r7g.medium",     1,    8,    0.214,    0.1324),
+    InstanceType("r7g.large",      2,   16,    0.428,    0.2644),
+    InstanceType("r7g.xlarge",     4,   32,    0.857,    0.5288),
+    InstanceType("r7g.2xlarge",    8,   64,    1.714,    1.058),
+    InstanceType("r7g.4xlarge",   16,  128,    3.427,    2.116),
+    InstanceType("r7g.8xlarge",   32,  256,    6.854,    4.232),
+    InstanceType("r7g.12xlarge",  48,  384,   10.282,    6.348),
+    InstanceType("r7g.16xlarge",  64,  512,   13.709,    8.464),
+    InstanceType("r7i.24xlarge",  96,  768,   25.402,   15.6832),
+    InstanceType("r7i.48xlarge", 192, 1536,   50.803,   31.3656),
 ]
 
+# GCP prices as of 2026-02-26 (us-east1 region).
 GCP_INSTANCES: list[InstanceType] = [
-    InstanceType("e2-medium",      2,    4,    0.134),
-    InstanceType("n4-highmem-2",   2,   16,    0.476),
-    InstanceType("n4-highmem-4",   4,   32,    0.952),
-    InstanceType("n4-highmem-8",   8,   64,    1.904),
-    InstanceType("n4-highmem-16", 16,  128,    3.809),
-    InstanceType("n4-highmem-32", 32,  256,    7.617),
-    InstanceType("n4-highmem-48", 48,  384,   11.426),
-    InstanceType("n4-highmem-64", 64,  512,   15.235),
-    InstanceType("n4-highmem-80", 80,  640,   19.043),
+    InstanceType("e2-medium",      2,    4,    0.134,    0.13402284),
+    InstanceType("n4-highmem-2",   2,   16,    0.476,    0.29992),
+    InstanceType("n4-highmem-4",   4,   32,    0.952,    0.59984),
+    InstanceType("n4-highmem-8",   8,   64,    1.904,    1.19968),
+    InstanceType("n4-highmem-16", 16,  128,    3.809,    2.39936),
+    InstanceType("n4-highmem-32", 32,  256,    7.617,    4.79872),
+    InstanceType("n4-highmem-48", 48,  384,   11.426,    7.19808),
+    InstanceType("n4-highmem-64", 64,  512,   15.235,    9.59744),
+    InstanceType("n4-highmem-80", 80,  640,   19.043,   11.9968),
 ]
 
 # Default instance list (AWS) for backward compatibility.
@@ -342,6 +347,7 @@ class InstanceSelection:
     total_vcpus: int
     total_ram_gb: float
     total_cost_per_hour: float
+    total_cost_per_hour_yearly: float
 
 
 @dataclass
@@ -544,9 +550,9 @@ def _select_instance(
     instance must have at least *index_ram_gb* of memory.  The query load is
     distributed across all replicas, so the aggregate vCPU count must meet
     *required_vcpus*.  At least ``MIN_VECTOR_STORE_REPLICAS`` instances are
-    always provisioned for high availability.  When more than two replicas
-    are needed, the count is rounded up to the next multiple of 3 so that
-    replicas can be evenly distributed across availability zones.
+    always provisioned for high availability at reasonable cost.  When more than
+    two replicas are needed, the count is rounded up to the next multiple of 3 so
+    that replicas can be evenly distributed across availability zones.
 
     The function evaluates every entry in ``AVAILABLE_INSTANCES`` and returns
     the option with the lowest total hourly cost.
@@ -577,13 +583,15 @@ def _select_instance(
             num = num + (3 - num % 3)
 
         total_cost = num * inst.cost_per_hour
+        total_cost_yearly = num * inst.cost_per_hour_yearly
 
         candidate = InstanceSelection(
             instance_type=inst,
             num_instances=num,
             total_vcpus=num * inst.vcpus,
             total_ram_gb=round(num * inst.ram_gb, 2),
-            total_cost_per_hour=round(total_cost, 3),
+            total_cost_per_hour=round(total_cost, 2),
+            total_cost_per_hour_yearly=round(total_cost_yearly, 2),
         )
 
         if best is None or candidate.total_cost_per_hour < best.total_cost_per_hour:
@@ -648,6 +656,10 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     eff_qps = _effective_qps_per_vcpu(base_qps, inp.recall, effective_k)
 
     # For BINARY quantization, size as if QPS is 4x larger (re-ranking).
+    # The system needs more compute to achieve the same latency because of
+    # the additional overhead of rescoring more candidates.
+    # K adjustment is not applied on top of this because its irrelevant
+    # comparing to the QPS increase.
     effective_target_qps = (
         inp.target_qps * 4
         if inp.quantization is Quantization.BINARY
@@ -722,7 +734,9 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
         f" bucket: {bucket_label})",
         f"  Replicas       = {instance_sel.num_instances}",
         f"  Instance type  = {instance_sel.instance_type.name}",
-        f"  Total cost     = ${instance_sel.total_cost_per_hour:.3f}/hr",
+        f"  Total cost     = ${instance_sel.total_cost_per_hour:.2f}/hr"
+        f" (on-demand), ${instance_sel.total_cost_per_hour_yearly:.2f}/hr"
+        f" (1-yr commit)",
         "",
         "--- ScyllaDB Nodes (computed) ---",
         f"  Nodes          = {scylladb_node.num_nodes}"
@@ -744,33 +758,3 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
         vector_store_replicas=instance_sel.num_instances,
         summary=summary,
     )
-
-
-# ---------------------------------------------------------------------------
-# Convenience helpers
-# ---------------------------------------------------------------------------
-
-def recommend_hnsw_params(num_vectors: int, recall: int) -> HNSWParams:
-    """Return recommended HNSW parameters for a given dataset size and recall
-    percentage.
-    """
-    m = _estimate_m(num_vectors, recall)
-    return HNSWParams(m=m)
-
-
-def estimate_index_ram_gb(
-    num_vectors: int,
-    dimensions: int,
-    m: int = 32,
-    quantization: Quantization = Quantization.NONE,
-    filtering_columns: int = 0,
-) -> float:
-    """Quick helper: estimate Vector Store-node RAM in GB without the full
-    sizing.
-
-    Includes both HNSW index and filtering-column overhead.
-    """
-    compression = _get_compression_ratio(quantization)
-    ram_bytes = _compute_index_ram(num_vectors, dimensions, m, compression)
-    filtering_bytes = filtering_columns * FILTERING_COLUMN_BYTES_PER_VECTOR * num_vectors
-    return round((ram_bytes + filtering_bytes) / (1024 ** 3), 2)

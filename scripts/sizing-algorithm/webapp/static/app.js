@@ -272,10 +272,15 @@
     var html = "";
 
     // Cost banner
+    var cloudEl = document.querySelector('input[name="cloud_provider"]:checked');
+    var provider = cloudEl ? cloudEl.value : "aws";
+    var pricingRegion = provider === "gcp" ? "us-east1" : "us-east-1";
     html += '<div class="cost-banner">';
-    html += '  <div class="small-label">Estimated Vector Store Node Cost</div>';
-    html += '  <div class="big-number">$' + fmt(i.total_cost_per_month) + " / mo</div>";
-    html += '  <div class="small-label">$' + i.total_cost_per_hour.toFixed(3) + " / hr</div>";
+    html += '  <div class="small-label">Estimated Vector Store Node Cost (1-year commitment)</div>';
+    html += '  <div class="big-number">$' + fmt(Math.round(i.total_cost_per_month_yearly)) + " / mo</div>";
+    html += '  <div class="small-label">$' + i.total_cost_per_hour_yearly.toFixed(2) + " / hr</div>";
+    html += '  <div class="cost-ondemand">On-demand: $' + fmt(Math.round(i.total_cost_per_month)) + ' / mo ($' + i.total_cost_per_hour.toFixed(2) + ' / hr)</div>';
+    html += '  <div class="pricing-region">Based on ' + provider.toUpperCase() + ' ' + pricingRegion + ' pricing</div>';
     html += "</div>";
 
     // Instance Selection
@@ -455,6 +460,17 @@
           elCopyBtn.classList.remove("copied");
         }, 1500);
       });
+    });
+  }
+
+  // ── Advanced panel toggle ──────────────────────────────
+
+  var elAdvancedPanel = document.querySelector(".advanced-panel");
+  var elAdvancedToggle = document.getElementById("advanced-toggle");
+
+  if (elAdvancedToggle && elAdvancedPanel) {
+    elAdvancedToggle.addEventListener("click", function () {
+      elAdvancedPanel.classList.toggle("collapsed");
     });
   }
 

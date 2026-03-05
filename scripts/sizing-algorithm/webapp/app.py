@@ -86,6 +86,10 @@ def compute():
             "total_cost_per_month": round(
                 result.instance_selection.total_cost_per_hour * 730, 2
             ),
+            "total_cost_per_hour_yearly": result.instance_selection.total_cost_per_hour_yearly,
+            "total_cost_per_month_yearly": round(
+                result.instance_selection.total_cost_per_hour_yearly * 730, 2
+            ),
         },
         "scylladb_node": {
             "num_nodes": result.scylladb_node.num_nodes,
