@@ -51,6 +51,13 @@ const DEFAULT_CONSISTENT_SLEEP_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_REALTIME_SAFETY_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_REALTIME_SLEEP_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Maximum consecutive errors before a CDC reader with Backoff policy escalates to session teardown.
+const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
+/// Base backoff duration for CDC reader restarts after errors.
+/// The actual backoff is `DEFAULT_BACKOFF_BASE * consecutive_error_count`.
+const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(5);
+
 /// Parameters for a CDC reader instance.
 #[derive(Clone, Debug)]
 struct CdcReaderParams {
@@ -97,8 +104,14 @@ pub(crate) enum CdcReaderConfig {
 impl From<CdcReaderConfig> for CdcReaderState {
     fn from(config: CdcReaderConfig) -> Self {
         match config {
-            CdcReaderConfig::Wide => Self::new("wide", CdcReaderParams::wide),
-            CdcReaderConfig::Fine => Self::new("fine", CdcReaderParams::fine),
+            CdcReaderConfig::Wide => {
+                Self::new("wide", CdcErrorPolicy::Propagate, CdcReaderParams::wide)
+            }
+            CdcReaderConfig::Fine => Self::new(
+                "fine",
+                CdcErrorPolicy::backoff_and_retry(),
+                CdcReaderParams::fine,
+            ),
         }
     }
 }
@@ -144,7 +157,16 @@ pub(crate) fn new(
                     }
 
                     _ = reader.error_notify.notified() => {
-                        break;
+                        if reader.handle_error() {
+                            break;
+                        }
+                    }
+
+                    Some(()) = select_backoff(reader.backoff_deadline) => {
+                        reader.restart_after_backoff(
+                            &session_rx, &config_rx, &metadata,
+                            &tx_embeddings, &internals,
+                        ).await;
                     }
                 }
             }
@@ -160,26 +182,57 @@ pub(crate) fn new(
     tx
 }
 
+/// Defines how a CDC reader handles errors from its handler task.
+enum CdcErrorPolicy {
+    /// Propagate errors immediately by closing the channel.
+    Propagate,
+    /// Handle errors locally with backoff and retry.
+    /// After `max_consecutive_errors` consecutive failures, close the channel.
+    BackoffAndRetry {
+        max_consecutive_errors: u32,
+        backoff_base: Duration,
+        consecutive_errors: u32,
+    },
+}
+
+impl CdcErrorPolicy {
+    fn backoff_and_retry() -> Self {
+        Self::BackoffAndRetry {
+            max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
+            backoff_base: DEFAULT_BACKOFF_BASE,
+            consecutive_errors: 0,
+        }
+    }
+}
+
 /// State for managing a CDC reader's lifecycle.
 struct CdcReaderState {
     reader: Option<scylla_cdc::log_reader::CDCLogReader>,
     handler_task: Option<tokio::task::JoinHandle<Duration>>,
     shutdown_notify: Arc<Notify>,
+    backoff_deadline: Option<time::Instant>,
     error_notify: Arc<Notify>,
     start: Duration,
     name: &'static str,
+    error_policy: CdcErrorPolicy,
     params_fn: fn(&Config) -> CdcReaderParams,
 }
 
 impl CdcReaderState {
-    fn new(name: &'static str, params_fn: fn(&Config) -> CdcReaderParams) -> Self {
+    fn new(
+        name: &'static str,
+        error_policy: CdcErrorPolicy,
+        params_fn: fn(&Config) -> CdcReaderParams,
+    ) -> Self {
         Self {
             reader: None,
             handler_task: None,
             shutdown_notify: Arc::new(Notify::new()),
             error_notify: Arc::new(Notify::new()),
+            backoff_deadline: None,
             start: cdc_now(),
             name,
+            error_policy,
             params_fn,
         }
     }
@@ -192,6 +245,19 @@ impl CdcReaderState {
         if let Some(task) = self.handler_task.take() {
             self.shutdown_notify.notify_one();
             self.start = task.await.unwrap_or(cdc_now());
+        }
+    }
+
+    /// Drains stale error notifications, cancels any pending backoff,
+    /// and resets the consecutive error counter.
+    fn reset_on_session_change(&mut self) {
+        let _ = pin!(self.error_notify.notified()).enable();
+        self.backoff_deadline = None;
+        if let CdcErrorPolicy::BackoffAndRetry {
+            consecutive_errors, ..
+        } = &mut self.error_policy
+        {
+            *consecutive_errors = 0;
         }
     }
 
@@ -261,6 +327,7 @@ impl CdcReaderState {
 
                 let config = config_rx.borrow().clone();
 
+                self.reset_on_session_change();
                 let params = (self.params_fn)(&config);
                 self.restart(params, &session, metadata, tx_embeddings, internals)
                     .await;
@@ -276,12 +343,70 @@ impl CdcReaderState {
             }
         }
     }
+
+    /// Handles an error according to the reader's [`CdcErrorPolicy`].
+    /// Returns `true` if the error should be propagated by closing the channel.
+    fn handle_error(&mut self) -> bool {
+        match &mut self.error_policy {
+            CdcErrorPolicy::Propagate => true,
+            CdcErrorPolicy::BackoffAndRetry {
+                max_consecutive_errors,
+                backoff_base,
+                consecutive_errors,
+            } => {
+                *consecutive_errors += 1;
+                let count = *consecutive_errors;
+                let limit = *max_consecutive_errors;
+
+                if count >= limit {
+                    warn!(
+                        "{} CDC reader failed {count} consecutive times, closing channel",
+                        self.name
+                    );
+                    true
+                } else {
+                    let backoff = *backoff_base * count;
+                    warn!(
+                        "{} CDC reader error ({count}/{limit}), restarting after {backoff:?} backoff",
+                        self.name,
+                    );
+                    self.backoff_deadline = Some(time::Instant::now() + backoff);
+                    false
+                }
+            }
+        }
+    }
+
+    /// Completes a pending backoff by restarting the CDC reader.
+    async fn restart_after_backoff(
+        &mut self,
+        session_rx: &watch::Receiver<Option<Arc<Session>>>,
+        config_rx: &watch::Receiver<Arc<Config>>,
+        metadata: &IndexMetadata,
+        tx_embeddings: &mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        internals: &Sender<Internals>,
+    ) {
+        self.backoff_deadline = None;
+        let session = session_rx.borrow().clone();
+        if let Some(session) = session {
+            let config = config_rx.borrow().clone();
+            let params = (self.params_fn)(&config);
+            self.restart(params, &session, metadata, tx_embeddings, internals)
+                .await;
+        }
+    }
 }
 
 fn cdc_now() -> Duration {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
+}
+
+/// Waits for the backoff deadline to expire, returning `None` if no deadline is set.
+async fn select_backoff(deadline: Option<time::Instant>) -> Option<()> {
+    time::sleep_until(deadline?).await;
+    Some(())
 }
 
 /// Drains any pending shutdown notifications to avoid stale wakeups.
