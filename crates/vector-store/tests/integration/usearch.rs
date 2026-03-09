@@ -1417,3 +1417,44 @@ async fn http_server_is_responsive_when_index_add_hangs() {
 
     assert_eq!(status, vector_store::httproutes::NodeStatus::Serving);
 }
+
+#[tokio::test]
+#[ntest::timeout(10_000)]
+async fn null_vector_is_not_indexed() {
+    use vector_store::httproutes::IndexStatus;
+
+    crate::enable_tracing();
+
+    let (run, index, _db, _node_state) = setup_store(
+        test_config(),
+        DbIndexType::Global,
+        ["pk".into()],
+        [("pk".to_string().into(), NativeType::Int)],
+        [
+            (
+                [CqlValue::Int(1)].into(),
+                Some(vec![1., 1., 1.].into()),
+                Timestamp::from_unix_timestamp(10),
+            ),
+            (
+                [CqlValue::Int(2)].into(),
+                None,
+                Timestamp::from_unix_timestamp(20),
+            ),
+        ],
+    )
+    .await;
+    let (client, _server, _config_tx) = run.await;
+
+    wait_for(
+        || async {
+            let status = client
+                .index_status(&index.keyspace_name, &index.index_name)
+                .await
+                .expect("failed to get index status");
+            status.status == IndexStatus::Serving && status.count == 1
+        },
+        "Waiting for exactly 1 vector to be indexed (null vector must be skipped)",
+    )
+    .await;
+}
