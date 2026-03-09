@@ -19,13 +19,13 @@ use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
 use async_trait::async_trait;
+use futures::FutureExt;
 use scylla::client::session::Session;
 use scylla::value::CqlValue;
 use scylla_cdc::consumer::CDCRow;
 use scylla_cdc::consumer::Consumer;
 use scylla_cdc::consumer::ConsumerFactory;
 use scylla_cdc::log_reader::CDCLogReaderBuilder;
-use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -251,7 +251,7 @@ impl CdcReaderState {
     /// Drains stale error notifications, cancels any pending backoff,
     /// and resets the consecutive error counter.
     fn reset_on_session_change(&mut self) {
-        let _ = pin!(self.error_notify.notified()).enable();
+        drain_pending_notifications(&self.error_notify);
         self.backoff_deadline = None;
         if let CdcErrorPolicy::BackoffAndRetry {
             consecutive_errors, ..
@@ -271,7 +271,7 @@ impl CdcReaderState {
         internals: &Sender<Internals>,
     ) {
         self.stop().await;
-        drain_pending_notifications(&self.shutdown_notify).await;
+        drain_pending_notifications(&self.shutdown_notify);
 
         match create_cdc_reader(
             self.start,
@@ -410,13 +410,8 @@ async fn select_backoff(deadline: Option<time::Instant>) -> Option<()> {
 }
 
 /// Drains any pending shutdown notifications to avoid stale wakeups.
-async fn drain_pending_notifications(notify: &Notify) {
-    if pin!(notify.notified()).enable() {
-        while pin!(notify.notified()).enable() {
-            error!("Internal error: unable to cleanup CDC reader. Retrying.");
-            time::sleep(Duration::from_secs(1)).await;
-        }
-    }
+fn drain_pending_notifications(notify: &Notify) {
+    while notify.notified().now_or_never().is_some() {}
 }
 
 /// Creates a CDC log reader with the given parameters.
