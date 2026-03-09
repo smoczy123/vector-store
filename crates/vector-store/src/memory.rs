@@ -17,7 +17,8 @@ use tracing::debug_span;
 use tracing::info;
 use tracing::trace;
 
-const MEMORY_ALLOCATION_THRESHOLD: f64 = 0.95;
+const MEMORY_SAFETY_BUFFER_RATIO: f64 = 0.01; // 1% of total RAM
+const MEMORY_SAFETY_BUFFER_MIN: u64 = 200 * 1024 * 1024; // 200 MB
 const MEMORY_INFO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -135,7 +136,9 @@ fn used_memory(system_info: &System) -> u64 {
 }
 
 fn calculate_memory_limit(available_memory: u64, config: &Config) -> u64 {
-    let system_limit = (available_memory as f64 * MEMORY_ALLOCATION_THRESHOLD) as u64;
+    let safety_buffer = (available_memory as f64 * MEMORY_SAFETY_BUFFER_RATIO) as u64;
+    let safety_buffer = safety_buffer.max(MEMORY_SAFETY_BUFFER_MIN);
+    let system_limit = available_memory.saturating_sub(safety_buffer);
 
     if let Some(memory_limit) = config.memory_limit {
         memory_limit.min(system_limit)
@@ -164,25 +167,45 @@ mod tests {
 
     #[test]
     fn check_calculate_memory_limit() {
-        let memory_limit = 1000;
-        let config = Config {
-            memory_limit: Some(memory_limit),
+        const MB: u64 = 1024 * 1024;
+        const GB: u64 = 1024 * MB;
+
+        let no_limit = Config {
+            memory_limit: None,
             ..Default::default()
         };
 
+        // 4 GB RAM: 1% = ~41 MB < 200 MB floor, so safety buffer = 200 MB.
+        let total_ram = 4 * GB;
         assert_eq!(
-            calculate_memory_limit(memory_limit, &config),
-            (memory_limit as f64 * MEMORY_ALLOCATION_THRESHOLD) as u64
+            calculate_memory_limit(total_ram, &no_limit),
+            total_ram - 200 * MB,
         );
 
-        let edge_below = (memory_limit as f64 / MEMORY_ALLOCATION_THRESHOLD) as u64;
+        // 32 GB RAM: 1% = ~328 MB > 200 MB floor, so safety buffer = 1% of RAM.
+        let total_ram = 32 * GB;
+        let expected_buffer = (total_ram as f64 * MEMORY_SAFETY_BUFFER_RATIO) as u64;
         assert_eq!(
-            calculate_memory_limit(edge_below, &config),
-            memory_limit - 1
+            calculate_memory_limit(total_ram, &no_limit),
+            total_ram - expected_buffer,
         );
+
+        // Config limit below system limit: config limit applies.
+        let total_ram = 4 * GB;
+        let config_low = Config {
+            memory_limit: Some(GB),
+            ..Default::default()
+        };
+        assert_eq!(calculate_memory_limit(total_ram, &config_low), GB);
+
+        // Config limit above system limit: system limit applies.
+        let config_high = Config {
+            memory_limit: Some(total_ram),
+            ..Default::default()
+        };
         assert_eq!(
-            calculate_memory_limit(edge_below + 1, &config),
-            memory_limit
+            calculate_memory_limit(total_ram, &config_high),
+            total_ram - 200 * MB,
         );
     }
 
