@@ -12,9 +12,6 @@ vector_store_version=$(./scripts/run-with-release-toolchain cargo info vector-st
 # ensure the git repository is clean
 git status --porcelain | grep -q . && echo "git repository is not clean." && exit 1
 
-# ensure the git repository is on the tag with the version
-[[ -z $(git tag --points-at HEAD | grep "^$vector_store_version\$") ]] && echo "git repository is not on tag $vector_store_version." && exit 1
-
 archs="amd64 arm64"
 
 for arch in $archs ; do

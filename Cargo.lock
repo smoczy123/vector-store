@@ -1512,7 +1512,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpclient"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "macros"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "quote",
  "syn 2.0.110",
@@ -4057,7 +4057,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector-search-benchmark"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "arrow-array",
  "clap",
@@ -4080,14 +4080,14 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "vector-search-validator-engine",
 ]
 
 [[package]]
 name = "vector-search-validator-engine"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-backtrace",
@@ -4112,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-tests"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-backtrace",
  "futures",
@@ -4130,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-vector-store"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "async-backtrace",
  "httpclient",
@@ -4146,7 +4146,7 @@ dependencies = [
 
 [[package]]
 name = "vector-store"
-version = "1.4.0"
+version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
