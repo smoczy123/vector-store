@@ -3,6 +3,7 @@ name: Daily
 on:
   schedule:
     - cron: '0 0 * * *' # every day at midnight
+  workflow_dispatch:
 
   merge_group:
 
@@ -13,3 +14,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
   RUST_BACKTRACE: full
+
+jobs:
+  empty:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Empty step
+        run: echo "This is a daily workflow that runs at midnight."
