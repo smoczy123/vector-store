@@ -701,7 +701,7 @@ fn new<I: UsearchIndex + Send + Sync + 'static>(
                         continue;
                     }
 
-                    let Some((state, partition, msg)) = prepare_partition(
+                    let Some((state, partition, msg)) = preprocess(
                         index_fn.clone(),
                         &mut states,
                         &mut partitions,
@@ -736,7 +736,7 @@ fn new<I: UsearchIndex + Send + Sync + 'static>(
     Ok(tx)
 }
 
-fn prepare_partition<'a, I, T>(
+fn preprocess<'a, I, T>(
     index_fn: impl FnOnce() -> anyhow::Result<Arc<I>>,
     states: &'a mut BTreeMap<IndexId, IndexState>,
     partitions: &mut BTreeMap<PartitionId, Arc<PartitionState<I>>>,
