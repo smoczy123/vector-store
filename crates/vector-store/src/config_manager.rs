@@ -330,6 +330,18 @@ where
         .transpose()?
         .map(|v| v.into());
 
+    config.cdc_fine_safety_interval = env("VECTOR_STORE_CDC_FINE_SAFETY_INTERVAL")
+        .ok()
+        .map(|v| v.parse::<humantime::Duration>())
+        .transpose()?
+        .map(|v| v.into());
+
+    config.cdc_fine_sleep_interval = env("VECTOR_STORE_CDC_FINE_SLEEP_INTERVAL")
+        .ok()
+        .map(|v| v.parse::<humantime::Duration>())
+        .transpose()?
+        .map(|v| v.into());
+
     config.cql_uri_translation_map = env("VECTOR_STORE_CQL_URI_TRANSLATION_MAP")
         .ok()
         .map(|v| serde_json::from_str(&v))
@@ -527,6 +539,8 @@ mod tests {
             cql_uri_translation_map: None,
             cdc_safety_interval: None,
             cdc_sleep_interval: None,
+            cdc_fine_safety_interval: None,
+            cdc_fine_sleep_interval: None,
         };
 
         let (config_manager, mut config_rx) = ConfigManager::new(initial_config);
