@@ -7,8 +7,22 @@ https://docs.docker.com/build/building/multi-platform/. You can use
 `scripts/prepare-docker-qemu` script to register qemu handlers in docker
 engine.
 
-You need to git clone repository and switch to the desired version tag. Then
-from the root of the repository run:
+Release version is based on git annotated tags. You can create a new tag using:
+
+```bash
+git tag -a X.Y.Z -m "Release version X.Y.Z"
+git push origin X.Y.Z
+```
+
+GitHub doesn't support creating annotated tags, so you must do them from local
+environment. You can add additional metadata to the tag, for example
+`X.Y.Z-dev` for development releases.
+
+Script `scripts/run-with-release-toolchain` can create a correct version for
+the `Cargo.toml` file based on annotated tags using `git describe --dirty`.
+
+To build the release you need to git clone repository and switch to the desired
+version tag. Then from the root of the repository run:
 
 ```bash
 ./scripts/build-release
@@ -18,3 +32,5 @@ This will create a tar.gz release in the `releases/{amd64/arm64}` directory and
 multi-platform docker image for linux with version tag. You can push the docker
 image to docker hub using standard docker commands.
 
+After building the release you ought to update the release notes in GitHub and
+upload tar.gz file to the release.
