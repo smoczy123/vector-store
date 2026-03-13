@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tap::Pipe;
 use tokio::fs;
 use tokio::fs::File;
 use tokio_stream::wrappers::ReadDirStream;
@@ -92,16 +93,20 @@ fn default_neighbors_id_column() -> String {
 }
 
 pub(crate) async fn dimension(path: Arc<PathBuf>, config: Arc<Config>) -> usize {
-    let builder = ParquetRecordBatchStreamBuilder::new(
+    let mut stream = ParquetRecordBatchStreamBuilder::new(
         File::open(path.join(&config.test_file_name)).await.unwrap(),
     )
     .await
+    .unwrap()
+    .pipe(|builder| {
+        let mask = ProjectionMask::columns(
+            builder.parquet_schema(),
+            [&*config.embedding_column].into_iter(),
+        );
+        builder.with_projection(mask)
+    })
+    .build()
     .unwrap();
-    let mask = ProjectionMask::columns(
-        builder.parquet_schema(),
-        [&*config.embedding_column].into_iter(),
-    );
-    let mut stream = builder.with_projection(mask).build().unwrap();
     let batch = stream.next().await.unwrap().unwrap();
     let data = batch
         .column_by_name(&config.embedding_column)
@@ -157,18 +162,69 @@ fn extract_embedding(
     ids.zip(embs).collect_vec()
 }
 
+pub(crate) async fn ids_stream(path: Arc<PathBuf>, config: Arc<Config>) -> BoxStream<'static, i64> {
+    train_files(path, Arc::clone(&config))
+        .await
+        .then({
+            let config = Arc::clone(&config);
+            move |path| {
+                let config = Arc::clone(&config);
+                async move {
+                    ParquetRecordBatchStreamBuilder::new(File::open(path).await.unwrap())
+                        .await
+                        .unwrap()
+                        .pipe(|builder| {
+                            let mask = ProjectionMask::columns(
+                                builder.parquet_schema(),
+                                [&*config.id_column].into_iter(),
+                            );
+                            builder.with_projection(mask)
+                        })
+                        .build()
+                        .unwrap()
+                }
+            }
+        })
+        .flatten()
+        .map(move |batch| batch.unwrap())
+        .map(move |batch| {
+            let ids = batch
+                .column_by_name(&config.id_column)
+                .unwrap()
+                .as_primitive::<Int64Type>();
+            let ids = ids.iter().map(|id| id.unwrap()).collect_vec();
+
+            stream::iter(ids)
+        })
+        .flatten()
+        .boxed()
+}
+
 pub(crate) async fn vector_stream(
     path: Arc<PathBuf>,
     config: Arc<Config>,
 ) -> BoxStream<'static, (i64, Vec<f32>)> {
     train_files(path, Arc::clone(&config))
         .await
-        .then(|path| async move {
-            ParquetRecordBatchStreamBuilder::new(File::open(path).await.unwrap())
-                .await
-                .unwrap()
-                .build()
-                .unwrap()
+        .then({
+            let config = Arc::clone(&config);
+            move |path| {
+                let config = Arc::clone(&config);
+                async move {
+                    ParquetRecordBatchStreamBuilder::new(File::open(path).await.unwrap())
+                        .await
+                        .unwrap()
+                        .pipe(|builder| {
+                            let mask = ProjectionMask::columns(
+                                builder.parquet_schema(),
+                                [&*config.id_column, &*config.embedding_column].into_iter(),
+                            );
+                            builder.with_projection(mask)
+                        })
+                        .build()
+                        .unwrap()
+                }
+            }
         })
         .flatten()
         .map(move |batch| batch.unwrap())
@@ -202,12 +258,24 @@ pub(crate) async fn vector_stream(
         .boxed()
 }
 
-pub(crate) async fn queries(path: Arc<PathBuf>, config: Arc<Config>, limit: usize) -> Vec<Query> {
+pub(crate) async fn queries(
+    path: Arc<PathBuf>,
+    config: Arc<Config>,
+    id_ok: impl Fn(i64) -> bool,
+    limit: usize,
+) -> Vec<Query> {
     let stream = ParquetRecordBatchStreamBuilder::new(
         File::open(path.join(&config.test_file_name)).await.unwrap(),
     )
     .await
     .unwrap()
+    .pipe(|builder| {
+        let mask = ProjectionMask::columns(
+            builder.parquet_schema(),
+            [&*config.id_column, &*config.embedding_column].into_iter(),
+        );
+        builder.with_projection(mask)
+    })
     .build()
     .unwrap();
     let ids_queries = stream
@@ -249,6 +317,13 @@ pub(crate) async fn queries(path: Arc<PathBuf>, config: Arc<Config>, limit: usiz
     )
     .await
     .unwrap()
+    .pipe(|builder| {
+        let mask = ProjectionMask::columns(
+            builder.parquet_schema(),
+            [&*config.id_column, &*config.neighbors_id_column].into_iter(),
+        );
+        builder.with_projection(mask)
+    })
     .build()
     .unwrap();
     let ids_neighbors = stream
@@ -271,12 +346,16 @@ pub(crate) async fn queries(path: Arc<PathBuf>, config: Arc<Config>, limit: usiz
                     let neighbor = neighbor.as_primitive::<Int64Type>();
                     neighbor
                         .iter()
+                        .filter(|id| id_ok(id.unwrap()))
                         .take(limit)
                         .map(|v| v.unwrap())
                         .collect::<HashSet<_>>()
                 });
 
-            let ids_neighbors = ids.zip(neighbors).collect_vec();
+            let ids_neighbors = ids
+                .zip(neighbors)
+                .filter(|(_, map)| !map.is_empty())
+                .collect_vec();
             stream::iter(ids_neighbors)
         })
         .flatten()

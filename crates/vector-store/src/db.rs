@@ -907,7 +907,7 @@ impl Statements {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct TargetOption {
     pk: Vec<String>,
     ck: Vec<String>,
@@ -932,7 +932,12 @@ fn from_target_option(
         Ok(())
     };
 
-    if target_option.pk == table.partition_key {
+    let is_local = target_option
+        .pk
+        .iter()
+        .all(|pk_col| table.partition_key.contains(pk_col));
+
+    if is_local {
         // Local index
         let Some(target_name) = target_option.ck.first() else {
             bail!("invalid target option: ck is empty for local index");

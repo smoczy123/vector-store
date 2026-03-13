@@ -14,7 +14,6 @@ use crate::Quantization;
 use crate::SpaceType;
 use crate::Vector;
 use crate::index::actor::AnnR;
-use crate::index::actor::CountR;
 use crate::index::actor::Index;
 use crate::index::factory::IndexConfiguration;
 use crate::index::validator;
@@ -32,6 +31,8 @@ use std::collections::HashSet;
 use std::iter;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::runtime::Handle;
@@ -435,11 +436,13 @@ impl UsearchIndex for RwLock<Simulator> {
 
 // Initial and incremental number for the index vectors reservation.
 // The value was taken for initial benchmarks (size similar to benchmark size)
-const RESERVE_INCREMENT: usize = 1000000;
+const RESERVE_INCREMENT_GLOBAL: usize = 1000000;
+const RESERVE_INCREMENT_LOCAL: usize = 1000;
 
 // When free space for index vectors drops below this, will reserve more space
 // The ratio was taken for initial benchmarks
-const RESERVE_THRESHOLD: usize = RESERVE_INCREMENT / 3;
+const RESERVE_THRESHOLD_GLOBAL: usize = RESERVE_INCREMENT_GLOBAL / 3;
+const RESERVE_THRESHOLD_LOCAL: usize = RESERVE_INCREMENT_LOCAL / 3;
 
 struct MetricConfig {
     quantization: Quantization,
@@ -531,8 +534,9 @@ mod operation {
             match msg {
                 Index::AddVector { .. } => Mode::Insert,
                 Index::RemoveVector { .. } => Mode::Remove,
-                Index::Ann { .. } | Index::FilteredAnn { .. } | Index::Count { .. } => Mode::Search,
+                Index::Ann { .. } | Index::FilteredAnn { .. } => Mode::Search,
                 Index::RemovePartition { .. } => todo!(),
+                Index::Count { .. } => unreachable!(),
             }
         }
     }
@@ -654,6 +658,7 @@ where
 
 struct IndexState {
     dimensions: Dimensions,
+    size: Arc<AtomicUsize>,
     operation: operation::Operation,
 }
 
@@ -661,6 +666,7 @@ impl IndexState {
     fn new(dimensions: Dimensions) -> Self {
         Self {
             dimensions,
+            size: Arc::new(AtomicUsize::new(0)),
             operation: operation::Operation::new(),
         }
     }
@@ -695,15 +701,14 @@ fn new<I: UsearchIndex + Send + Sync + 'static>(
                         continue;
                     }
 
-                    let Some((state, partition)) = prepare_partition(
+                    let Some((state, partition, msg)) = preprocess(
                         index_fn.clone(),
                         &mut states,
                         &mut partitions,
                         table.as_ref(),
                         dimensions,
-                        &msg,
+                        msg,
                     ) else {
-                        handle_no_partition(msg);
                         continue;
                     };
 
@@ -731,14 +736,14 @@ fn new<I: UsearchIndex + Send + Sync + 'static>(
     Ok(tx)
 }
 
-fn prepare_partition<'a, I, T>(
+fn preprocess<'a, I, T>(
     index_fn: impl FnOnce() -> anyhow::Result<Arc<I>>,
     states: &'a mut BTreeMap<IndexId, IndexState>,
     partitions: &mut BTreeMap<PartitionId, Arc<PartitionState<I>>>,
     table: &RwLock<T>,
     dimensions: Dimensions,
-    msg: &Index,
-) -> Option<(&'a mut IndexState, Arc<PartitionState<I>>)>
+    msg: Index,
+) -> Option<(&'a mut IndexState, Arc<PartitionState<I>>, Index)>
 where
     I: UsearchIndex + Send + Sync + 'static,
     T: TableSearch + Send + Sync + 'static,
@@ -746,15 +751,15 @@ where
     match msg {
         Index::AddVector { partition_id, .. } => {
             let index_id = partition_id.index_id();
-            if let Some(partition) = partitions.get(partition_id) {
+            if let Some(partition) = partitions.get(&partition_id) {
                 let Some(state) = states.get_mut(&index_id) else {
                     error!("index state not found for index {index_id:?}");
                     return None;
                 };
-                return Some((state, Arc::clone(partition)));
+                return Some((state, Arc::clone(partition), msg));
             }
             let partition = Arc::new(PartitionState::new(
-                *partition_id,
+                partition_id,
                 index_fn()
                     .inspect_err(|err| {
                         error!("failed to create index for partition {partition_id:?}: {err}")
@@ -764,96 +769,123 @@ where
             let state = states
                 .entry(index_id)
                 .or_insert_with(|| IndexState::new(dimensions));
-            partitions.insert(*partition_id, Arc::clone(&partition));
-            Some((state, partition))
+            partitions.insert(partition_id, Arc::clone(&partition));
+            Some((state, partition, msg))
         }
 
-        Index::Ann { index_key, .. } => {
-            let Some(partition_id) = table.read().unwrap().partition_id(index_key, None) else {
+        Index::Ann {
+            index_key,
+            embedding,
+            limit,
+            tx,
+        } => {
+            let Some((partition_id, _)) = table.read().unwrap().partition_id(&index_key, None)
+            else {
                 warn!("partition id not found for index key {index_key:?} during ann");
+                _ = tx.send(Ok((vec![], vec![])));
                 return None;
             };
             let index_id = partition_id.index_id();
-            states
+            let Some((state, partition)) = states
                 .get_mut(&index_id)
                 .zip(partitions.get(&partition_id))
                 .map(|(state, partition)| (state, Arc::clone(partition)))
-                .or_else(|| {
-                    warn!("state or partition not found for index key {index_key:?} during ann");
-                    None
-                })
+            else {
+                warn!("state or partition not found for index key {index_key:?} during ann");
+                _ = tx.send(Ok((vec![], vec![])));
+                return None;
+            };
+            Some((
+                state,
+                partition,
+                Index::Ann {
+                    embedding,
+                    limit,
+                    tx,
+                    index_key,
+                },
+            ))
         }
 
         Index::FilteredAnn {
-            index_key, filter, ..
+            index_key,
+            embedding,
+            filter,
+            limit,
+            tx,
         } => {
-            let Some(partition_id) = table
+            let Some((partition_id, restrictions)) = table
                 .read()
                 .unwrap()
-                .partition_id(index_key, Some(&filter.restrictions))
+                .partition_id(&index_key, Some(filter.restrictions))
             else {
                 warn!("partition id not found for index key {index_key:?} during filtered ann");
+                _ = tx.send(Ok((vec![], vec![])));
                 return None;
             };
             let index_id = partition_id.index_id();
-            states
+            let Some((state, partition)) = states
                 .get_mut(&index_id)
                 .zip(partitions.get(&partition_id))
                 .map(|(state, partition)| (state, Arc::clone(partition)))
-                .or_else(|| {
-                    warn!("state or partition not found for index key {index_key:?} during filtered ann");
-                    None
-                })
+            else {
+                warn!(
+                    "state or partition not found for index key {index_key:?} \
+                        during filtered ann"
+                );
+                _ = tx.send(Ok((vec![], vec![])));
+                return None;
+            };
+            let msg = if let Some(restrictions) = restrictions {
+                Index::FilteredAnn {
+                    embedding,
+                    limit,
+                    filter: Filter {
+                        restrictions,
+                        allow_filtering: filter.allow_filtering,
+                    },
+                    tx,
+                    index_key,
+                }
+            } else {
+                Index::Ann {
+                    embedding,
+                    limit,
+                    tx,
+                    index_key,
+                }
+            };
+            Some((state, partition, msg))
         }
 
-        Index::Count { index_key, .. } => {
-            let Some(partition_id) = table.read().unwrap().partition_id(index_key, None) else {
-                warn!("partition id not found for index key {index_key:?} during count");
+        Index::Count { index_key, tx } => {
+            let Some(index_id) = table.read().unwrap().index_id(&index_key) else {
+                let err = anyhow!("index id not found for index key {index_key:?}");
+                warn!("index count: {err}");
+                _ = tx.send(Err(err));
                 return None;
             };
-            let index_id = partition_id.index_id();
-            states
+            _ = tx.send(Ok(states
                 .get_mut(&index_id)
-                .zip(partitions.get(&partition_id))
-                .map(|(state, partition)| (state, Arc::clone(partition)))
-                .or_else(|| {
-                    warn!("state or partition not found for index key {index_key:?} during count");
-                    None
-                })
+                .map(|state| state.size.load(Ordering::Relaxed))
+                .unwrap_or(0)));
+            None
         }
 
         Index::RemoveVector { partition_id, .. } => {
             let index_id = partition_id.index_id();
             states
                 .get_mut(&index_id)
-                .zip(partitions.get(partition_id))
-                .map(|(state, partition)| (state, Arc::clone(partition)))
+                .zip(partitions.get(&partition_id))
+                .map(|(state, partition)| (state, Arc::clone(partition), msg))
         }
 
         Index::RemovePartition { partition_id } => {
-            if let Some(idx) = partitions.remove(partition_id) {
+            if let Some(idx) = partitions.remove(&partition_id) {
                 idx.stop();
             };
             None
         }
-    }
-}
-
-fn handle_no_partition(msg: Index) {
-    match msg {
-        Index::Ann { tx, .. } => {
-            _ = tx.send(Ok((vec![], vec![])));
-        }
-
-        Index::FilteredAnn { tx, .. } => {
-            _ = tx.send(Ok((vec![], vec![])));
-        }
-
-        Index::Count { tx, .. } => {
-            _ = tx.send(Ok(0));
-        }
-
-        _ => {}
     }
 }
 
@@ -870,10 +902,11 @@ async fn dispatch_task<I, T>(
 {
     if let Index::AddVector { .. } = &msg {
         let operation_permit = state.operation.permit_for_capacity_and_size().await;
-        if needs_more_capacity(partition.idx.as_ref()).is_some() {
+        let is_global = partition.partition_id.index_id().is_global();
+        if needs_more_capacity(partition.idx.as_ref(), is_global).is_some() {
             drop(operation_permit);
             let operation_permit = state.operation.permit_for_reserve().await;
-            if let Some(capacity) = needs_more_capacity(partition.idx.as_ref()) {
+            if let Some(capacity) = needs_more_capacity(partition.idx.as_ref(), is_global) {
                 let permit = Arc::clone(rayon_semaphore).acquire_owned().await.unwrap();
                 let idx = Arc::clone(&partition.idx);
                 rayon::spawn(move || {
@@ -889,11 +922,12 @@ async fn dispatch_task<I, T>(
 
     let table = Arc::clone(table);
     let dimensions = state.dimensions;
+    let size = Arc::clone(&state.size);
     if should_run_on_tokio(&msg) {
         let permit = Arc::clone(tokio_semaphore).acquire_owned().await.unwrap();
         tokio::spawn(async move {
             crate::move_to_the_end_of_async_runtime_queue().await;
-            process(partition, table, dimensions, msg);
+            process(partition, table, dimensions, size, msg);
             drop(permit);
             drop(operation_permit);
         });
@@ -901,20 +935,21 @@ async fn dispatch_task<I, T>(
     }
     let permit = Arc::clone(rayon_semaphore).acquire_owned().await.unwrap();
     rayon::spawn(move || {
-        process(partition, table, dimensions, msg);
+        process(partition, table, dimensions, size, msg);
         drop(permit);
         drop(operation_permit);
     });
 }
 
 fn should_run_on_tokio(msg: &Index) -> bool {
-    matches!(msg, Index::Ann { .. } | Index::Count { .. })
+    matches!(msg, Index::Ann { .. })
 }
 
 fn process<I, T>(
     partition: Arc<PartitionState<I>>,
     table: Arc<RwLock<T>>,
     dimensions: Dimensions,
+    size: Arc<AtomicUsize>,
     msg: Index,
 ) where
     I: UsearchIndex + Send + Sync + 'static,
@@ -926,7 +961,7 @@ fn process<I, T>(
             embedding,
             in_progress: _in_progress,
             ..
-        } => add(partition.idx.as_ref(), primary_id, &embedding),
+        } => add(partition.idx.as_ref(), primary_id, &embedding, &size),
 
         Index::Ann {
             embedding,
@@ -951,13 +986,13 @@ fn process<I, T>(
             }
         }
 
-        Index::Count { tx, .. } => count(Arc::clone(&partition.idx), tx),
+        Index::Count { .. } => unreachable!(),
 
         Index::RemoveVector {
             primary_id,
             in_progress: _in_progress,
             ..
-        } => remove(partition.idx.as_ref(), primary_id),
+        } => remove(partition.idx.as_ref(), primary_id, &size),
 
         Index::RemovePartition { .. } => unreachable!(),
     }
@@ -972,27 +1007,36 @@ fn reserve(idx: &impl UsearchIndex, capacity: usize) {
     }
 }
 
-fn needs_more_capacity(idx: &impl UsearchIndex) -> Option<usize> {
+fn needs_more_capacity(idx: &impl UsearchIndex, is_global: bool) -> Option<usize> {
     let capacity = idx.capacity();
     let free_space = capacity - idx.size();
+    let (increment, threshold) = if is_global {
+        (RESERVE_INCREMENT_GLOBAL, RESERVE_THRESHOLD_GLOBAL)
+    } else {
+        (RESERVE_INCREMENT_LOCAL, RESERVE_THRESHOLD_LOCAL)
+    };
 
-    if free_space < RESERVE_THRESHOLD {
-        Some(capacity + RESERVE_INCREMENT)
+    if free_space < threshold {
+        Some(capacity + increment)
     } else {
         None
     }
 }
 
-fn add(idx: &impl UsearchIndex, primary_id: PrimaryId, embedding: &Vector) {
+fn add(idx: &impl UsearchIndex, primary_id: PrimaryId, embedding: &Vector, size: &AtomicUsize) {
     if let Err(err) = idx.add(primary_id, embedding) {
         warn!("add: unable to add embedding: {err}");
-    };
+    } else {
+        size.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-fn remove(idx: &impl UsearchIndex, row_id: PrimaryId) {
+fn remove(idx: &impl UsearchIndex, row_id: PrimaryId, size: &AtomicUsize) {
     if let Err(err) = idx.remove(row_id) {
         warn!("remove: unable to remove embeddings: {err}");
-    };
+    } else {
+        size.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 fn validate_dimensions(
@@ -1089,11 +1133,6 @@ fn filtered_ann<I>(
         .unwrap_or_else(|_| trace!("ann: unable to send response"));
 }
 
-fn count(idx: Arc<impl UsearchIndex>, tx: oneshot::Sender<CountR>) {
-    tx.send(Ok(idx.size()))
-        .unwrap_or_else(|_| trace!("count: unable to send response"));
-}
-
 async fn check_memory_allocation(
     msg: &Index,
     memory: &mpsc::Sender<Memory>,
@@ -1151,6 +1190,7 @@ mod tests {
     use crate::IndexKey;
     use crate::index::IndexExt;
     use crate::memory;
+    use crate::table::IndexIdGenerator;
     use crate::table::MockTableSearch;
     use mockall::predicate::*;
     use scylla::value::CqlValue;
@@ -1239,7 +1279,8 @@ mod tests {
         )
         .unwrap();
 
-        let partition_id = 0.into();
+        let index_id = IndexIdGenerator::new().next(true).unwrap();
+        let partition_id = PartitionId::global(index_id);
         actor
             .add_vector(partition_id, 1.into(), vec![1., 1., 1.].into(), None)
             .await;
@@ -1250,12 +1291,19 @@ mod tests {
             .add_vector(partition_id, 3.into(), vec![3., 3., 3.].into(), None)
             .await;
 
+        table
+            .write()
+            .unwrap()
+            .expect_index_id()
+            .with(eq(index_key.clone()))
+            .returning(move |_| Some(index_id));
+
         table.write().unwrap().expect_partition_id().returning({
             let index_key = index_key.clone();
             move |key, restrictions| {
                 assert_eq!(key, &index_key);
                 assert!(restrictions.is_none());
-                Some(partition_id)
+                Some((partition_id, None))
             }
         });
         time::timeout(Duration::from_secs(10), async {
@@ -1378,20 +1426,19 @@ mod tests {
             _ = tx.send(Allocate::Cannot);
             memory_rx
         });
-        let partition_id = 0.into();
+        let index_id = IndexIdGenerator::new().next(true).unwrap();
+        let partition_id = PartitionId::global(index_id);
         actor
             .add_vector(partition_id, 1.into(), vec![1., 1., 1.].into(), None)
             .await;
         let mut memory_rx = memory_respond.await.unwrap();
 
-        table.write().unwrap().expect_partition_id().returning({
-            let index_key = index_key.clone();
-            move |key, restrictions| {
-                assert_eq!(key, &index_key);
-                assert!(restrictions.is_none());
-                Some(partition_id)
-            }
-        });
+        table
+            .write()
+            .unwrap()
+            .expect_index_id()
+            .with(eq(index_key.clone()))
+            .returning(move |_| Some(index_id));
 
         assert_eq!(actor.count(index_key.clone()).await.unwrap(), 0);
 
@@ -1445,13 +1492,14 @@ mod tests {
         let threads = Handle::current().metrics().num_workers();
 
         let adds_per_worker = 50;
-        let partition_id = 0.into();
+        let index_id = IndexIdGenerator::new().next(true).unwrap();
+        let partition_id = PartitionId::global(index_id);
         table.write().unwrap().expect_partition_id().returning({
             let index_key = index_key.clone();
             move |key, restrictions| {
                 assert_eq!(key, &index_key);
                 assert!(restrictions.is_none());
-                Some(partition_id)
+                Some((partition_id, None))
             }
         });
         let add_handles = add_concurrently(
@@ -1475,6 +1523,13 @@ mod tests {
         for handle in search_handles {
             handle.await.unwrap();
         }
+
+        table
+            .write()
+            .unwrap()
+            .expect_index_id()
+            .with(eq(index_key.clone()))
+            .returning(move |_| Some(index_id));
 
         // Wait for expected number of vectors to be added.
         time::timeout(Duration::from_secs(10), async {

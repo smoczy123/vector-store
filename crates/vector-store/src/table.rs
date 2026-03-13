@@ -13,6 +13,7 @@ use crate::Timestamp;
 use crate::Vector;
 use anyhow::anyhow;
 use anyhow::bail;
+use itertools::Itertools;
 use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlDate;
 use scylla::value::CqlTime;
@@ -28,6 +29,7 @@ use std::collections::btree_map::Entry;
 use std::mem;
 use std::net::IpAddr;
 use std::sync::Arc;
+use tap::Pipe;
 use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
@@ -138,9 +140,9 @@ mod partition_id {
 
     impl PartitionId {
         const INDEX_ID_SHIFT: usize = (mem::size_of::<u64>() - mem::size_of::<IndexId>()) * 8;
-        const MAX: u64 = !((IndexId::MAX as u64) << Self::INDEX_ID_SHIFT);
+        const MAX: u64 = !((IndexId::MASK as u64) << Self::INDEX_ID_SHIFT);
 
-        pub(super) fn try_new(idx: usize, index_id: IndexId) -> anyhow::Result<Self> {
+        pub(crate) fn try_new(idx: usize, index_id: IndexId) -> anyhow::Result<Self> {
             if idx as u64 > Self::MAX {
                 bail!("PartitionId is too large: {idx}");
             }
@@ -149,7 +151,7 @@ mod partition_id {
             ))
         }
 
-        pub(super) fn global(index_id: IndexId) -> Self {
+        pub(crate) fn global(index_id: IndexId) -> Self {
             Self((*index_id.as_ref() as u64) << Self::INDEX_ID_SHIFT)
         }
 
@@ -165,40 +167,64 @@ mod partition_id {
     }
 
     /// IndexId provides unique IndexIds for indexes in the table. We can have up to
-    /// IndexId::MAX indexes (~65k), which seems reasonable for a single table.
+    /// IndexId::MAX indexes (0x7fff), which seems reasonable for a single table.
     /// IndexId::MAX is used as a sentinel to mark that there are no more IndexIds
-    /// available.
+    /// available. IndexId::GLOBAL_BIT is used to mark that the index is global.
     #[derive(
         Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, derive_more::AsRef, derive_more::From,
     )]
     pub(crate) struct IndexId(u16);
 
     impl IndexId {
-        const MAX: u16 = u16::MAX;
+        const MASK: u16 = u16::MAX;
+        const GLOBAL_BIT: u16 = 1 << (u16::BITS - 1);
+        const MAX: u16 = Self::MASK & !Self::GLOBAL_BIT;
+
+        fn local(id: u16) -> anyhow::Result<Self> {
+            if id > Self::MAX {
+                bail!("Base value {id} is too large for local IndexId");
+            }
+            Ok(Self(id))
+        }
+
+        fn global(id: u16) -> anyhow::Result<Self> {
+            if id > Self::MAX {
+                bail!("Base value {id} is too large for global IndexId");
+            }
+            Ok(Self(id | Self::GLOBAL_BIT))
+        }
+
+        pub(crate) fn is_global(&self) -> bool {
+            self.0 & IndexId::GLOBAL_BIT != 0
+        }
     }
 
     #[derive(Debug)]
-    pub(super) struct IndexIdGenerator {
+    pub(crate) struct IndexIdGenerator {
         next: u16,
     }
 
     impl IndexIdGenerator {
-        pub(super) fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self { next: 0 }
         }
 
-        pub(super) fn next(&mut self) -> anyhow::Result<IndexId> {
+        pub(crate) fn next(&mut self, global: bool) -> anyhow::Result<IndexId> {
             if self.next == IndexId::MAX {
                 bail!("No more IndexIds available");
             }
-            let index_id = IndexId(self.next);
+            let index_id = if global {
+                IndexId::global(self.next)?
+            } else {
+                IndexId::local(self.next)?
+            };
             self.next += 1;
             Ok(index_id)
         }
     }
 }
 pub(crate) use partition_id::IndexId;
-use partition_id::IndexIdGenerator;
+pub(crate) use partition_id::IndexIdGenerator;
 pub use partition_id::PartitionId;
 
 /// A newtype for partition size
@@ -863,7 +889,7 @@ impl Table {
         let mut index_id_generator = IndexIdGenerator::new();
         let mut indexes = BTreeMap::new();
         let mut index_ids = BTreeMap::new();
-        let index_id = index_id_generator.next()?;
+        let index_id = index_id_generator.next(partition_key_columns.is_none())?;
         let index = if let Some(partition_key_columns) = partition_key_columns.as_ref() {
             Index::new_local(
                 index_id,
@@ -1097,12 +1123,13 @@ impl TableAdd for Table {
 /// A trait that defines the search operations for the table.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait TableSearch {
-    #[allow(clippy::needless_lifetimes)] // for mockall
-    fn partition_id<'a>(
+    fn index_id(&self, index_key: &IndexKey) -> Option<IndexId>;
+
+    fn partition_id(
         &self,
         index_key: &IndexKey,
-        restrictions: Option<&'a [Restriction]>,
-    ) -> Option<PartitionId>;
+        restrictions: Option<Vec<Restriction>>,
+    ) -> Option<(PartitionId, Option<Vec<Restriction>>)>;
 
     fn primary_key(&self, partition_id: PartitionId, primary_id: PrimaryId) -> Option<PrimaryKey>;
 
@@ -1115,22 +1142,30 @@ pub(crate) trait TableSearch {
 }
 
 impl TableSearch for Table {
+    fn index_id(&self, index_key: &IndexKey) -> Option<IndexId> {
+        self.index_ids.get(index_key).copied()
+    }
+
     fn partition_id(
         &self,
         index_key: &IndexKey,
-        restrictions: Option<&[Restriction]>,
-    ) -> Option<PartitionId> {
+        restrictions: Option<Vec<Restriction>>,
+    ) -> Option<(PartitionId, Option<Vec<Restriction>>)> {
         let index_id = self.index_ids.get(index_key)?;
         let index = self.indexes.get(index_id)?;
         match &index.data {
-            IndexData::Global => Some(PartitionId::global(*index_id)),
+            IndexData::Global => Some((PartitionId::global(*index_id), restrictions)),
             IndexData::Local {
                 key_columns, map, ..
             } => restrictions
                 .and_then(|restrictions| {
                     partition_key_from_restrictions(key_columns.as_ref(), restrictions)
                 })
-                .and_then(|partition_key| map.get(&partition_key).copied()),
+                .and_then(|(partition_key, restrictions)| {
+                    map.get(&partition_key)
+                        .copied()
+                        .map(|partition_id| (partition_id, restrictions))
+                }),
         }
     }
 
@@ -1240,8 +1275,8 @@ impl TableSearch for Table {
 /// Construct a partition key from the given restrictions.
 fn partition_key_from_restrictions(
     key_columns: &[ColumnName],
-    restrictions: &[Restriction],
-) -> Option<PartitionKey> {
+    restrictions: Vec<Restriction>,
+) -> Option<(PartitionKey, Option<Vec<Restriction>>)> {
     key_columns
         .iter()
         .map(|column| {
@@ -1253,6 +1288,27 @@ fn partition_key_from_restrictions(
                 })
         })
         .collect::<Option<PartitionKey>>()
+        .map(|partition_key| {
+            (
+                partition_key,
+                restrictions
+                    .into_iter()
+                    .filter(|restriction| {
+                        !matches!(
+                            restriction,
+                            Restriction::Eq { lhs, .. } if key_columns.contains(lhs)
+                        )
+                    })
+                    .collect_vec()
+                    .pipe(|restrictions| {
+                        if restrictions.is_empty() {
+                            None
+                        } else {
+                            Some(restrictions)
+                        }
+                    }),
+            )
+        })
 }
 
 /// Compare two CqlValues, returning an Ordering if they are comparable.
@@ -1856,6 +1912,81 @@ mod tests {
                 &[CqlValue::Int(10), CqlValue::Int(15)],
             ),
             None
+        );
+    }
+
+    #[test]
+    fn partition_key_from_restrictions_correctness() {
+        let key_columns = vec!["c1".into(), "c2".into()];
+
+        assert_eq!(partition_key_from_restrictions(&key_columns, vec![]), None);
+        assert_eq!(
+            partition_key_from_restrictions(
+                &key_columns,
+                vec![
+                    Restriction::Eq {
+                        lhs: "c1".into(),
+                        rhs: CqlValue::Int(1)
+                    },
+                    Restriction::Eq {
+                        lhs: "c4".into(),
+                        rhs: CqlValue::Int(1)
+                    },
+                ]
+            ),
+            None
+        );
+        assert_eq!(
+            partition_key_from_restrictions(
+                &key_columns,
+                vec![Restriction::Eq {
+                    lhs: "c2".into(),
+                    rhs: CqlValue::Int(2)
+                },]
+            ),
+            None,
+        );
+        assert_eq!(
+            partition_key_from_restrictions(
+                &key_columns,
+                vec![
+                    Restriction::Eq {
+                        lhs: "c1".into(),
+                        rhs: CqlValue::Int(1)
+                    },
+                    Restriction::Eq {
+                        lhs: "c2".into(),
+                        rhs: CqlValue::Int(2)
+                    },
+                ],
+            ),
+            Some(([CqlValue::Int(1), CqlValue::Int(2)].into(), None))
+        );
+        assert_eq!(
+            partition_key_from_restrictions(
+                &key_columns,
+                vec![
+                    Restriction::Eq {
+                        lhs: "c1".into(),
+                        rhs: CqlValue::Int(1)
+                    },
+                    Restriction::Eq {
+                        lhs: "c2".into(),
+                        rhs: CqlValue::Int(2)
+                    },
+                    Restriction::Eq {
+                        lhs: "c4".into(),
+                        rhs: CqlValue::Int(4)
+                    },
+                ]
+            ),
+            Some((
+                [CqlValue::Int(1), CqlValue::Int(2)].into(),
+                Some(vec![Restriction::Eq {
+                    lhs: "c4".into(),
+                    rhs: CqlValue::Int(4)
+                }]),
+            ))
         );
     }
 }
