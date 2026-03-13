@@ -20,7 +20,7 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
-  static_checks:
+  cargo-clippy:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -28,24 +28,37 @@ jobs:
     - name: Setup rust toolchain
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        components: clippy, rustfmt
+        components: clippy
 
     - name: Print rustc version
       run: rustc --version
 
-    - name: Print rustfmt version
-      run: cargo fmt --version
-
-    - name: Print clippy version
+    - name: Print cargo-clippy version
       run: cargo clippy --version
 
-    - name: Format check
-      run: cargo fmt --all --check
-
-    - name: Clippy check
+    - name: Run cargo-clippy checks
       run: cargo clippy --all-targets --workspace -- -Dwarnings
 
-  tests:
+  cargo-fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: rustfmt
+
+    - name: Print rustc version
+      run: rustc --version
+
+    - name: Print cargo-fmt version
+      run: cargo fmt --version
+
+    - name: Run cargo-fmt checks
+      run: cargo fmt --all --check
+
+  cargo-test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -56,7 +69,7 @@ jobs:
     - name: Print rustc version
       run: rustc --version
 
-    - name: Run tests
+    - name: Run cargo-test checks
       run: cargo test --features dev-tools --verbose --all-targets --workspace
 
   cargo-deny:
@@ -75,7 +88,7 @@ jobs:
     - name: Print cargo-deny version
       run: cargo deny --version
 
-    - name: Run cargo-deny licenses checks
+    - name: Run cargo-deny checks
       run: cargo deny check
 
   cargo-machete:
