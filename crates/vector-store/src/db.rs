@@ -925,15 +925,67 @@ impl Statements {
 
 #[derive(Debug, serde::Deserialize)]
 struct TargetOption {
+    #[serde(rename = "tc")]
+    target_column: String,
+    #[serde(rename = "pk", default)]
+    partition_key_columns: Vec<String>,
+    #[serde(rename = "fc", default)]
+    filter_columns: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LegacyTargetOption {
     pk: Vec<String>,
     ck: Vec<String>,
+}
+
+fn parse_target_option(table: &Table, value: &str) -> anyhow::Result<Option<TargetOption>> {
+    if let Ok(target) = serde_json::from_str::<TargetOption>(value) {
+        return Ok(Some(target));
+    }
+    if let Ok(legacy) = serde_json::from_str::<LegacyTargetOption>(value) {
+        return Ok(Some(convert_legacy_target_option(table, legacy)?));
+    };
+    Ok(None)
+}
+
+fn convert_legacy_target_option(
+    table: &Table,
+    mut target_option: LegacyTargetOption,
+) -> anyhow::Result<TargetOption> {
+    let is_local = target_option
+        .pk
+        .iter()
+        .all(|pk_col| table.partition_key.contains(pk_col));
+
+    if is_local {
+        let Some(target_column) = target_option.ck.first().cloned() else {
+            bail!("invalid target option: ck is empty for local index");
+        };
+        let filter_columns = target_option.ck.split_off(1);
+        return Ok(TargetOption {
+            target_column,
+            partition_key_columns: target_option.pk,
+            filter_columns,
+        });
+    }
+
+    if target_option.pk.len() != 1 {
+        bail!("invalid target option: pk should contains only vector column for a global index");
+    }
+    let target_column = target_option.pk.remove(0);
+    Ok(TargetOption {
+        target_column,
+        partition_key_columns: vec![],
+        filter_columns: target_option.ck,
+    })
 }
 
 fn from_target_option(
     table: &Table,
     value: String,
 ) -> anyhow::Result<(DbIndexType, ColumnName, Vec<ColumnName>)> {
-    let Ok(mut target_option) = serde_json::from_str::<TargetOption>(&value) else {
+    let Some(target) = parse_target_option(table, &value)? else {
         // Global index with a single target column
         return Ok((DbIndexType::Global, value.into(), vec![]));
     };
@@ -948,38 +1000,35 @@ fn from_target_option(
         Ok(())
     };
 
-    let is_local = target_option
-        .pk
-        .iter()
-        .all(|pk_col| table.partition_key.contains(pk_col));
+    validate_target_type(&target.target_column)?;
 
-    if is_local {
-        // Local index
-        let Some(target_name) = target_option.ck.first() else {
-            bail!("invalid target option: ck is empty for local index");
-        };
-        validate_target_type(target_name)?;
-
-        let mut columns = target_option.ck.into_iter();
-        return Ok((
-            DbIndexType::Local(Arc::new(
-                target_option.pk.into_iter().map(ColumnName::from).collect(),
-            )),
-            columns.next().unwrap().into(),
-            columns.map(ColumnName::from).collect(),
-        ));
-    }
-
-    // Global index
-    if target_option.pk.len() != 1 {
-        bail!("invalid target option: pk should contains only vector column for a global index");
+    let index_type = if target.partition_key_columns.is_empty() {
+        DbIndexType::Global
+    } else {
+        if let Some(invalid) = target
+            .partition_key_columns
+            .iter()
+            .find(|pk_col| !table.partition_key.contains(pk_col))
+        {
+            bail!("invalid target option: pk column {invalid} is not in the table's partition key");
+        }
+        DbIndexType::Local(Arc::new(
+            target
+                .partition_key_columns
+                .into_iter()
+                .map(ColumnName::from)
+                .collect(),
+        ))
     };
-    let target_name = target_option.pk.remove(0);
-    validate_target_type(&target_name)?;
+
     Ok((
-        DbIndexType::Global,
-        target_name.into(),
-        target_option.ck.into_iter().map(ColumnName::from).collect(),
+        index_type,
+        target.target_column.into(),
+        target
+            .filter_columns
+            .into_iter()
+            .map(ColumnName::from)
+            .collect(),
     ))
 }
 
