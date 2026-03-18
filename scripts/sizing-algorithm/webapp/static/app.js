@@ -53,6 +53,13 @@
     return Math.log10(Math.max(val, 1));
   }
 
+  /** Escape a value for safe insertion into HTML. */
+  function esc(val) {
+    var d = document.createElement("div");
+    d.textContent = String(val);
+    return d.innerHTML;
+  }
+
   /** Return a debounced version of *fn* that waits *ms* after the last call. */
   function debounce(fn, ms) {
     var timer;
@@ -277,10 +284,10 @@
     var pricingRegion = provider === "gcp" ? "us-east1" : "us-east-1";
     html += '<div class="cost-banner">';
     html += '  <div class="small-label">Estimated Vector Store Node Cost (1-year commitment)</div>';
-    html += '  <div class="big-number">$' + fmt(Math.round(i.total_cost_per_month_yearly)) + " / mo</div>";
-    html += '  <div class="small-label">$' + i.total_cost_per_hour_yearly.toFixed(2) + " / hr</div>";
-    html += '  <div class="cost-ondemand">On-demand: $' + fmt(Math.round(i.total_cost_per_month)) + ' / mo ($' + i.total_cost_per_hour.toFixed(2) + ' / hr)</div>';
-    html += '  <div class="pricing-region">Based on ' + provider.toUpperCase() + ' ' + pricingRegion + ' pricing</div>';
+    html += '  <div class="big-number">$' + esc(fmt(Math.round(i.total_cost_per_month_yearly))) + " / mo</div>";
+    html += '  <div class="small-label">$' + esc(i.total_cost_per_hour_yearly.toFixed(2)) + " / hr</div>";
+    html += '  <div class="cost-ondemand">On-demand: $' + esc(fmt(Math.round(i.total_cost_per_month))) + ' / mo ($' + esc(i.total_cost_per_hour.toFixed(2)) + ' / hr)</div>';
+    html += '  <div class="pricing-region">Based on ' + esc(provider.toUpperCase()) + ' ' + esc(pricingRegion) + ' pricing</div>';
     html += "</div>";
 
     // Instance Selection
@@ -330,8 +337,8 @@
   function resultRow(label, value, highlight) {
     var cls = highlight ? ' highlight' : '';
     return '<div class="result-row">' +
-      '<span class="result-label">' + label + '</span>' +
-      '<span class="result-value' + cls + '">' + value + '</span>' +
+      '<span class="result-label">' + esc(label) + '</span>' +
+      '<span class="result-value' + cls + '">' + esc(value) + '</span>' +
       '</div>';
   }
 
@@ -410,7 +417,7 @@
       parseInt(elK.min, 10), parseInt(elK.max, 10));
 
     var q = params.get("quantization");
-    if (q) {
+    if (q && ["none", "scalar", "binary"].indexOf(q) !== -1) {
       var radio = document.querySelector('input[name="quantization"][value="' + q + '"]');
       if (radio) {
         document.querySelectorAll(".radio-card").forEach(function (c) {
@@ -433,7 +440,7 @@
       parseInt(elFilteringCols.min, 10), parseInt(elFilteringCols.max, 10));
 
     var cp = params.get("cloud_provider");
-    if (cp) {
+    if (cp && ["aws", "gcp"].indexOf(cp) !== -1) {
       var cpRadio = document.querySelector('input[name="cloud_provider"][value="' + cp + '"]');
       if (cpRadio) {
         document.querySelectorAll('.cloud-provider-group .radio-card').forEach(function (c) {

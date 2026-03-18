@@ -20,6 +20,15 @@ import vss_sizing as vs
 app = Flask(__name__)
 
 
+@app.after_request
+def set_security_headers(response):
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 @app.route("/")
 def index():
     """Serve the single-page sizing calculator."""
@@ -29,7 +38,9 @@ def index():
 @app.route("/api/compute", methods=["POST"])
 def compute():
     """Run the sizing algorithm and return the result as JSON."""
-    data = request.get_json(force=True)
+    data = request.get_json()
+    if data is None:
+        return jsonify({"error": "Request must have Content-Type: application/json."}), 400
 
     try:
         inp = vs.SizingInput(
@@ -51,13 +62,13 @@ def compute():
                 data.get("cloud_provider", vs.CloudProvider.AWS.value)
             ),
         )
-    except (ValueError, KeyError) as exc:
-        return jsonify({"error": str(exc)}), 400
+    except (ValueError, KeyError):
+        return jsonify({"error": "Invalid input parameters."}), 400
 
     try:
         result = vs.compute_sizing(inp)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        return jsonify({"error": "Could not compute sizing for the given parameters."}), 400
 
     return jsonify({
         "hnsw": {
