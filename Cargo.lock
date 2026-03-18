@@ -4182,6 +4182,7 @@ dependencies = [
  "tap",
  "tokio",
  "tracing",
+ "uuid",
  "vector-search-validator-tests",
  "vector-store",
 ]
