@@ -8,6 +8,7 @@ delegates to ``vss_sizing.compute_sizing``.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow importing vss_sizing from the parent directory.
@@ -22,7 +23,12 @@ app = Flask(__name__)
 
 @app.after_request
 def set_security_headers(response):
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' https://calculator.scylladb.com"
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -32,7 +38,7 @@ def set_security_headers(response):
 @app.route("/")
 def index():
     """Serve the single-page sizing calculator."""
-    return render_template("index.html")
+    return render_template("index.html", year=datetime.now(timezone.utc).year)
 
 
 @app.route("/api/compute", methods=["POST"])
