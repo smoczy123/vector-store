@@ -20,8 +20,38 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
-  tests:
+  validator-scylla-nightly-digest:
     runs-on: ubuntu-latest
+    steps:
+    - name: Get scylla-nightly digest for latest tag
+      id: get-scylla-nightly-latest-digest
+      if: contains(github.event.pull_request.labels.*.name, 'ci-use-latest-scylla-nightly')
+      run: wget -q -O - "https://hub.docker.com/v2/namespaces/scylladb/repositories/scylla-nightly/tags/latest" | jq -r .digest > scylla-nightly-digest
+
+    - name: Get scylla-nightly digest for the last working tag
+      if: steps.get-scylla-nightly-latest-digest.outcome == 'skipped'
+      uses: dawidd6/action-download-artifact@v17
+      with:
+        workflow: daily.yml
+        name: scylla-nightly-digest
+        search_artifacts: true
+
+    - name: Show scylla-nightly digest
+      run: cat scylla-nightly-digest
+
+    - name: Upload scylla-nightly digest as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: scylla-nightly-digest
+        path: scylla-nightly-digest
+
+  validator-build:
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-use-amd64') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    env:
+      TARGETARCH: ${{ contains(github.event.pull_request.labels.*.name, 'ci-use-amd64') && 'amd64' || 'arm64' }}
+    outputs:
+      testcases: ${{ steps.testcases.outputs.testcases }}
+
     steps:
     - uses: actions/checkout@v6
       with:
@@ -34,15 +64,70 @@ jobs:
     - name: Print release toolchain rustc version
       run: ./scripts/run-with-release-toolchain rustc --version
 
-    - name: Try to build release for the first time
-      id: build-release-1
-      continue-on-error: true
-      run: ./scripts/run-with-release-toolchain cargo build --release --workspace
+    - name: Fetching dependencies
+      run: ./scripts/run-with-release-toolchain cargo fetch
 
-    - name: Try to build release for the second time
-      if: steps.build-release-1.outcome == 'failure'
-      run: ./scripts/run-with-release-toolchain cargo build --release --workspace
+    - name: Build vector-store
+      run: ./scripts/run-with-release-toolchain cargo build --release --bin vector-store
 
-    - name: Run the Validator tests
-      run: ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly:2026.2.0-dev-0.20260219.7d6f734a519a target/amd64/release/vector-store target/amd64/release/vector-search-validator --verbose
+    - name: Copy vector-store
+      run: cp target/${TARGETARCH}/release/vector-store vector-store
+
+    - name: Build vector-search-validator
+      run: ./scripts/run-with-release-toolchain cargo build --release --bin vector-search-validator -p vector-search-validator
+
+    - name: Copy vector-search-validator
+      run: cp target/${TARGETARCH}/release/vector-search-validator vector-search-validator
+
+    - name: Upload vector-store as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: vector-store
+        path: vector-store
+
+    - name: Upload vector-search-validator as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: vector-search-validator
+        path: vector-search-validator
+
+    - name: Set testcases output
+      id: testcases
+      run: |
+        echo "testcases=[$(./vector-search-validator list | cut -d : -f 1 | sort | uniq | xargs -n 1 -I '{}' echo \"{}\" | paste -sd,)]" >> "$GITHUB_OUTPUT"
+
+  validator-tests:
+    needs: ["validator-scylla-nightly-digest", "validator-build"]
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-use-amd64') && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        testcase: ${{fromJSON(needs.validator-build.outputs.testcases)}}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Download scylla-nightly digest artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: scylla-nightly-digest
+
+    - name: Download vector-store artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: vector-store
+
+    - name: Download vector-search-validator artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: vector-search-validator
+
+    - name: Chmod a+x vector-store and vector-search-validator
+      run: chmod a+x vector-store vector-search-validator
+
+    - name: Run the Validator tests for testcase ${{matrix.testcase}}
+      env:
+        testcase: ${{matrix.testcase}}
+      run: |
+        ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
 
