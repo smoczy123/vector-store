@@ -19,6 +19,43 @@ import unittest
 
 import vss_sizing as vs
 
+# ---------------------------------------------------------------------------
+# Test instance fixtures (specs + synthetic prices for deterministic tests).
+# ---------------------------------------------------------------------------
+
+_AWS_TEST_INSTANCES: list[vs.InstanceType] = [
+    vs.InstanceType("t4g.medium",     2,    4,    0.134,    0.0784),
+    vs.InstanceType("r7g.medium",     1,    8,    0.214,    0.1324),
+    vs.InstanceType("r7g.large",      2,   16,    0.428,    0.2644),
+    vs.InstanceType("r7g.xlarge",     4,   32,    0.857,    0.5288),
+    vs.InstanceType("r7g.2xlarge",    8,   64,    1.714,    1.058),
+    vs.InstanceType("r7g.4xlarge",   16,  128,    3.427,    2.116),
+    vs.InstanceType("r7g.8xlarge",   32,  256,    6.854,    4.232),
+    vs.InstanceType("r7g.12xlarge",  48,  384,   10.282,    6.348),
+    vs.InstanceType("r7g.16xlarge",  64,  512,   13.709,    8.464),
+    vs.InstanceType("r7i.24xlarge",  96,  768,   25.402,   15.6832),
+    vs.InstanceType("r7i.48xlarge", 192, 1536,   50.803,   31.3656),
+]
+
+_GCP_TEST_INSTANCES: list[vs.InstanceType] = [
+    vs.InstanceType("e2-medium",      2,    4,    0.134,    0.13402284),
+    vs.InstanceType("n4-highmem-2",   2,   16,    0.476,    0.29992),
+    vs.InstanceType("n4-highmem-4",   4,   32,    0.952,    0.59984),
+    vs.InstanceType("n4-highmem-8",   8,   64,    1.904,    1.19968),
+    vs.InstanceType("n4-highmem-16", 16,  128,    3.809,    2.39936),
+    vs.InstanceType("n4-highmem-32", 32,  256,    7.617,    4.79872),
+    vs.InstanceType("n4-highmem-48", 48,  384,   11.426,    7.19808),
+    vs.InstanceType("n4-highmem-64", 64,  512,   15.235,    9.59744),
+    vs.InstanceType("n4-highmem-80", 80,  640,   19.043,   11.9968),
+]
+
+
+def _instances_for(cloud_provider: vs.CloudProvider) -> list[vs.InstanceType]:
+    """Return the appropriate test instance fixture."""
+    if cloud_provider is vs.CloudProvider.GCP:
+        return _GCP_TEST_INSTANCES
+    return _AWS_TEST_INSTANCES
+
 
 class TestQuantizationEnum(unittest.TestCase):
     """Tests for the vs.Quantization enum."""
@@ -37,22 +74,22 @@ class TestCloudProviderEnum(unittest.TestCase):
         self.assertEqual(vs.CloudProvider.GCP.value, "gcp")
 
 
-class TestGetInstances(unittest.TestCase):
-    """Tests for vs.get_instances helper."""
+class TestGetInstanceSpecs(unittest.TestCase):
+    """Tests for vs.get_instance_specs helper."""
 
-    def test_aws_returns_aws_instances(self) -> None:
-        instances = vs.get_instances(vs.CloudProvider.AWS)
-        self.assertIs(instances, vs.AWS_INSTANCES)
-        self.assertTrue(any("r7g" in i.name for i in instances))
+    def test_aws_returns_aws_specs(self) -> None:
+        specs = vs.get_instance_specs(vs.CloudProvider.AWS)
+        self.assertIs(specs, vs.AWS_INSTANCE_SPECS)
+        self.assertTrue(any("r7g" in s.name for s in specs))
 
-    def test_gcp_returns_gcp_instances(self) -> None:
-        instances = vs.get_instances(vs.CloudProvider.GCP)
-        self.assertIs(instances, vs.GCP_INSTANCES)
-        self.assertTrue(any("n4-highmem" in i.name for i in instances))
+    def test_gcp_returns_gcp_specs(self) -> None:
+        specs = vs.get_instance_specs(vs.CloudProvider.GCP)
+        self.assertIs(specs, vs.GCP_INSTANCE_SPECS)
+        self.assertTrue(any("n4-highmem" in s.name for s in specs))
 
     def test_default_is_aws(self) -> None:
-        instances = vs.get_instances()
-        self.assertIs(instances, vs.AWS_INSTANCES)
+        specs = vs.get_instance_specs()
+        self.assertIs(specs, vs.AWS_INSTANCE_SPECS)
 
 
 class TestRoundUpM(unittest.TestCase):
@@ -279,34 +316,34 @@ class TestSelectInstance(unittest.TestCase):
     """Tests for vs._select_instance function."""
 
     def test_small_deployment(self) -> None:
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2, instances=_AWS_TEST_INSTANCES)
         self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 2.0)
 
     def test_large_deployment(self) -> None:
-        sel = vs._select_instance(index_ram_gb=100.0, required_vcpus=64)
+        sel = vs._select_instance(index_ram_gb=100.0, required_vcpus=64, instances=_AWS_TEST_INSTANCES)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 100.0)
         self.assertGreaterEqual(sel.total_vcpus, 64)
 
     def test_no_instance_large_enough_raises(self) -> None:
-        largest = max(i.ram_gb for i in vs.AWS_INSTANCES)
+        largest = max(i.ram_gb for i in _AWS_TEST_INSTANCES)
         with self.assertRaises(ValueError):
-            vs._select_instance(index_ram_gb=largest + 100, required_vcpus=1)
+            vs._select_instance(index_ram_gb=largest + 100, required_vcpus=1, instances=_AWS_TEST_INSTANCES)
 
     def test_min_replicas_enforced(self) -> None:
-        sel = vs._select_instance(index_ram_gb=1.0, required_vcpus=1)
+        sel = vs._select_instance(index_ram_gb=1.0, required_vcpus=1, instances=_AWS_TEST_INSTANCES)
         self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
 
     def test_cheapest_option_selected(self) -> None:
         # Small footprint — should pick a cheap instance.
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=2, instances=_AWS_TEST_INSTANCES)
         # With 2 replicas of a cheap instance, total cost should be reasonable.
         self.assertLess(sel.total_cost_per_hour, 10.0)
 
     def test_gcp_small_deployment(self) -> None:
         sel = vs._select_instance(
             index_ram_gb=2.0, required_vcpus=2,
-            cloud_provider=vs.CloudProvider.GCP,
+            instances=_GCP_TEST_INSTANCES,
         )
         self.assertGreaterEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 2.0)
@@ -319,17 +356,17 @@ class TestSelectInstance(unittest.TestCase):
     def test_gcp_large_deployment(self) -> None:
         sel = vs._select_instance(
             index_ram_gb=100.0, required_vcpus=64,
-            cloud_provider=vs.CloudProvider.GCP,
+            instances=_GCP_TEST_INSTANCES,
         )
         self.assertGreaterEqual(sel.instance_type.ram_gb, 100.0)
         self.assertGreaterEqual(sel.total_vcpus, 64)
 
     def test_gcp_no_instance_large_enough_raises(self) -> None:
-        largest = max(i.ram_gb for i in vs.GCP_INSTANCES)
+        largest = max(i.ram_gb for i in _GCP_TEST_INSTANCES)
         with self.assertRaises(ValueError):
             vs._select_instance(
                 index_ram_gb=largest + 100, required_vcpus=1,
-                cloud_provider=vs.CloudProvider.GCP,
+                instances=_GCP_TEST_INSTANCES,
             )
 
 
@@ -436,19 +473,19 @@ class TestComputeSizingBasic(unittest.TestCase):
     """Basic end-to-end tests for vs.compute_sizing."""
 
     def test_default_input(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput())
+        result = vs.compute_sizing(vs.SizingInput(), _AWS_TEST_INSTANCES)
         self.assertIsInstance(result, vs.SizingResult)
         self.assertAlmostEqual(result.vector_store_node.total_ram_gb, 381.79, delta=0.01)
         self.assertEqual(result.vector_store_node.required_vcpus, 13)
         self.assertAlmostEqual(result.scylladb_node.total_storage_gb, 290.76, delta=0.01)
 
     def test_summary_populated(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput())
+        result = vs.compute_sizing(vs.SizingInput(), _AWS_TEST_INSTANCES)
         self.assertIn("ScyllaDB VSS Sizing Summary", result.summary)
         self.assertIn("50,000,000", result.summary)
 
     def test_returns_all_components(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput())
+        result = vs.compute_sizing(vs.SizingInput(), _AWS_TEST_INSTANCES)
         self.assertIsInstance(result.hnsw_params, vs.HNSWParams)
         self.assertIsInstance(result.vector_store_node, vs.VectorStoreNodeSizing)
         self.assertIsInstance(result.scylladb_node, vs.ScyllaDBNodeSizing)
@@ -460,7 +497,7 @@ class TestComputeSizingQuantization(unittest.TestCase):
 
     def setUp(self) -> None:
         self.base = vs.SizingInput(num_vectors=10_000_000, dimensions=768)
-        self.base_result = vs.compute_sizing(self.base)
+        self.base_result = vs.compute_sizing(self.base, _AWS_TEST_INSTANCES)
 
     def test_scalar_reduces_ram(self) -> None:
         inp = vs.SizingInput(
@@ -468,7 +505,7 @@ class TestComputeSizingQuantization(unittest.TestCase):
             dimensions=768,
             quantization=vs.Quantization.SCALAR,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         self.assertLess(
             result.vector_store_node.index_ram_bytes,
             self.base_result.vector_store_node.index_ram_bytes,
@@ -485,8 +522,8 @@ class TestComputeSizingQuantization(unittest.TestCase):
             dimensions=768,
             quantization=vs.Quantization.BINARY,
         )
-        scalar_result = vs.compute_sizing(scalar_inp)
-        binary_result = vs.compute_sizing(binary_inp)
+        scalar_result = vs.compute_sizing(scalar_inp, _AWS_TEST_INSTANCES)
+        binary_result = vs.compute_sizing(binary_inp, _AWS_TEST_INSTANCES)
         self.assertLess(
             binary_result.vector_store_node.index_ram_bytes,
             scalar_result.vector_store_node.index_ram_bytes,
@@ -498,7 +535,7 @@ class TestComputeSizingQuantization(unittest.TestCase):
             dimensions=768,
             quantization=vs.Quantization.SCALAR,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         self.assertEqual(result.compression_ratio, vs.SCALAR_COMPRESSION_RATIO)
 
     def test_binary_compression_ratio(self) -> None:
@@ -507,7 +544,7 @@ class TestComputeSizingQuantization(unittest.TestCase):
             dimensions=768,
             quantization=vs.Quantization.BINARY,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         self.assertEqual(result.compression_ratio, vs.BINARY_COMPRESSION_RATIO)
 
 
@@ -526,8 +563,8 @@ class TestScalarQuantizationDoubleK(unittest.TestCase):
             num_vectors=10_000_000, dimensions=768, k=50,
             quantization=vs.Quantization.SCALAR,
         )
-        none_r = vs.compute_sizing(none_inp)
-        scalar_r = vs.compute_sizing(scalar_inp)
+        none_r = vs.compute_sizing(none_inp, _AWS_TEST_INSTANCES)
+        scalar_r = vs.compute_sizing(scalar_inp, _AWS_TEST_INSTANCES)
         # SCALAR should have lower effective_qps_per_vcpu because K is doubled.
         self.assertLess(
             scalar_r.vector_store_node.effective_qps_per_vcpu,
@@ -545,7 +582,7 @@ class TestBinaryQuantizationQuadrupleQps(unittest.TestCase):
             target_qps=1_000,
             quantization=vs.Quantization.BINARY,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         # With BINARY, the effective QPS is 4×1000 = 4000, so more vCPUs
         # are needed compared to 1000 QPS with no quantization (other factors
         # being equal). This is the result of rescoring.
@@ -555,7 +592,7 @@ class TestBinaryQuantizationQuadrupleQps(unittest.TestCase):
             target_qps=1_000,
             quantization=vs.Quantization.NONE,
         )
-        none_result = vs.compute_sizing(none_inp)
+        none_result = vs.compute_sizing(none_inp, _AWS_TEST_INSTANCES)
         # BINARY should need significantly more search vCPUs due to 4x QPS.
         self.assertGreater(
             result.vector_store_node.required_vcpus,
@@ -567,12 +604,12 @@ class TestFilteringColumns(unittest.TestCase):
     """Tests for filtering columns RAM overhead."""
 
     def test_zero_filtering_columns(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
+        result = vs.compute_sizing(vs.SizingInput(filtering_columns=0), _AWS_TEST_INSTANCES)
         self.assertEqual(result.vector_store_node.filtering_ram_bytes, 0)
 
     def test_filtering_columns_adds_ram(self) -> None:
-        no_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
-        with_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=5))
+        no_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=0), _AWS_TEST_INSTANCES)
+        with_filter = vs.compute_sizing(vs.SizingInput(filtering_columns=5), _AWS_TEST_INSTANCES)
         self.assertGreater(
             with_filter.vector_store_node.total_ram_bytes,
             no_filter.vector_store_node.total_ram_bytes,
@@ -583,13 +620,13 @@ class TestFilteringColumns(unittest.TestCase):
         cols = 3
         result = vs.compute_sizing(vs.SizingInput(
             num_vectors=n, filtering_columns=cols,
-        ))
+        ), _AWS_TEST_INSTANCES)
         expected = cols * vs.FILTERING_COLUMN_BYTES_PER_VECTOR * n
         self.assertEqual(result.vector_store_node.filtering_ram_bytes, expected)
 
     def test_filtering_ram_does_not_affect_index_ram(self) -> None:
-        r0 = vs.compute_sizing(vs.SizingInput(filtering_columns=0))
-        r5 = vs.compute_sizing(vs.SizingInput(filtering_columns=5))
+        r0 = vs.compute_sizing(vs.SizingInput(filtering_columns=0), _AWS_TEST_INSTANCES)
+        r5 = vs.compute_sizing(vs.SizingInput(filtering_columns=5), _AWS_TEST_INSTANCES)
         self.assertEqual(
             r0.vector_store_node.index_ram_bytes,
             r5.vector_store_node.index_ram_bytes,
@@ -603,7 +640,7 @@ class TestRecallLevels(unittest.TestCase):
         results = {}
         for r in [70, 80, 90, 95, 99]:
             inp = vs.SizingInput(recall=r)
-            results[r] = vs.compute_sizing(inp)
+            results[r] = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         ms = [results[r].hnsw_params.m for r in [70, 80, 90, 95, 99]]
         # M should be non-decreasing with recall.
         for i in range(len(ms) - 1):
@@ -613,7 +650,7 @@ class TestRecallLevels(unittest.TestCase):
         results = {}
         for r in [70, 90, 95, 99]:
             inp = vs.SizingInput(recall=r)
-            results[r] = vs.compute_sizing(inp)
+            results[r] = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
         qps = [results[r].vector_store_node.effective_qps_per_vcpu for r in [70, 90, 95, 99]]
         for i in range(len(qps) - 1):
             self.assertGreaterEqual(qps[i], qps[i + 1])
@@ -623,15 +660,15 @@ class TestKValues(unittest.TestCase):
     """Verify K affects throughput."""
 
     def test_k1_higher_throughput_than_k100(self) -> None:
-        r1 = vs.compute_sizing(vs.SizingInput(k=1))
-        r100 = vs.compute_sizing(vs.SizingInput(k=100))
+        r1 = vs.compute_sizing(vs.SizingInput(k=1), _AWS_TEST_INSTANCES)
+        r100 = vs.compute_sizing(vs.SizingInput(k=100), _AWS_TEST_INSTANCES)
         self.assertGreater(
             r1.vector_store_node.effective_qps_per_vcpu,
             r100.vector_store_node.effective_qps_per_vcpu,
         )
 
     def test_k10_equals_baseline_throughput(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput(k=10, recall=90))
+        result = vs.compute_sizing(vs.SizingInput(k=10, recall=90), _AWS_TEST_INSTANCES)
         self.assertAlmostEqual(
             result.vector_store_node.effective_qps_per_vcpu,
             result.vector_store_node.base_qps_per_vcpu,
@@ -643,14 +680,14 @@ class TestScyllaDBNodeSizingComputation(unittest.TestCase):
     """Tests for ScyllaDB-node sizing."""
 
     def test_scylladb_nodes_equal_replication_factor(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput())
+        result = vs.compute_sizing(vs.SizingInput(), _AWS_TEST_INSTANCES)
         self.assertEqual(result.scylladb_node.num_nodes, vs.REPLICATION_FACTOR)
 
     def test_storage_breakdown(self) -> None:
         n, d = 10_000_000, 768
         result = vs.compute_sizing(vs.SizingInput(
             num_vectors=n, dimensions=d, metadata_bytes_per_vector=100,
-        ))
+        ), _AWS_TEST_INSTANCES)
         expected_embedding = n * d * vs.FLOAT32_BYTES
         expected_metadata = n * 100
         self.assertEqual(
@@ -665,7 +702,7 @@ class TestScyllaDBNodeSizingComputation(unittest.TestCase):
         )
 
     def test_scylladb_vcpus_derived_from_search_vcpus(self) -> None:
-        result = vs.compute_sizing(vs.SizingInput())
+        result = vs.compute_sizing(vs.SizingInput(), _AWS_TEST_INSTANCES)
         vs_vcpus = result.vector_store_node.required_vcpus
         expected_total = max(
             1, math.ceil(vs_vcpus / vs.VS_TO_SCYLLADB_VCPU_RATIO),
@@ -683,36 +720,36 @@ class TestInstanceSelection(unittest.TestCase):
 
     def test_vcpu_requirement_met(self) -> None:
         # Request 100 vCPUs, should provision enough instances.
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100, instances=_AWS_TEST_INSTANCES)
         self.assertGreaterEqual(sel.total_vcpus, 100)
 
     def test_ram_requirement_met(self) -> None:
-        sel = vs._select_instance(index_ram_gb=200.0, required_vcpus=10)
+        sel = vs._select_instance(index_ram_gb=200.0, required_vcpus=10, instances=_AWS_TEST_INSTANCES)
         self.assertGreaterEqual(sel.instance_type.ram_gb, 200.0)
 
     def test_more_than_two_replicas_divisible_by_three(self) -> None:
         """When more than 2 replicas are needed, count must be divisible by 3."""
         # 100 vCPUs on a 2-vCPU instance -> ceil(100/2) = 50 -> rounded to 51.
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100, instances=_AWS_TEST_INSTANCES)
         if sel.num_instances > vs.MIN_VECTOR_STORE_REPLICAS:
             self.assertEqual(sel.num_instances % 3, 0)
 
     def test_exactly_two_replicas_not_rounded(self) -> None:
         """Two replicas (the HA minimum) should stay at 2, not be rounded to 3."""
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=1)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=1, instances=_AWS_TEST_INSTANCES)
         self.assertEqual(sel.num_instances, vs.MIN_VECTOR_STORE_REPLICAS)
 
     def test_gcp_vcpu_requirement_met(self) -> None:
         sel = vs._select_instance(
             index_ram_gb=2.0, required_vcpus=100,
-            cloud_provider=vs.CloudProvider.GCP,
+            instances=_GCP_TEST_INSTANCES,
         )
         self.assertGreaterEqual(sel.total_vcpus, 100)
 
     def test_gcp_more_than_two_replicas_divisible_by_three(self) -> None:
         sel = vs._select_instance(
             index_ram_gb=2.0, required_vcpus=100,
-            cloud_provider=vs.CloudProvider.GCP,
+            instances=_GCP_TEST_INSTANCES,
         )
         if sel.num_instances > vs.MIN_VECTOR_STORE_REPLICAS:
             self.assertEqual(sel.num_instances % 3, 0)
@@ -723,7 +760,7 @@ class TestInstanceUpscaling(unittest.TestCase):
 
     def test_no_upscale_when_three_or_fewer_instances(self) -> None:
         """When <= 3 instances suffice, the smallest eligible is returned."""
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=4)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=4, instances=_AWS_TEST_INSTANCES)
         # t4g.medium (2 vCPUs, 4 GB): ceil(4/2)=2 instances, no upscale.
         self.assertEqual(sel.instance_type.name, "t4g.medium")
         self.assertEqual(sel.num_instances, 2)
@@ -734,7 +771,7 @@ class TestInstanceUpscaling(unittest.TestCase):
         # With 40 vCPUs: ceil(40/4) = 10 -> 12 instances (>3, triggers upscale).
         # r7g.4xlarge (128 GB, 16 vCPUs): ceil(40/16) = 3 instances, cost
         # within 10% threshold.
-        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40)
+        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40, instances=_AWS_TEST_INSTANCES)
         self.assertLessEqual(sel.num_instances, vs.INSTANCE_UPSCALE_TRIGGER)
         self.assertEqual(sel.instance_type.name, "r7g.4xlarge")
         self.assertEqual(sel.num_instances, 3)
@@ -746,9 +783,9 @@ class TestInstanceUpscaling(unittest.TestCase):
         # Max cost = $5.142 × 1.1 = $5.6562.
         # r7g.8xlarge (32 vCPUs): 2 instances → $6.854 (exceeds threshold).
         # So r7g.4xlarge (3 instances, ~$5.14) should be picked, not r7g.8xlarge.
-        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40)
+        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40, instances=_AWS_TEST_INSTANCES)
         cost = sel.num_instances * sel.instance_type.cost_per_hour
-        initial_cost = 12 * 0.4285  # r7g.xlarge × 12
+        initial_cost = 12 * 0.857  # r7g.xlarge × 12 (test fixture price)
         self.assertLessEqual(cost, initial_cost * vs.INSTANCE_UPSCALE_COST_FACTOR)
 
     def test_upscale_not_applied_when_all_larger_exceed_budget(self) -> None:
@@ -756,7 +793,7 @@ class TestInstanceUpscaling(unittest.TestCase):
         # t4g.medium (2 vCPUs, $0.067): 100 vCPUs → 51 instances → $3.417.
         # Max cost $3.759.  All larger instances need ≥50 replicas at higher
         # per-unit cost, so none fit within 10%.
-        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100)
+        sel = vs._select_instance(index_ram_gb=2.0, required_vcpus=100, instances=_AWS_TEST_INSTANCES)
         self.assertEqual(sel.instance_type.name, "t4g.medium")
         self.assertEqual(sel.num_instances, 51)
 
@@ -766,7 +803,7 @@ class TestInstanceUpscaling(unittest.TestCase):
         # r7g.2xlarge (8 vCPUs): 6 instances, within budget.
         # r7g.4xlarge (16 vCPUs): 3 instances, within budget (fewest).
         # r7g.8xlarge (32 vCPUs): 2 instances, exceeds budget.
-        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40)
+        sel = vs._select_instance(index_ram_gb=22.0, required_vcpus=40, instances=_AWS_TEST_INSTANCES)
         self.assertEqual(sel.num_instances, 3)
         self.assertEqual(sel.instance_type.name, "r7g.4xlarge")
 
@@ -779,7 +816,7 @@ class TestInstanceUpscaling(unittest.TestCase):
         # Check that upscaling reduces count.
         sel = vs._select_instance(
             index_ram_gb=10.0, required_vcpus=20,
-            cloud_provider=vs.CloudProvider.GCP,
+            instances=_GCP_TEST_INSTANCES,
         )
         self.assertEqual(sel.num_instances, 3)
 
@@ -798,7 +835,7 @@ class TestEndToEndRAG(unittest.TestCase):
             quantization=vs.Quantization.NONE,
             metadata_bytes_per_vector=256,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
 
         # Basic sanity checks for a RAG-scale deployment.
         self.assertGreater(result.vector_store_node.total_ram_gb, 100)
@@ -822,7 +859,7 @@ class TestEndToEndImageSearch(unittest.TestCase):
             quantization=vs.Quantization.SCALAR,
             metadata_bytes_per_vector=64,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
 
         # RAM should be relatively modest (128d, SCALAR compressed).
         self.assertLess(result.vector_store_node.total_ram_gb, 50)
@@ -849,7 +886,7 @@ class TestEndToEndLargeScale(unittest.TestCase):
             metadata_bytes_per_vector=100,
             filtering_columns=2,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _AWS_TEST_INSTANCES)
 
         # Should use BINARY compression.
         self.assertEqual(result.compression_ratio, vs.BINARY_COMPRESSION_RATIO)
@@ -870,14 +907,14 @@ class TestSummaryFormat(unittest.TestCase):
     def test_summary_contains_key_info(self) -> None:
         result = vs.compute_sizing(vs.SizingInput(
             num_vectors=10_000_000, dimensions=768, filtering_columns=2,
-        ))
+        ), _AWS_TEST_INSTANCES)
         self.assertIn("10,000,000", result.summary)
         self.assertIn("768", result.summary)
         self.assertIn("Filtering columns: 2", result.summary)
 
     def test_summary_quantization_label(self) -> None:
         for q in vs.Quantization:
-            result = vs.compute_sizing(vs.SizingInput(quantization=q))
+            result = vs.compute_sizing(vs.SizingInput(quantization=q), _AWS_TEST_INSTANCES)
             self.assertIn(q.value, result.summary)
 
 
@@ -887,7 +924,7 @@ class TestGCPEndToEnd(unittest.TestCase):
     def test_default_input_gcp(self) -> None:
         result = vs.compute_sizing(vs.SizingInput(
             cloud_provider=vs.CloudProvider.GCP,
-        ))
+        ), _GCP_TEST_INSTANCES)
         self.assertIsInstance(result, vs.SizingResult)
         self.assertEqual(result.instance_selection.instance_type.name, "n4-highmem-48")
         self.assertEqual(result.instance_selection.num_instances, 2)
@@ -901,7 +938,7 @@ class TestGCPEndToEnd(unittest.TestCase):
             k=10,
             cloud_provider=vs.CloudProvider.GCP,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _GCP_TEST_INSTANCES)
         self.assertEqual(result.instance_selection.instance_type.name, "e2-medium")
         self.assertEqual(result.instance_selection.num_instances, 2)
 
@@ -914,7 +951,7 @@ class TestGCPEndToEnd(unittest.TestCase):
             k=10,
             cloud_provider=vs.CloudProvider.GCP,
         )
-        result = vs.compute_sizing(inp)
+        result = vs.compute_sizing(inp, _GCP_TEST_INSTANCES)
         self.assertGreater(result.vector_store_node.total_ram_gb, 100)
         self.assertEqual(result.instance_selection.instance_type.name, "n4-highmem-48")
         self.assertEqual(result.instance_selection.num_instances, 2)
@@ -926,7 +963,7 @@ class TestGCPEndToEnd(unittest.TestCase):
                 num_vectors=4_000_000_000,
                 dimensions=4096,
                 cloud_provider=vs.CloudProvider.GCP,
-            ))
+            ), _GCP_TEST_INSTANCES)
 
     def test_cloud_provider_default_is_aws(self) -> None:
         inp = vs.SizingInput()

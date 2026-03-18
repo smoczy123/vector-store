@@ -23,6 +23,15 @@
 </header>
 
 <main>
+  {% if pricing_errors %}
+  <div id="pricing-banner" class="pricing-banner">
+    <strong>Pricing unavailable:</strong>
+    {% for err in pricing_errors %}
+      {{ err }}{% if not loop.last %} &mdash; {% endif %}
+    {% endfor %}
+    <br>The calculator may not work for all cloud providers.
+  </div>
+  {% endif %}
   <!-- ───────── Input Panel ───────── -->
   <section class="panel inputs-panel">
     <h2>Configuration</h2>

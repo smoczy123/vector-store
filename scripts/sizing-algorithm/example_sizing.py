@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
 """Print an example VSS sizing report using default input parameters.
 
+Requires instance types with pricing to be passed in.  For a quick demo
+you can define a small list inline (see ``_DEMO_INSTANCES`` below).
+
 Usage::
 
     python3 example_sizing.py
 """
 
-from vss_sizing import SizingInput, compute_sizing
+from vss_sizing import InstanceType, SizingInput, compute_sizing
+
+# Minimal demo instances — replace with API-fetched data in production.
+_DEMO_INSTANCES: list[InstanceType] = [
+    InstanceType("r7g.4xlarge",   16,  128,   3.427,   2.116),
+    InstanceType("r7g.8xlarge",   32,  256,   6.854,   4.232),
+    InstanceType("r7g.12xlarge",  48,  384,  10.282,   6.348),
+    InstanceType("r7g.16xlarge",  64,  512,  13.709,   8.464),
+    InstanceType("r7i.24xlarge",  96,  768,  25.402,  15.6832),
+    InstanceType("r7i.48xlarge", 192, 1536,  50.803,  31.3656),
+]
 
 
 def main() -> None:
     inp = SizingInput()
-    result = compute_sizing(inp)
+    result = compute_sizing(inp, _DEMO_INSTANCES)
 
     print("=" * 60)
     print("  ScyllaDB VSS Sizing — Default Parameters")

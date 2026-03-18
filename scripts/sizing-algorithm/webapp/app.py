@@ -7,6 +7,7 @@ delegates to ``vss_sizing.compute_sizing``.
 
 from __future__ import annotations
 
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, jsonify, render_template, request
 
 import vss_sizing as vs
+from pricing import fetch_all_prices
+
+log = logging.getLogger(__name__)
+
+# Fetch once at module load (application startup).
+_LIVE_INSTANCES, _PRICING_ERRORS = fetch_all_prices()
 
 app = Flask(__name__)
 
@@ -38,7 +45,11 @@ def set_security_headers(response):
 @app.route("/")
 def index():
     """Serve the single-page sizing calculator."""
-    return render_template("index.html", year=datetime.now(timezone.utc).year)
+    return render_template(
+        "index.html",
+        year=datetime.now(timezone.utc).year,
+        pricing_errors=_PRICING_ERRORS,
+    )
 
 
 @app.route("/api/compute", methods=["POST"])
@@ -72,7 +83,16 @@ def compute():
         return jsonify({"error": "Invalid input parameters."}), 400
 
     try:
-        result = vs.compute_sizing(inp)
+        instances = _LIVE_INSTANCES.get(inp.cloud_provider)
+        if not instances:
+            return jsonify({
+                "error": (
+                    f"Pricing data is unavailable for "
+                    f"{inp.cloud_provider.value.upper()}. "
+                    f"The calculator cannot run without live pricing."
+                ),
+            }), 503
+        result = vs.compute_sizing(inp, instances)
     except ValueError:
         return jsonify({"error": "Could not compute sizing for the given parameters."}), 400
 
