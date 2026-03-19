@@ -81,9 +81,7 @@ jobs:
       uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: Setup cargo-deny
-      uses: baptiste0928/cargo-install@v3
-      with:
-        crate: cargo-deny
+      uses: taiki-e/install-action@cargo-deny
 
     - name: Print cargo-deny version
       run: cargo deny --version
@@ -100,12 +98,51 @@ jobs:
       uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: Setup cargo-machete
-      uses: baptiste0928/cargo-install@v3
-      with:
-        crate: cargo-machete
+      uses: taiki-e/install-action@cargo-machete
 
     - name: Print cargo-machete version
       run: cargo machete --version
 
     - name: Run cargo-machete checks
       run: cargo machete
+
+  rust-workflow-status:
+    needs: ["cargo-clippy", "cargo-fmt", "cargo-test", "cargo-deny", "cargo-machete"]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - name: Check workflow status
+      run: |
+        return_code=0
+
+        if [[ "${{ needs.cargo-clippy.result }}" == "failure" ]]; then
+          echo "cargo-clippy job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.cargo-fmt.result }}" == "failure" ]]; then
+          echo "cargo-fmt job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.cargo-test.result }}" == "failure" ]]; then
+          echo "cargo-test job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.cargo-deny.result }}" == "failure" ]]; then
+          echo "cargo-deny job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.cargo-machete.result }}" == "failure" ]]; then
+          echo "cargo-machete job failed"
+          return_code=1
+        fi
+
+        if [[ $return_code -ne 0 ]]; then
+          exit $return_code
+        fi
+
+        echo "All jobs succeeded"
+

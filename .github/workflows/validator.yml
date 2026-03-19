@@ -58,8 +58,8 @@ jobs:
         fetch-depth: 0
         fetch-tags: true
 
-    - name: Setup local rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Setup local .cargo directories
+      run: mkdir -p $HOME/.cargo/git $HOME/.cargo/registry
 
     - name: Print release toolchain rustc version
       run: ./scripts/run-with-release-toolchain rustc --version
@@ -91,6 +91,15 @@ jobs:
         name: vector-search-validator
         path: vector-search-validator
 
+    - name: Copy run-validator-with-scylla-docker script
+      run: cp scripts/run-validator-with-scylla-docker .
+
+    - name: Upload run-validator-with-scylla-docker as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: run-validator-with-scylla-docker
+        path: run-validator-with-scylla-docker
+
     - name: Set testcases output
       id: testcases
       run: |
@@ -105,8 +114,6 @@ jobs:
         testcase: ${{fromJSON(needs.validator-build.outputs.testcases)}}
 
     steps:
-    - uses: actions/checkout@v6
-
     - name: Download scylla-nightly digest artifact
       uses: actions/download-artifact@v8
       with:
@@ -122,12 +129,47 @@ jobs:
       with:
         name: vector-search-validator
 
-    - name: Chmod a+x vector-store and vector-search-validator
-      run: chmod a+x vector-store vector-search-validator
+    - name: Download run-validator-with-scylla-docker artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: run-validator-with-scylla-docker
+
+    - name: Chmod a+x downloaded artifacts
+      run: chmod a+x vector-store vector-search-validator run-validator-with-scylla-docker
 
     - name: Run the Validator tests for testcase ${{matrix.testcase}}
       env:
         testcase: ${{matrix.testcase}}
       run: |
-        ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
+        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
+
+  validator-workflow-status:
+    needs: ["validator-scylla-nightly-digest", "validator-build", "validator-tests"]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - name: Check workflow status
+      run: |
+        return_code=0
+
+        if [[ "${{ needs.validator-scylla-nightly-digest.result }}" == "failure" ]]; then
+          echo "validator-scylla-nightly-digest job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.validator-build.result }}" == "failure" ]]; then
+          echo "validator-build job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.validator-tests.result }}" == "failure" ]]; then
+          echo "validator-tests job failed"
+          return_code=1
+        fi
+
+        if [[ $return_code -ne 0 ]]; then
+          exit $return_code
+        fi
+
+        echo "All jobs succeeded"
 
