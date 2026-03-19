@@ -91,6 +91,15 @@ jobs:
         name: vector-search-validator
         path: vector-search-validator
 
+    - name: Copy run-validator-with-scylla-docker script
+      run: cp scripts/run-validator-with-scylla-docker .
+
+    - name: Upload run-validator-with-scylla-docker as artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: run-validator-with-scylla-docker
+        path: run-validator-with-scylla-docker
+
     - name: Set testcases output
       id: testcases
       run: |
@@ -105,8 +114,6 @@ jobs:
         testcase: ${{fromJSON(needs.validator-build.outputs.testcases)}}
 
     steps:
-    - uses: actions/checkout@v6
-
     - name: Download scylla-nightly digest artifact
       uses: actions/download-artifact@v8
       with:
@@ -122,12 +129,17 @@ jobs:
       with:
         name: vector-search-validator
 
-    - name: Chmod a+x vector-store and vector-search-validator
-      run: chmod a+x vector-store vector-search-validator
+    - name: Download run-validator-with-scylla-docker artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: run-validator-with-scylla-docker
+
+    - name: Chmod a+x downloaded artifacts
+      run: chmod a+x vector-store vector-search-validator run-validator-with-scylla-docker
 
     - name: Run the Validator tests for testcase ${{matrix.testcase}}
       env:
         testcase: ${{matrix.testcase}}
       run: |
-        ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
+        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
 

@@ -120,6 +120,16 @@ jobs:
         name: daily-vector-search-validator-${{matrix.arch}}-${{github.sha}}
         path: vector-search-validator-${{matrix.arch}}
 
+    - name: Copy run-validator-with-scylla-docker script
+      run: cp scripts/run-validator-with-scylla-docker .
+
+    - name: Upload run-validator-with-scylla-docker as artifact
+      if: matrix.arch == 'amd64' # Only upload the script once since it's architecture agnostic
+      uses: actions/upload-artifact@v6
+      with:
+        name: run-validator-with-scylla-docker
+        path: run-validator-with-scylla-docker
+
   daily-get-testcases:
     needs: daily-build
     runs-on: ubuntu-latest
@@ -154,8 +164,6 @@ jobs:
           - os: ubuntu-24.04-arm
             arch: arm64
     steps:
-    - uses: actions/checkout@v6
-
     - name: Download scylla-nightly digest artifact
       uses: actions/download-artifact@v8
       with:
@@ -171,15 +179,20 @@ jobs:
       with:
         name: daily-vector-search-validator-${{matrix.arch}}-${{github.sha}}
 
-    - name: Chmod a+x vector-store and vector-search-validator
-      run: chmod a+x vector-store-${{matrix.arch}} vector-search-validator-${{matrix.arch}}
+    - name: Download run-validator-with-scylla-docker artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: run-validator-with-scylla-docker
+
+    - name: Chmod a+x downloaded artifacts
+      run: chmod a+x vector-store-${{matrix.arch}} vector-search-validator-${{matrix.arch}} run-validator-with-scylla-docker
 
     - name: Run the Validator tests for testcase ${{matrix.testcase}}
       env:
         testcase: ${{matrix.testcase}}
         TARGETARCH: ${{matrix.arch}}
       run: |
-        ./scripts/run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store-${TARGETARCH} vector-search-validator-${TARGETARCH} ${testcase}:: --verbose
+        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store-${TARGETARCH} vector-search-validator-${TARGETARCH} ${testcase}:: --verbose
 
   daily-save-scylla-nightly-digest:
     needs: daily-validator-tests
