@@ -143,3 +143,33 @@ jobs:
       run: |
         ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
 
+  validator-workflow-status:
+    needs: ["validator-scylla-nightly-digest", "validator-build", "validator-tests"]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - name: Check workflow status
+      run: |
+        return_code=0
+
+        if [[ "${{ needs.validator-scylla-nightly-digest.result }}" == "failure" ]]; then
+          echo "validator-scylla-nightly-digest job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.validator-build.result }}" == "failure" ]]; then
+          echo "validator-build job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.validator-tests.result }}" == "failure" ]]; then
+          echo "validator-tests job failed"
+          return_code=1
+        fi
+
+        if [[ $return_code -ne 0 ]]; then
+          exit $return_code
+        fi
+
+        echo "All jobs succeeded"
+
