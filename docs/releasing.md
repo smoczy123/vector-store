@@ -46,7 +46,16 @@ The build script also generates SBOM files in CycloneDX JSON format:
   image (one per architecture: amd64, arm64)
 
 After building the release you ought to update the release notes in GitHub and
-upload the tar.gz files and both SBOM files to the release.
+upload the tar.gz files and both SBOM files to the release. You can use the
+upload script to do this:
+
+```bash
+./scripts/upload-release
+```
+
+This will upload all tar.gz archives and SBOM files to the GitHub release
+matching the current version tag. It requires the `gh` CLI to be installed and
+authenticated.
 
 ### Prerequisites
 
@@ -54,3 +63,4 @@ upload the tar.gz files and both SBOM files to the release.
   `scripts/prepare-docker-qemu`)
 - `cargo-cyclonedx` installed (`cargo install cargo-cyclonedx`)
 - `syft` installed (see https://github.com/anchore/syft)
+- `gh` CLI installed and authenticated (see https://cli.github.com/)

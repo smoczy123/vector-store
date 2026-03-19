@@ -1,0 +1,48 @@
+#!/bin/bash
+
+set -e
+
+repo_dir=$(dirname "${BASH_SOURCE[0]}")
+repo_dir=$(realpath $repo_dir/..)
+
+cd $repo_dir
+
+vector_store_version=$(./scripts/run-with-release-toolchain cargo info vector-store | grep ^version: | cut -d ' ' -f 2)
+
+tag=$vector_store_version
+
+# verify the tag exists
+git rev-parse "$tag" > /dev/null 2>&1 || { echo "error: tag $tag does not exist"; exit 1; }
+
+# verify gh cli is available
+command -v gh > /dev/null 2>&1 || { echo "error: gh cli is not installed (https://cli.github.com/)"; exit 1; }
+
+archs="amd64 arm64"
+
+# collect all release assets
+assets=()
+
+for arch in $archs ; do
+    tarball=target/$arch/release/vector-store-$vector_store_version-$arch.tar.gz
+    [[ -f $tarball ]] || { echo "error: $tarball not found, run scripts/build-release first"; exit 1; }
+    assets+=("$tarball")
+done
+
+cargo_sbom=vector-store-$vector_store_version.cdx.json
+[[ -f $cargo_sbom ]] || { echo "error: $cargo_sbom not found, run scripts/build-release first"; exit 1; }
+assets+=("$cargo_sbom")
+
+for arch in $archs ; do
+    docker_sbom=vector-store-docker-$vector_store_version-$arch.cdx.json
+    [[ -f $docker_sbom ]] || { echo "error: $docker_sbom not found, run scripts/build-release first"; exit 1; }
+    assets+=("$docker_sbom")
+done
+
+echo "uploading ${#assets[@]} assets to release $tag:"
+for asset in "${assets[@]}" ; do
+    echo "  $asset"
+done
+
+gh release upload "$tag" "${assets[@]}" --clobber
+
+echo "done"
