@@ -67,7 +67,6 @@ jobs:
       run: chmod a+x vector-search-validator-${{matrix.arch}}
 
     - uses: actions/checkout@v6
-      if: steps.download-vector-store.outcome == 'failure' || steps.download-vector-search-validator.outcome == 'failure'
       with:
         fetch-depth: 0
         fetch-tags: true
