@@ -300,6 +300,12 @@ where
         .ok()
         .map(std::path::PathBuf::from);
 
+    config.cql_connection_timeout = env("VECTOR_STORE_CQL_CONNECTION_TIMEOUT")
+        .ok()
+        .map(|v| v.parse::<humantime::Duration>())
+        .transpose()?
+        .map(|v| v.into());
+
     config.cql_keepalive_interval = env("VECTOR_STORE_CQL_KEEPALIVE_INTERVAL")
         .ok()
         .map(|v| v.parse::<humantime::Duration>())
@@ -533,6 +539,7 @@ mod tests {
             disable_colors: false,
             tls_cert_path: None,
             tls_key_path: None,
+            cql_connection_timeout: None,
             cql_keepalive_interval: None,
             cql_keepalive_timeout: None,
             cql_tcp_keepalive_interval: None,
@@ -639,5 +646,19 @@ mod tests {
             config.memory_usage_check_interval,
             Some(Duration::from_millis(100))
         );
+    }
+
+    #[tokio::test]
+    async fn load_config_cql_connection_timeout() {
+        let env = mock_env(HashMap::new());
+        let config = load_config(env).await.unwrap();
+        assert_eq!(config.cql_connection_timeout, None);
+
+        let env = mock_env(HashMap::from([(
+            "VECTOR_STORE_CQL_CONNECTION_TIMEOUT",
+            "30s".into(),
+        )]));
+        let config = load_config(env).await.unwrap();
+        assert_eq!(config.cql_connection_timeout, Some(Duration::from_secs(30)));
     }
 }

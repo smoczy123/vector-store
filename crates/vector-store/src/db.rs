@@ -548,7 +548,20 @@ async fn create_session(
         }
     }
 
-    let session = Arc::new(builder.build().await?);
+    let session = if let Some(timeout) = config.cql_connection_timeout {
+        info!("Setting CQL connection timeout to {timeout:?}");
+        let session = tokio::time::timeout(timeout, builder.build())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "Connection to ScyllaDB at {} timed out after {timeout:?}",
+                    config.scylladb_uri
+                )
+            })??;
+        Arc::new(session)
+    } else {
+        Arc::new(builder.build().await?)
+    };
 
     let cluster_state = session.get_cluster_state();
 
