@@ -13,12 +13,14 @@ use aws_smithy_runtime_api::client::interceptors::context::AfterDeserializationI
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::config_bag::ConfigBag;
 use e2etest::TestCase;
+use httpapi::IndexInfo;
+use httpapi::IndexName;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tracing::info;
 
 /// An SDK interceptor that captures the `VectorIndexes` extension field from
-/// the raw `DescribeTable` JSON response as a [`serde_json::Value`].  The
+/// the raw `DescribeTable` JSON response as a [`serde_json::Value`]. The
 /// caller retrieves it via [`into_captured`] after the SDK call completes and
 /// performs the assertions explicitly.
 ///
@@ -42,7 +44,7 @@ impl VectorIndexesCaptureInterceptor {
     }
 
     /// Consume the interceptor and return the `VectorIndexes` JSON value
-    /// captured during the last `DescribeTable` call.  Returns `None` if
+    /// captured during the last `DescribeTable` call. Returns `None` if
     /// `read_after_deserialization` has not fired yet (i.e. the call has not
     /// completed or failed before the response body was available).
     fn into_captured(self) -> Option<serde_json::Value> {
@@ -79,7 +81,7 @@ impl Intercept for VectorIndexesCaptureInterceptor {
             .ok_or("raw DescribeTable should contain 'Table' key")?;
 
         // `VectorIndexes` is our extension field - capture it as-is so the
-        // test can assert on the full value.  Absence is stored as None and
+        // test can assert on the full value. Absence is stored as None and
         // surfaced by the test assertion rather than aborting the SDK call.
         *self.captured.lock().unwrap() = table.get("VectorIndexes").cloned();
 
@@ -192,6 +194,278 @@ async fn create_describe_and_delete_table_with_vector_index(actors: TestActors) 
     info!("finished");
 }
 
+#[framed]
+async fn create_table_with_two_case_distinct_vector_indexes(actors: TestActors) {
+    info!("started");
+
+    let (client, vs_clients) = alternator::make_clients(&actors).await;
+
+    let table_name = alternator::unique_table_name();
+    let partition_key_name = "Pk-Case";
+    let unique_index_name = alternator::unique_index_name();
+    let lower_index_name: IndexName = unique_index_name.as_ref().to_ascii_lowercase().into();
+    let upper_index_name: IndexName = unique_index_name.as_ref().to_ascii_uppercase().into();
+    let lower_vector_attribute_name = "samevector";
+    let upper_vector_attribute_name = "SAMEVECTOR";
+    let lower_index = IndexInfo::new(
+        alternator::keyspace(&table_name).as_ref(),
+        lower_index_name.as_ref(),
+    );
+    let upper_index = IndexInfo::new(
+        alternator::keyspace(&table_name).as_ref(),
+        upper_index_name.as_ref(),
+    );
+
+    info!(
+        "Creating Alternator table '{table_name}' with case-distinct VectorIndexes '{}' and '{}'",
+        lower_index.index, upper_index.index
+    );
+    alternator::create_table(
+        &client,
+        &table_name,
+        partition_key_name,
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[
+            (lower_index.index.as_ref(), lower_vector_attribute_name, 3),
+            (upper_index.index.as_ref(), upper_vector_attribute_name, 3),
+        ],
+    )
+    .await
+    .expect("CreateTable with case-distinct VectorIndexes should succeed");
+    info!(
+        "Created Alternator table '{table_name}' with case-distinct VectorIndexes '{}' and '{}'",
+        lower_index.index, upper_index.index
+    );
+
+    alternator::wait_for_index(&vs_clients, &lower_index).await;
+    alternator::wait_for_index(&vs_clients, &upper_index).await;
+
+    alternator::delete_table(&client, &table_name).await;
+
+    alternator::wait_for_no_index(&vs_clients, &lower_index).await;
+    alternator::wait_for_no_index(&vs_clients, &upper_index).await;
+
+    info!("finished");
+}
+
+/// Index names are scoped to a CQL keyspace (`alternator_<table>`), so the
+/// same index name on case-distinct tables should be independent.
+#[framed]
+async fn create_table_with_same_index_name_on_case_distinct_tables(actors: TestActors) {
+    info!("started");
+
+    let (client, vs_clients) = alternator::make_clients(&actors).await;
+
+    let base_name = alternator::unique_table_name();
+    let table_a = base_name.to_uppercase();
+    let table_b = base_name.to_lowercase();
+    let shared_index_name = alternator::unique_index_name();
+    let vec_attr = "vec";
+
+    let index_a = IndexInfo::new(
+        alternator::keyspace(&table_a).as_ref(),
+        shared_index_name.as_ref(),
+    );
+    let index_b = IndexInfo::new(
+        alternator::keyspace(&table_b).as_ref(),
+        shared_index_name.as_ref(),
+    );
+
+    info!(
+        "Creating table '{table_a}' with index '{}'",
+        shared_index_name
+    );
+    alternator::create_table(
+        &client,
+        &table_a,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[(shared_index_name.as_ref(), vec_attr, 3)],
+    )
+    .await
+    .expect("CreateTable for table_a should succeed");
+
+    info!(
+        "Creating table '{table_b}' with the same index name '{}'",
+        shared_index_name
+    );
+    alternator::create_table(
+        &client,
+        &table_b,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[(shared_index_name.as_ref(), vec_attr, 3)],
+    )
+    .await
+    .expect("CreateTable for table_b with same index name should succeed");
+
+    alternator::wait_for_index(&vs_clients, &index_a).await;
+    alternator::wait_for_index(&vs_clients, &index_b).await;
+
+    alternator::delete_table(&client, &table_a).await;
+    alternator::delete_table(&client, &table_b).await;
+
+    alternator::wait_for_no_index(&vs_clients, &index_a).await;
+    alternator::wait_for_no_index(&vs_clients, &index_b).await;
+
+    info!("finished");
+}
+
+/// Alternator currently forbids two vector indexes on the same column.
+#[framed]
+async fn create_table_with_two_indexes_on_same_vector_column(actors: TestActors) {
+    info!("started");
+
+    let (client, _vs_clients) = alternator::make_clients(&actors).await;
+
+    let table_name = alternator::unique_table_name();
+    let index_a_name = alternator::unique_index_name();
+    let index_b_name = alternator::unique_index_name();
+    let vec_attr = "vec";
+
+    info!(
+        "Attempting CreateTable '{table_name}' with two indexes ('{}', '{}') on the same \
+         column '{vec_attr}' (expecting failure)",
+        index_a_name, index_b_name
+    );
+    let result = alternator::create_table(
+        &client,
+        &table_name,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[
+            (index_a_name.as_ref(), vec_attr, 3),
+            (index_b_name.as_ref(), vec_attr, 3),
+        ],
+    )
+    .await;
+
+    match result {
+        Err(err) => {
+            info!("CreateTable with two indexes on the same column correctly rejected: {err}");
+        }
+        Ok(_) => {
+            alternator::delete_table(&client, &table_name).await;
+            panic!(
+                "Expected CreateTable with two indexes on the same vector column to fail, \
+                 but it succeeded - Alternator now allows this; convert to a positive test."
+            );
+        }
+    }
+
+    info!("finished");
+}
+
+/// Positive case (192-char name) is covered by `alternator::name_patterns`.
+#[framed]
+async fn create_table_with_over_max_length_index_name(actors: TestActors) {
+    info!("started");
+
+    let (client, _vs_clients) = alternator::make_clients(&actors).await;
+
+    let table_name = alternator::unique_table_name();
+    let over_len = alternator::MAX_ALTERNATOR_INDEX_NAME_LEN + 1;
+    let index_name =
+        alternator::pad_to_len(alternator::unique_index_name().as_ref(), over_len, 'X');
+    assert_eq!(index_name.len(), over_len);
+
+    info!("Creating table with {over_len}-char index name (should be rejected)");
+    let result = alternator::create_table(
+        &client,
+        &table_name,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[(&index_name, "vec", 3)],
+    )
+    .await;
+
+    match result {
+        Err(err) => {
+            info!("CreateTable with {over_len}-char index name correctly rejected: {err}");
+        }
+        Ok(_) => {
+            alternator::delete_table(&client, &table_name).await;
+            panic!(
+                "Expected CreateTable with {over_len}-char index name to fail, but it succeeded. \
+                 The actual Alternator index name limit may be higher than {}.",
+                alternator::MAX_ALTERNATOR_INDEX_NAME_LEN
+            );
+        }
+    }
+
+    info!("finished");
+}
+
+#[framed]
+async fn create_table_with_boundary_dimensions(actors: TestActors) {
+    info!("started");
+
+    let (client, vs_clients) = alternator::make_clients(&actors).await;
+
+    let table_name = alternator::unique_table_name();
+    let index_name = alternator::unique_index_name();
+
+    let max_dimensions: usize = 16_000;
+
+    // -- Negative: max_dimensions + 1 must be rejected --------------------------
+    info!(
+        "Attempting CreateTable '{table_name}' with Dimensions={} (expecting failure)",
+        max_dimensions + 1
+    );
+    let result = alternator::create_table(
+        &client,
+        &table_name,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[(index_name.as_ref(), "vec", max_dimensions + 1)],
+    )
+    .await;
+
+    match result {
+        Err(err) => {
+            info!(
+                "CreateTable with Dimensions={} was correctly rejected: {err}",
+                max_dimensions + 1
+            );
+        }
+        Ok(_) => {
+            alternator::delete_table(&client, &table_name).await;
+            panic!(
+                "Expected CreateTable with Dimensions={} to fail, but it succeeded.",
+                max_dimensions + 1
+            );
+        }
+    }
+
+    // -- Positive: max_dimensions must succeed (same table/index names) ----------
+    info!("Retrying with Dimensions={max_dimensions} (expecting success)");
+    alternator::create_table(
+        &client,
+        &table_name,
+        "pk",
+        aws_sdk_dynamodb::types::ScalarAttributeType::S,
+        None,
+        &[(index_name.as_ref(), "vec", max_dimensions)],
+    )
+    .await
+    .expect("CreateTable with Dimensions=16000 should succeed");
+
+    let index = IndexInfo::new(
+        alternator::keyspace(&table_name).as_ref(),
+        index_name.as_ref(),
+    );
+    alternator::wait_for_index(&vs_clients, &index).await;
+
+    alternator::delete_table(&client, &table_name).await;
+    info!("finished");
+}
+
 pub(super) async fn new() -> TestCase<TestActors> {
     TestCase::empty()
         .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
@@ -200,5 +474,30 @@ pub(super) async fn new() -> TestCase<TestActors> {
             "create_describe_and_delete_table_with_vector_index",
             common::DEFAULT_TEST_TIMEOUT,
             create_describe_and_delete_table_with_vector_index,
+        )
+        .with_test(
+            "create_table_with_two_case_distinct_vector_indexes",
+            common::DEFAULT_TEST_TIMEOUT,
+            create_table_with_two_case_distinct_vector_indexes,
+        )
+        .with_test(
+            "create_table_with_same_index_name_on_case_distinct_tables",
+            common::DEFAULT_TEST_TIMEOUT,
+            create_table_with_same_index_name_on_case_distinct_tables,
+        )
+        .with_test(
+            "create_table_with_two_indexes_on_same_vector_column",
+            common::DEFAULT_TEST_TIMEOUT,
+            create_table_with_two_indexes_on_same_vector_column,
+        )
+        .with_test(
+            "create_table_with_boundary_dimensions",
+            common::DEFAULT_TEST_TIMEOUT,
+            create_table_with_boundary_dimensions,
+        )
+        .with_test(
+            "create_table_with_over_max_length_index_name",
+            common::DEFAULT_TEST_TIMEOUT,
+            create_table_with_over_max_length_index_name,
         )
 }
