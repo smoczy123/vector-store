@@ -4,6 +4,7 @@
  */
 
 mod create_table;
+mod put_item;
 mod update_table;
 
 use crate::TestActors;
@@ -90,6 +91,7 @@ pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
     vec![
         ("alternator_create_table".into(), create_table::new().await),
         ("alternator_update_table".into(), update_table::new().await),
+        ("alternator_put_item".into(), put_item::new().await),
     ]
 }
 
@@ -494,6 +496,22 @@ async fn delete_table(client: &Client, table_name: &str) {
         .expect("DeleteTable should succeed");
 }
 
+/// Asserts that an SDK result is a service error containing `expected_err`.
+fn assert_service_error<O, E>(result: Result<O, SdkError<E>>, expected_err: &str)
+where
+    O: std::fmt::Debug,
+    E: aws_smithy_types::error::metadata::ProvideErrorMetadata,
+{
+    use aws_sdk_dynamodb::error::ProvideErrorMetadata as _;
+    let err = result.expect_err("operation should have been rejected");
+    let code = err.code().unwrap_or("");
+    let message = err.message().unwrap_or("");
+    assert!(
+        code.contains(expected_err) || message.contains(expected_err),
+        "expected error containing {expected_err:?}, got code={code:?} message={message:?}"
+    );
+}
+
 /// Standard test init: starts ScyllaDB with the Alternator endpoint enabled on
 /// each node's own IP, alongside the Vector Store.
 #[framed]
@@ -734,6 +752,15 @@ impl TableContext {
             req = req.item(attr_name, attr_val.clone());
         }
         req.send().await.expect("PutItem should succeed");
+    }
+
+    /// Inserts an item, asserting that Scylla rejects it with `expected_err`.
+    async fn put_expecting_error(&self, item: &Item, expected_err: &str) {
+        let mut req = self.client.put_item().table_name(&self.table_name);
+        for (attr_name, attr_val) in &item.0 {
+            req = req.item(attr_name, attr_val.clone());
+        }
+        assert_service_error(req.send().await, expected_err);
     }
 
     /// Creates a table, inserts items, and adds a vector index via
