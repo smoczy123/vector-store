@@ -7,6 +7,7 @@ mod batch_write_item;
 mod create_table;
 mod delete_item;
 mod put_item;
+mod ttl;
 mod update_item;
 mod update_table;
 
@@ -101,6 +102,7 @@ pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
             "alternator_batch_write_item".into(),
             batch_write_item::new().await,
         ),
+        ("alternator_ttl".into(), ttl::new().await),
     ]
 }
 
