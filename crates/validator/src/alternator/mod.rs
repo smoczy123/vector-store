@@ -5,6 +5,7 @@
 
 mod create_table;
 mod put_item;
+mod update_item;
 mod update_table;
 
 use crate::TestActors;
@@ -92,6 +93,7 @@ pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
         ("alternator_create_table".into(), create_table::new().await),
         ("alternator_update_table".into(), update_table::new().await),
         ("alternator_put_item".into(), put_item::new().await),
+        ("alternator_update_item".into(), update_item::new().await),
     ]
 }
 
