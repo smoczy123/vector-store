@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+mod config_manager;
 pub mod db;
 mod db_cdc;
 pub mod db_index;
@@ -26,8 +27,11 @@ mod similarity;
 mod table;
 mod timestamp;
 
+pub use crate::config_manager::ConfigManager;
+pub use crate::config_manager::load_config;
 pub use crate::distance::Distance;
 pub use crate::index_key::IndexKey;
+pub use crate::info::Info;
 use crate::internals::Internals;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+use crate::Config;
+use crate::Credentials;
 use anyhow::anyhow;
 use anyhow::bail;
 use itertools::Itertools;
@@ -11,7 +13,6 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
-use vector_store::Config;
 
 pub struct ConfigManager {
     config_tx: watch::Sender<Arc<Config>>,
@@ -39,10 +40,7 @@ impl ConfigManager {
     ///
     /// # Arguments
     /// * `env` - Function to read environment variables
-    pub fn start<F>(self, env: F)
-    where
-        F: Fn(&'static str) -> Result<String, std::env::VarError> + Send + Sync + 'static,
-    {
+    pub fn start(self, env: impl Fn(&str) -> anyhow::Result<String> + Send + Sync + 'static) {
         tokio::spawn(async move {
             self.handle_sighup(env).await;
         });
@@ -51,10 +49,10 @@ impl ConfigManager {
     /// Reload configuration from environment variables.
     /// This will notify all watchers of the configuration change.
     /// Also checks for changes that require a server restart and logs warnings.
-    pub async fn reload_config<F>(&self, env: F) -> anyhow::Result<()>
-    where
-        F: Fn(&'static str) -> Result<String, std::env::VarError>,
-    {
+    pub async fn reload_config(
+        &self,
+        env: impl Fn(&str) -> anyhow::Result<String>,
+    ) -> anyhow::Result<()> {
         // Get old config before reload
         let old_config = self.config_tx.borrow().clone();
 
@@ -112,10 +110,7 @@ impl ConfigManager {
     ///
     /// # Arguments
     /// * `env` - Function to read environment variables
-    pub async fn handle_sighup<F>(self, env: F)
-    where
-        F: Fn(&'static str) -> Result<String, std::env::VarError>,
-    {
+    pub async fn handle_sighup(self, env: impl Fn(&str) -> anyhow::Result<String>) {
         let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .expect("failed to install SIGHUP handler");
 
@@ -154,9 +149,9 @@ impl ConfigManager {
     }
 }
 
-async fn credentials<F>(env: &F) -> anyhow::Result<Option<vector_store::Credentials>>
+async fn credentials<F>(env: &F) -> anyhow::Result<Option<Credentials>>
 where
-    F: Fn(&'static str) -> Result<String, std::env::VarError>,
+    F: Fn(&'static str) -> anyhow::Result<String>,
 {
     const USERNAME_ENV: &str = "VECTOR_STORE_SCYLLADB_USERNAME";
     const PASS_FILE_ENV: &str = "VECTOR_STORE_SCYLLADB_PASSWORD_FILE";
@@ -214,17 +209,14 @@ where
         tracing::info!("No username/password configured, using certificate-only authentication");
         (None, None)
     };
-    Ok(Some(vector_store::Credentials {
+    Ok(Some(Credentials {
         username,
         password,
         certificate_path,
     }))
 }
 
-pub async fn load_config<F>(env: F) -> anyhow::Result<Config>
-where
-    F: Fn(&'static str) -> Result<String, std::env::VarError>,
-{
+pub async fn load_config(env: impl Fn(&str) -> anyhow::Result<String>) -> anyhow::Result<Config> {
     let mut config = Config::default();
 
     if let Some(disable_colors) = env("VECTOR_STORE_DISABLE_COLORS")
@@ -380,10 +372,12 @@ mod tests {
     const USERNAME: &str = "test_user";
     const PASSWORD: &str = "test_pass";
 
-    fn mock_env(
-        vars: HashMap<&'static str, String>,
-    ) -> impl Fn(&'static str) -> Result<String, std::env::VarError> {
-        move |key| vars.get(key).cloned().ok_or(std::env::VarError::NotPresent)
+    fn mock_env(vars: HashMap<&'static str, String>) -> impl Fn(&str) -> anyhow::Result<String> {
+        move |key| {
+            vars.get(key)
+                .cloned()
+                .ok_or(anyhow!("env var {} not found", key))
+        }
     }
 
     fn pass_file(pass: &str) -> NamedTempFile {

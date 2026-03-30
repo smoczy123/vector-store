@@ -8,21 +8,20 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::anyhow;
 use clap::Parser;
+use rustls::crypto::aws_lc_rs;
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
-mod config_manager;
-mod info;
-
-use config_manager::ConfigManager;
+use vector_store::ConfigManager;
+use vector_store::Info;
 
 #[derive(Parser)]
 #[clap(version)]
 struct Args {}
 
-fn dotenvy_to_std_var(key: &'static str) -> Result<String, std::env::VarError> {
-    dotenvy::var(key).map_err(|_| std::env::VarError::NotPresent)
+fn dotenvy_to_std_var(key: &str) -> anyhow::Result<String> {
+    Ok(dotenvy::var(key)?)
 }
 
 // Index creating/querying is CPU bound task, so that vector-store uses rayon ThreadPool for them.
@@ -47,14 +46,14 @@ fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_target(false).with_ansi(use_ansi))
         .init();
 
-    rustls::crypto::aws_lc_rs::default_provider()
+    aws_lc_rs::default_provider()
         .install_default()
         .expect("install aws-lc-rs crypto provider");
 
     _ = dotenvy::dotenv();
 
     // Load configuration early to get disable_colors for logging setup
-    let config_future = config_manager::load_config(dotenvy_to_std_var);
+    let config_future = vector_store::load_config(dotenvy_to_std_var);
     let loaded_config = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -63,11 +62,7 @@ fn main() -> anyhow::Result<()> {
 
     _ = Args::parse();
 
-    tracing::info!(
-        "Starting {} version {}",
-        info::Info::name(),
-        info::Info::version()
-    );
+    tracing::info!("Starting {} version {}", Info::name(), Info::version());
 
     // Create ConfigManager with initial configuration
     let (config_manager, config_rx) = ConfigManager::new(loaded_config);
