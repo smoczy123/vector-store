@@ -11,6 +11,7 @@ use aws_sdk_dynamodb::operation::query::QueryError;
 use aws_sdk_dynamodb::operation::query::QueryOutput;
 use aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder;
 use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::Select;
 use e2etest::TestCase;
 use httpapi::IndexName;
 use std::collections::HashMap;
@@ -326,6 +327,327 @@ async fn query_with_vector_search_multiple_results_ordering(actors: TestActors) 
     info!("finished");
 }
 
+/// Verifies ProjectionExpression returns only requested key attributes across name_patterns.
+#[framed]
+async fn query_with_projection_special_names(actors: TestActors) {
+    info!("started");
+
+    for shape in &alternator::name_patterns() {
+        info!("Testing shape: {shape:?}");
+
+        let data_attribute_name = "data:extra";
+        let sk = shape.sk();
+
+        let dataset = [Item::new(shape.pk(), AttributeValue::S("pk-1".into()))
+            .maybe_sk(sk, AttributeValue::S("sk-1".into()))
+            .vec(
+                shape.vec().expect("NAME_PATTERNS entries always have vec"),
+                [1.0, 1.0, 1.0],
+            )
+            .attr(
+                data_attribute_name,
+                AttributeValue::S("extra-val".to_string()),
+            )];
+
+        let ctx = TableContext::create_with_data(&actors, shape, &dataset).await;
+        let pk_name = ctx.shape.pk();
+
+        let proj_expr: &str = if shape.sk_name.is_some() {
+            "#pk, #sk"
+        } else {
+            "#pk"
+        };
+
+        info!("Querying with ProjectionExpression = '{proj_expr}'");
+        let mut builder = ctx
+            .client
+            .query()
+            .table_name(&ctx.table_name)
+            .index_name(ctx.index.index.as_ref())
+            .limit(1)
+            .projection_expression(proj_expr)
+            .expression_attribute_names("#pk", pk_name);
+        if let Some(sk_name) = shape.sk() {
+            builder = builder.expression_attribute_names("#sk", sk_name);
+        }
+        let items = builder
+            .vector_search([1.0, 1.0, 1.0])
+            .send()
+            .await
+            .expect("Query with VectorSearch should succeed")
+            .items()
+            .to_vec();
+
+        let mut expected_item: HashMap<String, AttributeValue> = HashMap::new();
+        expected_item.insert(pk_name.to_string(), AttributeValue::S("pk-1".into()));
+        if let Some(sk_name) = shape.sk() {
+            expected_item.insert(sk_name.to_string(), AttributeValue::S("sk-1".into()));
+        }
+        assert_eq!(
+            items,
+            vec![expected_item],
+            "projected item should contain only key attributes"
+        );
+
+        ctx.done().await;
+        info!("Shape {shape:?} passed");
+    }
+
+    info!("finished");
+}
+
+/// Verifies Select::AllAttributes returns all item attributes.
+#[framed]
+async fn query_with_select_all_attributes(actors: TestActors) {
+    info!("started");
+
+    let shape = TableShape {
+        table_prefix: None,
+        index_prefix: None,
+        pk_name: "Pk-SelAll".into(),
+        sk_name: None,
+        vec_name: Some("Vec-SelAll".into()),
+        pk_type: ScalarAttributeType::S,
+    };
+    let data_attribute_name = "Data-SelAll";
+
+    let dataset = [Item::new("Pk-SelAll", AttributeValue::S("pk-a".into()))
+        .vec("Vec-SelAll", [1.0, 1.0, 1.0])
+        .attr(
+            data_attribute_name,
+            AttributeValue::S("some-data".to_string()),
+        )];
+
+    let ctx = TableContext::create_with_data(&actors, &shape, &dataset).await;
+
+    info!("Querying with Select::AllAttributes");
+    let items = ctx
+        .client
+        .query()
+        .table_name(&ctx.table_name)
+        .index_name(ctx.index.index.as_ref())
+        .limit(1)
+        .select(Select::AllAttributes)
+        .vector_search([1.0, 1.0, 1.0])
+        .send()
+        .await
+        .expect("Query with VectorSearch should succeed")
+        .items()
+        .to_vec();
+
+    assert_eq!(items.len(), 1, "should return 1 item");
+    let item = &items[0];
+    assert!(
+        item.contains_key("Pk-SelAll"),
+        "AllAttributes should return partition key"
+    );
+    assert!(
+        item.contains_key("Vec-SelAll"),
+        "AllAttributes should return vector attribute"
+    );
+    assert!(
+        item.contains_key(data_attribute_name),
+        "AllAttributes should return data attribute"
+    );
+
+    ctx.done().await;
+
+    info!("finished");
+}
+
+/// Verifies Select::Count returns count > 0 with empty items list.
+#[framed]
+async fn query_with_select_count(actors: TestActors) {
+    info!("started");
+
+    let dataset = [
+        Item::new("Pk-SelCnt", AttributeValue::S("pk-a".into())).vec("Vec-SelCnt", [1.0, 1.0, 1.0]),
+        Item::new("Pk-SelCnt", AttributeValue::S("pk-b".into())).vec("Vec-SelCnt", [1.0, 2.0, 4.0]),
+    ];
+
+    let ctx = TableContext::create_with_data(
+        &actors,
+        &TableShape {
+            table_prefix: None,
+            index_prefix: None,
+            pk_name: "Pk-SelCnt".into(),
+            sk_name: None,
+            vec_name: Some("Vec-SelCnt".into()),
+            pk_type: ScalarAttributeType::S,
+        },
+        &dataset,
+    )
+    .await;
+
+    info!("Querying with Select::Count");
+    let resp = ctx
+        .client
+        .query()
+        .table_name(&ctx.table_name)
+        .index_name(ctx.index.index.as_ref())
+        .limit(5)
+        .select(Select::Count)
+        .vector_search([1.0_f32, 1.0, 1.0])
+        .send()
+        .await
+        .expect("Query with Select::Count should succeed");
+
+    assert!(
+        resp.count() > 0,
+        "Select::Count should report count > 0, got {}",
+        resp.count()
+    );
+    assert!(
+        resp.items().is_empty(),
+        "Select::Count should return empty items list, got {} items",
+        resp.items().len()
+    );
+
+    ctx.done().await;
+
+    info!("finished");
+}
+
+/// Verifies Limit larger than dataset returns all items without error.
+#[framed]
+async fn query_with_limit_larger_than_dataset(actors: TestActors) {
+    info!("started");
+
+    let dataset = [
+        Item::new("Pk-BigLim", AttributeValue::S("pk-a".into())).vec("Vec-BigLim", [1.0, 1.0, 1.0]),
+        Item::new("Pk-BigLim", AttributeValue::S("pk-b".into())).vec("Vec-BigLim", [1.0, 2.0, 4.0]),
+        Item::new("Pk-BigLim", AttributeValue::S("pk-c".into())).vec("Vec-BigLim", [2.0, 1.0, 3.0]),
+    ];
+
+    let ctx = TableContext::create_with_data(
+        &actors,
+        &TableShape {
+            table_prefix: None,
+            index_prefix: None,
+            pk_name: "Pk-BigLim".into(),
+            sk_name: None,
+            vec_name: Some("Vec-BigLim".into()),
+            pk_type: ScalarAttributeType::S,
+        },
+        &dataset,
+    )
+    .await;
+
+    info!(
+        "Issuing Query with VectorSearch Limit=1000 on '{}' (dataset has {} items)",
+        ctx.table_name,
+        dataset.len()
+    );
+    let items = ctx
+        .client
+        .query()
+        .table_name(&ctx.table_name)
+        .index_name(ctx.index.index.as_ref())
+        .limit(1000)
+        .vector_search([1.0, 1.0, 1.0])
+        .send()
+        .await
+        .expect("Query with VectorSearch should succeed")
+        .items()
+        .to_vec();
+
+    assert_eq!(
+        items.len(),
+        dataset.len(),
+        "Query with Limit=1000 should return all {} items, got {}",
+        dataset.len(),
+        items.len()
+    );
+    info!(
+        "Query returned {} item(s) with Limit=1000 (dataset has {})",
+        items.len(),
+        dataset.len()
+    );
+
+    ctx.done().await;
+
+    info!("finished");
+}
+
+/// Verifies VectorSearch works with 1536-dimensional vectors.
+#[framed]
+async fn query_with_large_dimensions(actors: TestActors) {
+    info!("started");
+
+    let (client, vs_clients) = alternator::make_clients(&actors).await;
+
+    let table_name = alternator::unique_table_name();
+    let index_name = alternator::unique_index_name();
+    let partition_key_name = "pk";
+    let vector_attribute_name = "vec";
+    let dimensions: usize = 1536;
+    let index = httpapi::IndexInfo::new(
+        alternator::keyspace(&table_name).as_ref(),
+        index_name.as_ref(),
+    );
+
+    info!("Creating Alternator table '{table_name}' with Dimensions={dimensions}");
+    alternator::create_table(
+        &client,
+        &table_name,
+        partition_key_name,
+        ScalarAttributeType::S,
+        None,
+        &[(index.index.as_ref(), vector_attribute_name, dimensions)],
+    )
+    .await
+    .expect("CreateTable with large Dimensions should succeed");
+
+    info!(
+        "Waiting for VS to discover index '{}/{}'",
+        index.keyspace, index.index
+    );
+    alternator::wait_for_index(&vs_clients, &index).await;
+
+    let mut vector_data: Vec<f32> = vec![0.0; dimensions];
+    vector_data[0] = 1.0;
+
+    info!("Inserting item with {dimensions}-dim vector into '{table_name}'");
+    client
+        .put_item()
+        .table_name(&table_name)
+        .item(partition_key_name, AttributeValue::S("pk-1".to_string()))
+        .item(
+            vector_attribute_name,
+            alternator::float_list(vector_data.iter().copied()),
+        )
+        .send()
+        .await
+        .expect("PutItem with large-dimension vector should succeed");
+
+    info!("Waiting for VS to index the item");
+    common::wait_for_index_count(&vs_clients, &index, 1).await;
+
+    info!("Querying with VectorSearch on {dimensions}-dim index");
+    let items = client
+        .query()
+        .table_name(&table_name)
+        .index_name(index.index.as_ref())
+        .limit(1)
+        .vector_search(vector_data)
+        .send()
+        .await
+        .expect("Query with VectorSearch should succeed")
+        .items()
+        .to_vec();
+
+    assert_eq!(items.len(), 1, "should return 1 item");
+    assert_eq!(
+        items[0].get(partition_key_name),
+        Some(&AttributeValue::S("pk-1".into())),
+        "VectorSearch should return the inserted item"
+    );
+
+    alternator::delete_table(&client, &table_name).await;
+
+    info!("finished");
+}
+
 /// Verifies FilterExpression excludes non-matching items while preserving ANN ordering.
 #[framed]
 async fn query_with_filter_expression(actors: TestActors) {
@@ -429,6 +751,31 @@ pub(super) async fn new() -> TestCase<TestActors> {
             "query_with_vector_search_multiple_results_ordering",
             common::DEFAULT_TEST_TIMEOUT,
             query_with_vector_search_multiple_results_ordering,
+        )
+        .with_test(
+            "query_with_projection_special_names",
+            common::DEFAULT_TEST_TIMEOUT,
+            query_with_projection_special_names,
+        )
+        .with_test(
+            "query_with_select_all_attributes",
+            common::DEFAULT_TEST_TIMEOUT,
+            query_with_select_all_attributes,
+        )
+        .with_test(
+            "query_with_select_count",
+            common::DEFAULT_TEST_TIMEOUT,
+            query_with_select_count,
+        )
+        .with_test(
+            "query_with_limit_larger_than_dataset",
+            common::DEFAULT_TEST_TIMEOUT,
+            query_with_limit_larger_than_dataset,
+        )
+        .with_test(
+            "query_with_large_dimensions",
+            common::DEFAULT_TEST_TIMEOUT,
+            query_with_large_dimensions,
         )
         .with_test(
             "query_with_filter_expression",
