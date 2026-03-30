@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+mod batch_write_item;
 mod create_table;
 mod put_item;
 mod update_item;
@@ -94,6 +95,10 @@ pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
         ("alternator_update_table".into(), update_table::new().await),
         ("alternator_put_item".into(), put_item::new().await),
         ("alternator_update_item".into(), update_item::new().await),
+        (
+            "alternator_batch_write_item".into(),
+            batch_write_item::new().await,
+        ),
     ]
 }
 
