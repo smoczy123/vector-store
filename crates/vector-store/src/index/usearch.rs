@@ -144,7 +144,7 @@ trait UsearchIndex {
     fn size(&self) -> usize;
     fn capacity(&self) -> usize;
     fn add(&self, primary_id: PrimaryId, vector: &Vector) -> anyhow::Result<()>;
-    fn remove(&self, primary_id: PrimaryId) -> anyhow::Result<()>;
+    fn remove(&self, primary_id: PrimaryId) -> anyhow::Result<bool>;
     fn search(
         &self,
         vector: &Vector,
@@ -201,8 +201,8 @@ impl UsearchIndex for ThreadedUsearchIndex {
         Ok(self.inner.add(primary_id.into(), vector.as_slice())?)
     }
 
-    fn remove(&self, primary_id: PrimaryId) -> anyhow::Result<()> {
-        Ok(self.inner.remove(primary_id.into()).map(|_| ())?)
+    fn remove(&self, primary_id: PrimaryId) -> anyhow::Result<bool> {
+        Ok(self.inner.remove(primary_id.into())? != 0)
     }
 
     fn search(
@@ -392,14 +392,14 @@ impl UsearchIndex for RwLock<Simulator> {
     }
 
     #[hotpath::measure]
-    fn remove(&self, row_id: PrimaryId) -> anyhow::Result<()> {
+    fn remove(&self, row_id: PrimaryId) -> anyhow::Result<bool> {
         let start = Instant::now();
 
         let sim = self.read().unwrap();
-        sim.keys.write().unwrap().remove(&row_id);
+        let removed = sim.keys.write().unwrap().remove(&row_id);
 
         sim.wait_add_remove(start);
-        Ok(())
+        Ok(removed)
     }
 
     #[hotpath::measure]
@@ -1056,10 +1056,12 @@ fn add(idx: &impl UsearchIndex, primary_id: PrimaryId, embedding: &Vector, size:
 
 #[hotpath::measure]
 fn remove(idx: &impl UsearchIndex, row_id: PrimaryId, size: &AtomicUsize) {
-    if let Err(err) = idx.remove(row_id) {
-        warn!("remove: unable to remove embeddings: {err}");
-    } else {
-        size.fetch_sub(1, Ordering::Relaxed);
+    match idx.remove(row_id) {
+        Err(err) => warn!("remove: unable to remove embeddings: {err}"),
+        Ok(false) => {}
+        Ok(true) => {
+            size.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
