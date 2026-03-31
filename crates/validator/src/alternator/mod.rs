@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
+mod auth;
 mod batch_write_item;
 mod create_table;
 mod delete_item;
@@ -275,12 +276,13 @@ impl Intercept for Float32VectorInterceptor {
 }
 
 /// Builds a DynamoDB client pointing at the ScyllaDB Alternator endpoint on
-/// `db_ip`.
-///
-/// Dummy AWS credentials are used because authorization is disabled in tests
-/// via `--alternator-enforce-authorization=false`.
-async fn make_dynamodb_client(db_ip: Ipv4Addr) -> Client {
-    let creds = Credentials::new("any", "any", None, None, "test");
+/// `db_ip` using explicit SigV4 credentials.
+async fn make_dynamodb_client_with_creds(
+    db_ip: Ipv4Addr,
+    access_key_id: &str,
+    secret_access_key: &str,
+) -> Client {
+    let creds = Credentials::new(access_key_id, secret_access_key, None, None, "test");
     let config = aws_config::defaults(BehaviorVersion::latest())
         .credentials_provider(creds)
         .endpoint_url(format!("http://{db_ip}:{ALTERNATOR_PORT}"))
@@ -292,6 +294,15 @@ async fn make_dynamodb_client(db_ip: Ipv4Addr) -> Client {
             .interceptor(Float32VectorInterceptor)
             .build(),
     )
+}
+
+/// Builds a DynamoDB client pointing at the ScyllaDB Alternator endpoint on
+/// `db_ip`.
+///
+/// Dummy AWS credentials are used because authorization is disabled in tests
+/// via `--alternator-enforce-authorization=false`.
+async fn make_dynamodb_client(db_ip: Ipv4Addr) -> Client {
+    make_dynamodb_client_with_creds(db_ip, "any", "any").await
 }
 
 /// Polls the Alternator HTTP endpoint on `db_ip` until it responds successfully.
@@ -622,6 +633,7 @@ where
 async fn get_scylla_configs(
     actors: &TestActors,
     extra_args: impl IntoIterator<Item = (&str, &str)>,
+    extra_config: Option<Vec<u8>>,
 ) -> Vec<ScyllaNodeConfig> {
     let args: Vec<(&str, &str)> = extra_args.into_iter().collect();
 
@@ -642,6 +654,7 @@ async fn get_scylla_configs(
             config.args.retain(|arg| !arg.starts_with(name));
             config.args.push(format!("{name}={value}"));
         }
+        config.extra_config = extra_config.clone();
     }
     scylla_configs
 }
@@ -651,7 +664,7 @@ async fn get_scylla_configs(
 /// extend the default alternator arguments.
 async fn init_with_args(actors: &TestActors, extra_args: impl IntoIterator<Item = (&str, &str)>) {
     info!("started");
-    let scylla_configs = get_scylla_configs(actors, extra_args).await;
+    let scylla_configs = get_scylla_configs(actors, extra_args, None).await;
     let vs_configs = common::get_default_vs_node_configs(actors).await;
 
     // Capture db_ip before actors is moved into init_with_config.
