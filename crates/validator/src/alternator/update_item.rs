@@ -230,6 +230,157 @@ async fn update_item_with_invalid_vector_is_not_indexed(actors: Arc<TestActors>)
     info!("finished");
 }
 
+/// Tests element-level `UpdateItem` operations on the vector column
+/// (`SET #vec[i]`, `REMOVE #vec[i]`, `list_append`, `ADD #vec[i]`) and
+/// verifies that VS reindexes or de-indexes items correctly.
+///
+/// Starts with 2 valid items and 3 invalid-vector items (mixed types, wrong
+/// dimensions). Steps 1-5 exercise mutations on a valid item (accepted and
+/// rejected). Steps 6-8 fix the invalid items. Step 9 tests ADD (LWT path).
+#[e2etest::test(group = update_item)]
+async fn update_item_vector_element_operations(actors: Arc<TestActors>) {
+    info!("started");
+
+    let patterns = alternator::name_patterns();
+    let shape = &patterns[0]; // plain names, HASH-only
+    let vec_attr = shape.vec().expect("NAME_PATTERNS[0] always has vec");
+    let pk = shape.pk();
+
+    // Two valid items so ANN order is meaningful and vector changes are
+    // detectable.  Invalid items are pre-inserted before the index exists.
+    let valid_a = Item::key(pk, None, "pk", "valid-a").vec(vec_attr, [1.0, 2.0, 4.0]);
+    let valid_b = Item::key(pk, None, "pk", "valid-b").vec(vec_attr, [4.0, 2.0, 1.0]);
+    let mixed = Item::key(pk, None, "pk", "mixed").attr(
+        vec_attr,
+        AttributeValue::L(vec![
+            AttributeValue::N("1.0".into()),
+            AttributeValue::N("2.0".into()),
+            AttributeValue::S("3.0".into()),
+        ]),
+    );
+    let too_short = Item::key(pk, None, "pk", "too-short")
+        .attr(vec_attr, alternator::float_list([1.0_f32, 2.0]));
+    let too_long = Item::key(pk, None, "pk", "too-long")
+        .attr(vec_attr, alternator::float_list([1.0_f32, 2.0, 4.0, 8.0]));
+
+    let ctx = TableContext::create_with_invalid_data(
+        &actors,
+        shape,
+        &[valid_a.clone(), valid_b.clone()],
+        &[mixed.clone(), too_short.clone(), too_long.clone()],
+    )
+    .await;
+
+    info!("Step 1: SET #vec[0] on 'valid_a'");
+    update_item_expr(
+        &ctx,
+        &valid_a,
+        "SET #vec[0] = :val",
+        Some(AttributeValue::N("5.0".into())),
+    )
+    .send()
+    .await
+    .expect("UpdateItem should succeed");
+    let valid_a_step1 = Item::key(pk, None, "pk", "valid-a").vec(vec_attr, [5.0, 2.0, 4.0]);
+    ctx.wait_for_ann([5.0, 2.0, 4.0], &[valid_a_step1.clone(), valid_b.clone()])
+        .await;
+
+    info!("Step 2: SET #vec[0] = S on 'valid_a' (rejected)");
+    alternator::assert_service_error(
+        update_item_expr(
+            &ctx,
+            &valid_a,
+            "SET #vec[0] = :val",
+            Some(AttributeValue::S("bad".into())),
+        )
+        .send()
+        .await,
+        "ValidationException",
+    );
+
+    info!("Step 3: SET #vec[2] = NULL on 'valid_a' (rejected)");
+    alternator::assert_service_error(
+        update_item_expr(
+            &ctx,
+            &valid_a,
+            "SET #vec[2] = :val",
+            Some(AttributeValue::Null(true)),
+        )
+        .send()
+        .await,
+        "ValidationException",
+    );
+
+    info!("Step 4: REMOVE #vec[0] on 'valid_a' (rejected - wrong dimension)");
+    alternator::assert_service_error(
+        update_item_expr(&ctx, &valid_a, "REMOVE #vec[0]", None)
+            .send()
+            .await,
+        "ValidationException",
+    );
+
+    info!("Step 5: list_append on 'valid_a' (rejected - wrong dimension)");
+    alternator::assert_service_error(
+        update_item_expr(
+            &ctx,
+            &valid_a,
+            "SET #vec = list_append(#vec, :val)",
+            Some(AttributeValue::L(vec![AttributeValue::N("1.0".into())])),
+        )
+        .send()
+        .await,
+        "ValidationException",
+    );
+
+    info!("Step 6: SET #vec[2] on 'mixed'");
+    update_item_expr(
+        &ctx,
+        &mixed,
+        "SET #vec[2] = :val",
+        Some(AttributeValue::N("3.0".into())),
+    )
+    .send()
+    .await
+    .expect("UpdateItem should succeed");
+    ctx.wait_for_count(3).await;
+
+    info!("Step 7: SET #vec[2] on 'too_short' (out-of-range index appends)");
+    update_item_expr(
+        &ctx,
+        &too_short,
+        "SET #vec[2] = :val",
+        Some(AttributeValue::N("4.0".into())),
+    )
+    .send()
+    .await
+    .expect("UpdateItem should succeed");
+    ctx.wait_for_count(4).await;
+
+    info!("Step 8: REMOVE #vec[3] on 'too_long'");
+    update_item_expr(&ctx, &too_long, "REMOVE #vec[3]", None)
+        .send()
+        .await
+        .expect("UpdateItem should succeed");
+    ctx.wait_for_count(5).await;
+
+    info!("Step 9: ADD #vec[0] on 'valid_b' (ADD is always RMW -> LWT path)");
+    update_item_expr(
+        &ctx,
+        &valid_b,
+        "ADD #vec[0] :val",
+        Some(AttributeValue::N("1.0".into())),
+    )
+    .send()
+    .await
+    .expect("UpdateItem ADD #vec[0] should succeed");
+    let valid_b_step9 = Item::key(pk, None, "pk", "valid-b").vec(vec_attr, [5.0, 2.0, 1.0]);
+    ctx.wait_for_count(5).await;
+    ctx.wait_for_ann([5.0, 2.0, 1.0], &[valid_b_step9]).await;
+
+    ctx.done().await;
+    info!("finished");
+}
+
 e2etest::group!(
     name = update_item,
     fixtures = (Fixture),
