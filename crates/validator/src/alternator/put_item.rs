@@ -32,20 +32,40 @@ async fn put_item_updates_index(actors: Arc<TestActors>) {
         let b = Item::key(ctx.shape.pk(), ctx.shape.sk(), "pk", "b").vec(vec_attr, [1.0, 2.0, 4.0]);
         let c = Item::key(ctx.shape.pk(), ctx.shape.sk(), "pk", "c").vec(vec_attr, [1.0, 4.0, 8.0]);
 
+        info!("Step 1: inserting initial items into '{}'", ctx.table_name);
         for item in [&a, &b, &c] {
-            ctx.put(item).await;
+            ctx.put(item).send().await.expect("PutItem should succeed");
         }
         ctx.wait_for_count(3).await;
         ctx.wait_for_ann([1.0, 1.0, 1.0], &[a, b.clone(), c.clone()])
             .await;
 
-        // Replace item a with a vector pointing in the opposite direction -
+        // Replace item 'a' with a vector pointing in the opposite direction -
         // a_replaced=[-1,-1,-1] has cosine=-1.0 (antipodal to [1,1,1]) so it falls
         // to last position.  b=[1,2,4] and c=[1,4,8] retain their order.
+        info!("Step 2: replacing item in '{}'", ctx.table_name);
         let a_replaced =
             Item::key(ctx.shape.pk(), ctx.shape.sk(), "pk", "a").vec(vec_attr, [-1.0, -1.0, -1.0]);
-        ctx.put(&a_replaced).await;
+        ctx.put(&a_replaced)
+            .send()
+            .await
+            .expect("PutItem should succeed");
         ctx.wait_for_ann([1.0, 1.0, 1.0], &[b, c, a_replaced]).await;
+
+        // Conditional PutItem exercises the LWT/Paxos path under
+        // `only_rmw_uses_lwt` (ConditionExpression makes it RMW).
+        info!(
+            "Step 3: conditional PutItem (passing condition) in '{}'",
+            ctx.table_name
+        );
+        let d = Item::key(ctx.shape.pk(), ctx.shape.sk(), "pk", "d").vec(vec_attr, [1.0, 1.0, 1.0]);
+        ctx.put(&d)
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ctx.shape.pk())
+            .send()
+            .await
+            .expect("conditional PutItem with passing condition should succeed");
+        ctx.wait_for_count(4).await;
 
         ctx.done().await;
         info!("Shape {shape:?} passed");
@@ -78,50 +98,68 @@ async fn put_item_with_invalid_vector_is_not_indexed(actors: Arc<TestActors>) {
     ]);
 
     let no_vec = Item::key(pk, None, "pk", "no-vec");
-    ctx.put(&no_vec).await;
+    ctx.put(&no_vec)
+        .send()
+        .await
+        .expect("PutItem should succeed");
 
     let wrong_type_string = Item::key(pk, None, "pk", "wrong-type-string")
         .attr(vec_attr, AttributeValue::S("not-a-vector".into()));
-    ctx.put_expecting_error(&wrong_type_string, "ValidationException")
-        .await;
+    alternator::assert_service_error(
+        ctx.put(&wrong_type_string).send().await,
+        "ValidationException",
+    );
 
     let wrong_type_mostly_float_one_s = Item::key(pk, None, "pk", "wrong-type-mostly-float-one-s")
         .attr(vec_attr, vec_with_string_elem);
-    ctx.put_expecting_error(&wrong_type_mostly_float_one_s, "ValidationException")
-        .await;
+    alternator::assert_service_error(
+        ctx.put(&wrong_type_mostly_float_one_s).send().await,
+        "ValidationException",
+    );
 
     let wrong_type_mostly_float_one_null =
         Item::key(pk, None, "pk", "wrong-type-mostly-float-one-null")
             .attr(vec_attr, vec_with_null_elem);
-    ctx.put_expecting_error(&wrong_type_mostly_float_one_null, "ValidationException")
-        .await;
+    alternator::assert_service_error(
+        ctx.put(&wrong_type_mostly_float_one_null).send().await,
+        "ValidationException",
+    );
 
     let wrong_type_too_short = Item::key(pk, None, "pk", "wrong-type-too-short")
         .attr(vec_attr, alternator::float_list([1.0_f32, 1.0]));
-    ctx.put_expecting_error(&wrong_type_too_short, "ValidationException")
-        .await;
+    alternator::assert_service_error(
+        ctx.put(&wrong_type_too_short).send().await,
+        "ValidationException",
+    );
 
     let wrong_type_too_long = Item::key(pk, None, "pk", "wrong-type-too-long")
         .attr(vec_attr, alternator::float_list([1.0_f32, 1.0, 1.0, 1.0]));
-    ctx.put_expecting_error(&wrong_type_too_long, "ValidationException")
-        .await;
+    alternator::assert_service_error(
+        ctx.put(&wrong_type_too_long).send().await,
+        "ValidationException",
+    );
 
     // valid is put last so that wait_for_ann acts as a sequencing barrier:
     // when VS has indexed valid it must have already processed the no_vec CDC
     // event before it (CDC events are ordered), proving that the item without
     // a vector attribute was correctly ignored.
     let valid = Item::key(pk, None, "pk", "valid").vec(vec_attr, [1.0, 1.0, 1.0]);
-    ctx.put(&valid).await;
+    ctx.put(&valid)
+        .send()
+        .await
+        .expect("PutItem should succeed");
     ctx.wait_for_ann([1.0, 1.0, 1.0], &[valid]).await;
 
     let valid_no_vec = Item::key(pk, None, "pk", "valid");
-    ctx.put(&valid_no_vec).await;
+    ctx.put(&valid_no_vec)
+        .send()
+        .await
+        .expect("PutItem should succeed");
     ctx.wait_for_count(0).await;
 
     let wrong_type2 =
         Item::key(pk, None, "pk", "valid").attr(vec_attr, AttributeValue::S("bad".into()));
-    ctx.put_expecting_error(&wrong_type2, "ValidationException")
-        .await;
+    alternator::assert_service_error(ctx.put(&wrong_type2).send().await, "ValidationException");
     ctx.wait_for_count(0).await;
 
     ctx.done().await;

@@ -222,7 +222,9 @@ async fn delete_vector_index_via_update_table(actors: Arc<TestActors>) {
             &Item::key(shape.pk(), shape.sk(), "pk", "c")
                 .attr(vec_attr, AttributeValue::S("not-a-vector".into())),
         )
-        .await;
+        .send()
+        .await
+        .expect("PutItem should succeed");
 
         ctx.done().await;
         info!("Shape {shape:?} passed");

@@ -24,6 +24,7 @@ use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableOutput;
 use aws_sdk_dynamodb::operation::delete_table::DeleteTableError;
+use aws_sdk_dynamodb::operation::put_item::builders::PutItemFluentBuilder;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeDefinition;
 use aws_sdk_dynamodb::types::AttributeValue;
@@ -848,21 +849,12 @@ impl TableContext {
         }
     }
 
-    async fn put(&self, item: &Item) {
+    fn put(&self, item: &Item) -> PutItemFluentBuilder {
         let mut req = self.client.put_item().table_name(&self.table_name);
         for (attr_name, attr_val) in &item.0 {
             req = req.item(attr_name, attr_val.clone());
         }
-        req.send().await.expect("PutItem should succeed");
-    }
-
-    /// Inserts an item, asserting that Scylla rejects it with `expected_err`.
-    async fn put_expecting_error(&self, item: &Item, expected_err: &str) {
-        let mut req = self.client.put_item().table_name(&self.table_name);
-        for (attr_name, attr_val) in &item.0 {
-            req = req.item(attr_name, attr_val.clone());
-        }
-        assert_service_error(req.send().await, expected_err);
+        req
     }
 
     /// Creates a table, inserts items, and adds a vector index via
@@ -890,7 +882,7 @@ impl TableContext {
         let ctx = Self::create(actors, &no_vec_shape).await;
 
         for item in items.iter().chain(invalid_items.iter()) {
-            ctx.put(item).await;
+            ctx.put(item).send().await.expect("PutItem should succeed");
         }
 
         let vec_attr = match &shape.vec_name {

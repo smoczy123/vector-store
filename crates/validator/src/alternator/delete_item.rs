@@ -8,10 +8,11 @@ use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
 use crate::common;
+use aws_sdk_dynamodb::operation::delete_item::builders::DeleteItemFluentBuilder;
 use std::sync::Arc;
 use tracing::info;
 
-async fn ctx_delete_item(ctx: &TableContext, item: &Item) {
+fn ctx_delete_item(ctx: &TableContext, item: &Item) -> DeleteItemFluentBuilder {
     let mut req = ctx.client.delete_item().table_name(&ctx.table_name);
     let key_attrs: Vec<&str> = std::iter::once(ctx.shape.pk())
         .chain(ctx.shape.sk())
@@ -21,7 +22,7 @@ async fn ctx_delete_item(ctx: &TableContext, item: &Item) {
             req = req.key(attr_name, attr_val.clone());
         }
     }
-    req.send().await.expect("DeleteItem should succeed");
+    req
 }
 
 /// Inserts items, deletes one via `DeleteItem`, and verifies the VS index
@@ -47,11 +48,29 @@ async fn delete_item_updates_index(actors: Arc<TestActors>) {
             TableContext::create_with_data(&actors, shape, &[a.clone(), b.clone(), c.clone()])
                 .await;
 
-        info!("Deleting item from '{}'", ctx.table_name);
-        ctx_delete_item(&ctx, &a).await;
+        info!("Step 1: deleting item from '{}'", ctx.table_name);
+        ctx_delete_item(&ctx, &a)
+            .send()
+            .await
+            .expect("DeleteItem should succeed");
 
         ctx.wait_for_count(2).await;
         ctx.wait_for_ann([1.0, 1.0, 1.0], &[b.clone(), c]).await;
+
+        // Conditional DeleteItem exercises the LWT/Paxos path under
+        // `only_rmw_uses_lwt` (ConditionExpression makes it RMW).
+        info!(
+            "Step 2: conditional DeleteItem (passing condition) in '{}'",
+            ctx.table_name
+        );
+        ctx_delete_item(&ctx, &b)
+            .expression_attribute_names("#pk", ctx.shape.pk())
+            .condition_expression("attribute_exists(#pk)")
+            .send()
+            .await
+            .expect("conditional DeleteItem with passing condition should succeed");
+
+        ctx.wait_for_count(1).await;
 
         ctx.done().await;
         info!("Shape {shape:?} passed");
