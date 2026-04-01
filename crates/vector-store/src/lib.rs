@@ -7,6 +7,7 @@ mod config_manager;
 pub mod db;
 mod db_cdc;
 pub mod db_index;
+mod db_index_backend;
 mod distance;
 mod engine;
 pub mod httproutes;
@@ -153,6 +154,14 @@ pub struct Credentials {
 #[as_ref(str)]
 /// A keyspace name in a db.
 pub struct KeyspaceName(String);
+
+impl KeyspaceName {
+    /// Returns true if this keyspace is backed by Alternator (DynamoDB-compatible API).
+    /// Alternator keyspaces are prefixed with `alternator_`.
+    fn is_alternator(&self) -> bool {
+        self.0.starts_with("alternator_")
+    }
+}
 
 impl SerializeValue for KeyspaceName {
     fn serialize<'b>(
