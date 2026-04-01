@@ -5,6 +5,15 @@
 (function () {
   "use strict";
 
+  // ── Algorithm version (injected from server) ────────────
+  // Injected via a data-attribute on the <script> tag rather than fetched
+  // from an API endpoint.  This avoids an extra HTTP round-trip and, more
+  // importantly, a race condition: an async fetch could still be in-flight
+  // when compute() or buildShareUrl() runs on page load.
+  var ALGORITHM_VERSION = parseInt(
+    document.getElementById("app-script").getAttribute("data-algorithm-version"), 10
+  ) || 0;
+
   // ── Helpers ──────────────────────────────────────────────
 
   /** Format a number with thousands separators. */
@@ -390,6 +399,7 @@
     params.set("metadata_bytes",   input.metadata_bytes_per_vector);
     params.set("filtering_columns", input.filtering_columns);
     params.set("cloud_provider",    input.cloud_provider);
+    params.set("v",                  ALGORITHM_VERSION);
     return window.location.origin + window.location.pathname + "?" + params.toString();
   }
 
@@ -397,6 +407,16 @@
   function restoreFromUrl() {
     var params = new URLSearchParams(window.location.search);
     if (params.toString() === "") return;
+
+    // Check algorithm version from the shared link.
+    var linkVersion = parseInt(params.get("v"), 10);
+    if (!isNaN(linkVersion) && linkVersion !== ALGORITHM_VERSION) {
+      var elVersionBanner = document.getElementById("version-banner");
+      if (elVersionBanner) {
+        elVersionBanner.textContent = "This link was generated with an older version (v" + linkVersion + ") of the sizing algorithm. Results may differ from the original estimate.";
+        elVersionBanner.classList.remove("hidden");
+      }
+    }
 
     var v;
 

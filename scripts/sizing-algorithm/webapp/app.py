@@ -49,6 +49,7 @@ def index():
         "index.html",
         year=datetime.now(timezone.utc).year,
         pricing_errors=_PRICING_ERRORS,
+        algorithm_version=vs.ALGORITHM_VERSION,
     )
 
 
@@ -143,6 +144,7 @@ def compute():
         },
         "vector_store_replicas": result.vector_store_replicas,
         "summary": result.summary,
+        "algorithm_version": vs.ALGORITHM_VERSION,
     })
 
 

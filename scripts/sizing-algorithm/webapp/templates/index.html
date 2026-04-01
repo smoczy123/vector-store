@@ -23,6 +23,7 @@
 </header>
 
 <main>
+  <div id="version-banner" class="pricing-banner hidden"></div>
   {% if pricing_errors %}
   <div id="pricing-banner" class="pricing-banner">
     <strong>Pricing unavailable:</strong>
@@ -199,9 +200,9 @@
 
 <footer>
   <img class="footer-logo" alt="ScyllaDB" src="https://calculator.scylladb.com/assets/scylladb-logo-Dk9wuSDg.svg">
-  <p>&copy; {{ year }} ScyllaDB | Based on internal benchmarks and sizing guidelines.</p>
+  <p>&copy; {{ year }} ScyllaDB | Based on internal benchmarks and sizing guidelines. <strong>Algorithm v{{ algorithm_version }}</strong></p>
 </footer>
 
-<script src="/static/app.js"></script>
+<script id="app-script" data-algorithm-version="{{ algorithm_version }}" src="/static/app.js"></script>
 </body>
 </html>
