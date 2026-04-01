@@ -27,6 +27,7 @@ mod primary_key;
 mod similarity;
 mod table;
 mod timestamp;
+mod vector;
 
 pub use crate::config_manager::ConfigManager;
 pub use crate::config_manager::load_config;
@@ -78,6 +79,7 @@ use utoipa::openapi::Schema;
 use utoipa::openapi::SchemaFormat;
 use utoipa::openapi::schema::Type;
 use uuid::Uuid;
+pub use vector::Vector;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -412,25 +414,6 @@ impl FromStr for Quantization {
             "B1" => Ok(Self::B1),
             _ => Err(anyhow::anyhow!("Unknown quantization type: {s}")),
         }
-    }
-}
-
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::AsRef,
-    derive_more::From,
-    utoipa::ToSchema,
-)]
-/// The vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
-pub struct Vector(Vec<f32>);
-
-impl Vector {
-    pub fn dim(&self) -> Option<Dimensions> {
-        NonZeroUsize::new(self.0.len()).map(Dimensions)
     }
 }
 

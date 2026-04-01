@@ -10,7 +10,7 @@ pub enum Error {
 }
 
 pub fn embedding_dimensions(embedding: &Vector, dimensions: Dimensions) -> anyhow::Result<()> {
-    let Some(embedding_len) = std::num::NonZeroUsize::new(embedding.0.len()) else {
+    let Some(embedding_len) = std::num::NonZeroUsize::new(embedding.len()) else {
         bail!(Error::WrongEmbeddingDimension {
             expected: dimensions.0.get(),
             actual: 0,
@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_empty() {
-        let embedding = Vector(vec![]);
+        let embedding = Vector::from(vec![]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_too_short() {
-        let embedding = Vector(vec![0.1, 0.2]);
+        let embedding = Vector::from(vec![0.1, 0.2]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_too_long() {
-        let embedding = Vector(vec![0.1, 0.2, 0.3, 0.4]);
+        let embedding = Vector::from(vec![0.1, 0.2, 0.3, 0.4]);
         let dimensions = dims(3);
         let result = embedding_dimensions(&embedding, dimensions);
         assert!(matches!(
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn validate_embedding_ok() {
-        let embedding = Vector(vec![0.1, 0.2, 0.3]);
+        let embedding = Vector::from(vec![0.1, 0.2, 0.3]);
         let dimensions = dims(3);
 
         let result = embedding_dimensions(&embedding, dimensions);

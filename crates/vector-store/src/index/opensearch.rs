@@ -323,7 +323,7 @@ async fn add(
             &primary_id.as_ref().to_string(),
         ))
         .body(json!({
-            "vector": embeddings.0,
+            "vector": embeddings.as_slice(),
         }))
         .send()
         .await
@@ -376,7 +376,7 @@ async fn ann(
             "query": {
                 "knn": {
                     "vector": {
-                        "vector": embedding.0,
+                        "vector": embedding.as_slice(),
                         "k": limit.0,
                     }
                 }

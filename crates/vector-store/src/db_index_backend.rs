@@ -5,13 +5,17 @@
 
 use crate::ColumnName;
 use crate::Dimensions;
+use crate::IndexMetadata;
 use crate::IndexName;
 use crate::KeyspaceName;
 use crate::TableName;
+use crate::Vector;
+use crate::vector;
 use futures::TryStreamExt;
 use regex::Regex;
 use scylla::client::session::Session;
 use scylla::statement::prepared::PreparedStatement;
+use scylla::value::CqlValue;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
@@ -19,6 +23,80 @@ pub(crate) struct IndexLocation {
     pub keyspace: KeyspaceName,
     pub table: TableName,
     pub index: IndexName,
+}
+
+pub(crate) enum DbIndexBackend {
+    Cql { target_column: ColumnName },
+    Alternator { target_column: ColumnName },
+}
+
+impl From<&IndexMetadata> for DbIndexBackend {
+    fn from(metadata: &IndexMetadata) -> Self {
+        let target_column = metadata.target_column.clone();
+        if metadata.keyspace_name.is_alternator() {
+            Self::Alternator { target_column }
+        } else {
+            Self::Cql { target_column }
+        }
+    }
+}
+
+impl DbIndexBackend {
+    pub fn vector_column_name(&self) -> &str {
+        match self {
+            Self::Cql { target_column } => target_column.as_ref(),
+            Self::Alternator { .. } => ":attrs",
+        }
+    }
+
+    pub fn extract_vector(&self, value: CqlValue) -> anyhow::Result<Option<Vector>> {
+        match self {
+            Self::Cql { .. } => Vector::try_from(value).map(Some),
+            Self::Alternator { target_column } => vector::AlternatorAttrs {
+                attrs: value,
+                target_column: target_column.as_ref(),
+            }
+            .try_into(),
+        }
+    }
+}
+
+/// Builds the CQL range scan query appropriate for the given keyspace.
+///
+/// For CQL-native tables, selects the vector column directly.
+/// For Alternator tables, selects from the `:attrs` map column.
+pub(crate) fn range_scan_query(
+    keyspace: &KeyspaceName,
+    table: &TableName,
+    target_column: &ColumnName,
+    primary_key_list: &str,
+    partition_key_list: &str,
+) -> String {
+    if keyspace.is_alternator() {
+        let vector = target_column.as_ref();
+        format!(
+            "
+            SELECT {primary_key_list}, \":attrs\"['{vector}'], writetime(\":attrs\"['{vector}'])
+            FROM {keyspace}.{table}
+            WHERE
+                token({partition_key_list}) >= ?
+                AND token({partition_key_list}) <= ?
+            BYPASS CACHE
+            "
+        )
+    } else {
+        let vector = target_column.as_ref();
+        format!(
+            "
+            SELECT {primary_key_list}, {vector}, writetime({vector})
+            FROM {keyspace}.{table}
+            WHERE
+                token({partition_key_list}) >= ?
+                AND token({partition_key_list}) <= ?
+            BYPASS CACHE
+            "
+        )
+    }
 }
 
 /// Retrieves the vector dimensions for the given index, dispatching to the
