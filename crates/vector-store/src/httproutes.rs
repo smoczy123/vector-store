@@ -48,6 +48,7 @@ use macros::ToEnumSchema;
 use prometheus::Encoder;
 use prometheus::ProtobufEncoder;
 use prometheus::TextEncoder;
+use regex::Regex;
 use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlTimeuuid;
 use scylla::value::CqlValue;
@@ -56,6 +57,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::num::NonZero;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use time::Date;
 use time::OffsetDateTime;
 use time::Time;
@@ -899,7 +901,15 @@ fn try_from_json(value: Value, cql_type: &NativeType) -> anyhow::Result<CqlValue
                 Ok(CqlValue::Time(time.into()))
             }
             NativeType::Timestamp => {
-                let datetime = OffsetDateTime::parse(&value, {
+                // CQL timestamps may use a space as the date-time separator
+                // (e.g. '2024-01-01 00:00:00.000Z'), but ISO 8601 requires 'T'.
+                // Only normalize when the space occurs at the expected date-time
+                // boundary after a YYYY-MM-DD prefix; otherwise, leave the input
+                // unchanged so that error reporting reflects the original value.
+                static CQL_TIMESTAMP_RE: LazyLock<Regex> =
+                    LazyLock::new(|| Regex::new(r"^(\d{4}-\d{2}-\d{2}) ").expect("valid regex"));
+                let normalized = CQL_TIMESTAMP_RE.replace(&value, "${1}T");
+                let datetime = OffsetDateTime::parse(&normalized, {
                     const CONFIG: u128 = Config::DEFAULT
                         .set_time_precision(TimePrecision::Second {
                             decimal_digits: NonZero::new(3),
@@ -1512,6 +1522,30 @@ mod tests {
                     .unwrap()
                     .into()
             )
+        );
+
+        // CQL-style timestamp with space separator and Z offset
+        assert_eq!(
+            try_from_json(
+                Value::String("2024-01-01 00:00:00.000Z".to_string()),
+                &NativeType::Timestamp
+            )
+            .unwrap(),
+            CqlValue::Timestamp(
+                OffsetDateTime::from_unix_timestamp(1704067200)
+                    .unwrap()
+                    .into()
+            )
+        );
+
+        // CQL-style timestamp with space separator, Z offset, and non-zero time
+        assert_eq!(
+            try_from_json(
+                Value::String("1970-01-01 00:01:04.000Z".to_string()),
+                &NativeType::Timestamp
+            )
+            .unwrap(),
+            CqlValue::Timestamp(OffsetDateTime::from_unix_timestamp(64).unwrap().into())
         );
     }
 
