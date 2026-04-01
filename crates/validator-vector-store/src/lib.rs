@@ -17,6 +17,7 @@ mod quantization_and_rescoring;
 mod reconnect;
 mod serde;
 mod similarity_functions;
+mod timestamp_filtering;
 
 use async_backtrace::framed;
 use vector_search_validator_tests::TestCase;
@@ -40,6 +41,10 @@ pub async fn test_cases() -> impl Iterator<Item = (String, TestCase)> {
         (
             "quantization_and_rescoring",
             quantization_and_rescoring::new().await,
+        ),
+        (
+            "timestamp_filtering",
+            timestamp_filtering::new().await,
         ),
     ]
     .into_iter()
