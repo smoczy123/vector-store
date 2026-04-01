@@ -137,6 +137,7 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
                 idx.keyspace.clone(),
                 idx.table.clone(),
                 idx.target_column.clone(),
+                idx.index.clone(),
             )
             .await
             .inspect_err(|err| warn!("unable to get index target dimensions: {err}"))?
@@ -470,7 +471,7 @@ mod tests {
 
         mock_db
             .expect_get_index_target_type()
-            .returning(move |_, _, _, tx| {
+            .returning(move |_, _, _, _, tx| {
                 async move {
                     // Return dimensions for all indexes
                     tx.send(Ok(Some(NonZeroUsize::new(3).unwrap().into())))
@@ -598,7 +599,7 @@ mod tests {
 
         mock_db
             .expect_get_index_target_type()
-            .returning(move |_, _, _, tx| {
+            .returning(move |_, _, _, _, tx| {
                 async move {
                     tx.send(Ok(Some(NonZeroUsize::new(3).unwrap().into())))
                         .unwrap();

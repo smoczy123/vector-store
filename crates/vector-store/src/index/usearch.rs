@@ -195,10 +195,10 @@ impl UsearchIndex for ThreadedUsearchIndex {
 
     fn add(&self, primary_id: PrimaryId, vector: &Vector) -> anyhow::Result<()> {
         if self.quantization == ScalarKind::B1 {
-            let vector = f32_to_b1x8(&vector.0);
+            let vector = f32_to_b1x8(vector.as_slice());
             return Ok(self.inner.add(primary_id.into(), &vector)?);
         }
-        Ok(self.inner.add(primary_id.into(), &vector.0)?)
+        Ok(self.inner.add(primary_id.into(), vector.as_slice())?)
     }
 
     fn remove(&self, primary_id: PrimaryId) -> anyhow::Result<()> {
@@ -211,10 +211,10 @@ impl UsearchIndex for ThreadedUsearchIndex {
         limit: Limit,
     ) -> anyhow::Result<impl Iterator<Item = anyhow::Result<(PrimaryId, Distance)>>> {
         let matches = if self.quantization == ScalarKind::B1 {
-            let vector = f32_to_b1x8(&vector.0);
+            let vector = f32_to_b1x8(vector.as_slice());
             self.inner.search(&vector, limit.0.get())?
         } else {
-            self.inner.search(&vector.0, limit.0.get())?
+            self.inner.search(vector.as_slice(), limit.0.get())?
         };
         Ok(matches
             .keys
@@ -233,12 +233,14 @@ impl UsearchIndex for ThreadedUsearchIndex {
         filter: impl Fn(PrimaryId) -> bool,
     ) -> anyhow::Result<impl Iterator<Item = anyhow::Result<(PrimaryId, Distance)>>> {
         let matches = if self.quantization == ScalarKind::B1 {
-            let vector = f32_to_b1x8(&vector.0);
+            let vector = f32_to_b1x8(vector.as_slice());
             self.inner
                 .filtered_search(&vector, limit.0.get(), |row_id| filter(row_id.into()))?
         } else {
             self.inner
-                .filtered_search(&vector.0, limit.0.get(), |row_id| filter(row_id.into()))?
+                .filtered_search(vector.as_slice(), limit.0.get(), |row_id| {
+                    filter(row_id.into())
+                })?
         };
         Ok(matches
             .keys

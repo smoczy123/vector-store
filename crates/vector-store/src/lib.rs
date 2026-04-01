@@ -7,6 +7,7 @@ mod config_manager;
 pub mod db;
 mod db_cdc;
 pub mod db_index;
+mod db_index_backend;
 mod distance;
 mod engine;
 pub mod httproutes;
@@ -26,6 +27,7 @@ mod primary_key;
 mod similarity;
 mod table;
 mod timestamp;
+mod vector;
 
 pub use crate::config_manager::ConfigManager;
 pub use crate::config_manager::load_config;
@@ -52,6 +54,7 @@ use scylla::serialize::value::SerializeValue;
 use scylla::serialize::writers::CellWriter;
 use scylla::serialize::writers::WrittenCellProof;
 use scylla::value::CqlValue;
+use scylla_cdc::CqlIdentifier;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -77,6 +80,80 @@ use utoipa::openapi::Schema;
 use utoipa::openapi::SchemaFormat;
 use utoipa::openapi::schema::Type;
 use uuid::Uuid;
+pub use vector::Vector;
+
+/// A CQL string literal that is always properly single-quoted when formatted
+/// for use in CQL statements.
+///
+/// The inner value stores the already-quoted form of the string.
+/// The [`Display`](std::fmt::Display) implementation outputs it in single quotes
+/// with embedded single-quote characters escaped by doubling them
+/// (`'` -> `''`), following the CQL grammar for string constants.
+pub(crate) struct CqlLiteral {
+    quoted: String,
+}
+
+impl CqlLiteral {
+    /// Creates a new `CqlLiteral`, preserving the value exactly as given.
+    ///
+    /// The value will be single-quoted when formatted, with any embedded
+    /// single quotes escaped by doubling.
+    pub(crate) fn new(value: impl AsRef<str>) -> Self {
+        let quoted = format!("'{}'", value.as_ref().replace('\'', "''"));
+        Self { quoted }
+    }
+}
+
+impl std::fmt::Display for CqlLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.quoted)
+    }
+}
+
+pub(crate) struct KeyspaceIdentifier {
+    cql_identifier: CqlIdentifier,
+    is_alternator: bool,
+}
+
+impl<T: AsRef<str>> From<T> for KeyspaceIdentifier {
+    fn from(value: T) -> Self {
+        let value = value.as_ref();
+        Self {
+            cql_identifier: CqlIdentifier::new(value),
+            is_alternator: value.starts_with("alternator_"),
+        }
+    }
+}
+
+impl KeyspaceIdentifier {
+    pub(crate) fn is_alternator(&self) -> bool {
+        self.is_alternator
+    }
+}
+
+impl std::fmt::Display for KeyspaceIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cql_identifier.fmt(f)
+    }
+}
+
+pub(crate) struct TableIdentifier {
+    cql_identifier: CqlIdentifier,
+}
+
+impl<T: AsRef<str>> From<T> for TableIdentifier {
+    fn from(value: T) -> Self {
+        Self {
+            cql_identifier: CqlIdentifier::new(value.as_ref()),
+        }
+    }
+}
+
+impl std::fmt::Display for TableIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cql_identifier.fmt(f)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -153,6 +230,14 @@ pub struct Credentials {
 #[as_ref(str)]
 /// A keyspace name in a db.
 pub struct KeyspaceName(String);
+
+impl KeyspaceName {
+    /// Returns true if this keyspace is backed by Alternator (DynamoDB-compatible API).
+    /// Alternator keyspaces are prefixed with `alternator_`.
+    fn is_alternator(&self) -> bool {
+        self.0.starts_with("alternator_")
+    }
+}
 
 impl SerializeValue for KeyspaceName {
     fn serialize<'b>(
@@ -403,25 +488,6 @@ impl FromStr for Quantization {
             "B1" => Ok(Self::B1),
             _ => Err(anyhow::anyhow!("Unknown quantization type: {s}")),
         }
-    }
-}
-
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::AsRef,
-    derive_more::From,
-    utoipa::ToSchema,
-)]
-/// The vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
-pub struct Vector(Vec<f32>);
-
-impl Vector {
-    pub fn dim(&self) -> Option<Dimensions> {
-        NonZeroUsize::new(self.0.len()).map(Dimensions)
     }
 }
 

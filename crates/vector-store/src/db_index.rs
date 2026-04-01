@@ -8,13 +8,15 @@ use crate::ColumnName;
 use crate::Config;
 use crate::DbEmbedding;
 use crate::IndexMetadata;
-use crate::KeyspaceName;
+use crate::KeyspaceIdentifier;
 use crate::Percentage;
 use crate::Progress;
-use crate::TableName;
+use crate::TableIdentifier;
 use crate::Timestamp;
+use crate::Vector;
 use crate::db_cdc;
 use crate::db_cdc::CdcReaderConfig;
+use crate::db_index_backend;
 use crate::internals::Internals;
 use crate::invariant_key::InvariantKey;
 use crate::node_state::Event;
@@ -36,6 +38,7 @@ use scylla::routing::Token;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlValue;
 use scylla::value::Row;
+use scylla_cdc::CqlIdentifier;
 use std::collections::HashMap;
 use std::iter;
 use std::num::NonZeroUsize;
@@ -145,6 +148,18 @@ pub(crate) async fn new(
     let (tx_index, mut rx_index) = mpsc::channel(CHANNEL_SIZE);
     let (tx_embeddings, rx_embeddings) = mpsc::channel(CHANNEL_SIZE);
 
+    // Wait for initial session to create statements.
+    let mut statements_session_rx = session_rx.clone();
+    while statements_session_rx.borrow().is_none() {
+        if statements_session_rx.changed().await.is_err() {
+            return Err(anyhow::anyhow!(
+                "Session sender dropped before initialization"
+            ));
+        }
+    }
+
+    let statements = Arc::new(Statements::new(statements_session_rx, metadata.clone()).await?);
+
     // Create wide-framed CDC actor
     let cdc_wide = db_cdc::new(
         config_rx.clone(),
@@ -173,18 +188,6 @@ pub(crate) async fn new(
         }
         cdc_error_notify.notify_one();
     });
-
-    // Wait for initial session to create statements
-    let mut statements_session_rx = session_rx.clone();
-    while statements_session_rx.borrow().is_none() {
-        if statements_session_rx.changed().await.is_err() {
-            return Err(anyhow::anyhow!(
-                "Session sender dropped before initialization"
-            ));
-        }
-    }
-
-    let statements = Arc::new(Statements::new(statements_session_rx, metadata.clone()).await?);
 
     // Spawn main task for full scan and message processing
     tokio::spawn(
@@ -316,30 +319,37 @@ impl Statements {
                 })
                 .collect(),
         );
-
-        let st_partition_key_list = table.partition_key.iter().join(", ");
-        let st_primary_key_list = primary_key_columns.iter().join(", ");
+        let st_partition_key_list = table
+            .partition_key
+            .iter()
+            .map(|c| CqlIdentifier::new(c.as_str()))
+            .join(", ");
+        let st_primary_key_list = primary_key_columns
+            .iter()
+            .map(|c| CqlIdentifier::new(c.as_ref()))
+            .join(", ");
+        let keyspace_identifier = KeyspaceIdentifier::from(&metadata.keyspace_name);
+        let table_identifier = TableIdentifier::from(&metadata.table_name);
+        let query = db_index_backend::range_scan_query(
+            &keyspace_identifier,
+            &table_identifier,
+            &metadata.target_column,
+            &st_primary_key_list,
+            &st_partition_key_list,
+        );
+        let st_range_scan = session
+            .prepare(query)
+            .await
+            .context("range_scan_query")?
+            .pipe(|mut stmt| {
+                stmt.set_is_idempotent(true);
+                stmt
+            });
 
         Ok(Self {
             primary_key_columns,
-
             table_columns,
-
-            st_range_scan: session
-                .prepare(Self::range_scan_query(
-                    &metadata.keyspace_name,
-                    &metadata.table_name,
-                    &st_primary_key_list,
-                    &st_partition_key_list,
-                    &metadata.target_column,
-                ))
-                .await
-                .context("range_scan_query")?
-                .pipe(|mut stmt| {
-                    stmt.set_is_idempotent(true);
-                    stmt
-                }),
-
+            st_range_scan,
             session_rx,
         })
     }
@@ -350,25 +360,6 @@ impl Statements {
 
     fn get_table_columns(&self) -> GetTableColumnsR {
         self.table_columns.clone()
-    }
-
-    fn range_scan_query(
-        keyspace: &KeyspaceName,
-        table: &TableName,
-        st_primary_key_list: &str,
-        st_partition_key_list: &str,
-        embedding: &ColumnName,
-    ) -> String {
-        format!(
-            "
-            SELECT {st_primary_key_list}, {embedding}, writetime({embedding})
-            FROM {keyspace}.{table}
-            WHERE
-                token({st_partition_key_list}) >= ?
-                AND token({st_partition_key_list}) <= ?
-            BYPASS CACHE
-            "
-        )
     }
 
     async fn preform_range_scan(&self, begin: Token, end: Token) -> RangeScanResult {
@@ -570,24 +561,16 @@ impl Statements {
                 };
                 let timestamp = Timestamp::UNIX_EPOCH + Duration::from_micros(timestamp as u64);
 
-                let Some(CqlValue::Vector(embedding)) = row.columns.pop().unwrap() else {
-                    debug!("range_scan_stream: bad type of an embedding");
+                let Some(vector_value) = row.columns.pop().unwrap() else {
+                    debug!("range_scan_stream: missing vector column");
                     return None;
                 };
-                let Ok(embedding) = embedding
-                    .into_iter()
-                    .map(|value| {
-                        let CqlValue::Float(value) = value else {
-                            bail!("range_scan_stream: bad type of an embedding element");
-                        };
-                        Ok(value)
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()
+                let Ok(vector) = Vector::try_from(vector_value)
                     .inspect_err(|err| debug!("range_scan_stream: {err}"))
                 else {
                     return None;
                 };
-                let embedding = Some(embedding.into());
+                let vector = Some(vector);
 
                 let Ok(primary_key) = row
                     .columns
@@ -606,7 +589,7 @@ impl Statements {
 
                 Some(DbEmbedding {
                     primary_key,
-                    embedding,
+                    embedding: vector,
                     timestamp,
                 })
             })
