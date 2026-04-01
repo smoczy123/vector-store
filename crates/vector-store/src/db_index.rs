@@ -8,8 +8,10 @@ use crate::ColumnName;
 use crate::Config;
 use crate::DbEmbedding;
 use crate::IndexMetadata;
+use crate::KeyspaceIdentifier;
 use crate::Percentage;
 use crate::Progress;
+use crate::TableIdentifier;
 use crate::Timestamp;
 use crate::Vector;
 use crate::db_cdc;
@@ -36,6 +38,7 @@ use scylla::routing::Token;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlValue;
 use scylla::value::Row;
+use scylla_cdc::CqlIdentifier;
 use std::collections::HashMap;
 use std::iter;
 use std::num::NonZeroUsize;
@@ -316,12 +319,20 @@ impl Statements {
                 })
                 .collect(),
         );
-
-        let st_partition_key_list = table.partition_key.iter().join(", ");
-        let st_primary_key_list = primary_key_columns.iter().join(", ");
+        let st_partition_key_list = table
+            .partition_key
+            .iter()
+            .map(|c| CqlIdentifier::new(c.as_str()))
+            .join(", ");
+        let st_primary_key_list = primary_key_columns
+            .iter()
+            .map(|c| CqlIdentifier::new(c.as_ref()))
+            .join(", ");
+        let keyspace_identifier = KeyspaceIdentifier::from(&metadata.keyspace_name);
+        let table_identifier = TableIdentifier::from(&metadata.table_name);
         let query = db_index_backend::range_scan_query(
-            &metadata.keyspace_name,
-            &metadata.table_name,
+            &keyspace_identifier,
+            &table_identifier,
             &metadata.target_column,
             &st_primary_key_list,
             &st_partition_key_list,
@@ -337,7 +348,6 @@ impl Statements {
 
         Ok(Self {
             primary_key_columns,
-
             table_columns,
             st_range_scan,
             session_rx,
