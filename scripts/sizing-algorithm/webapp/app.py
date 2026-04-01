@@ -93,8 +93,8 @@ def compute():
                 ),
             }), 503
         result = vs.compute_sizing(inp, instances)
-    except ValueError:
-        return jsonify({"error": "Could not compute sizing for the given parameters."}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     return jsonify({
         "hnsw": {
