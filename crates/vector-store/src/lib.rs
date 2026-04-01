@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+mod config_manager;
 pub mod db;
 mod db_cdc;
 pub mod db_index;
@@ -26,8 +27,11 @@ mod similarity;
 mod table;
 mod timestamp;
 
+pub use crate::config_manager::ConfigManager;
+pub use crate::config_manager::load_config;
 pub use crate::distance::Distance;
 pub use crate::index_key::IndexKey;
+pub use crate::info::Info;
 use crate::internals::Internals;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
@@ -423,6 +427,7 @@ impl Vector {
 
 #[derive(
     Clone,
+    Copy,
     serde::Serialize,
     serde::Deserialize,
     derive_more::AsRef,
@@ -570,7 +575,7 @@ pub struct DbEmbedding {
     pub timestamp: Timestamp,
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::From)]
 /// Marker struct to indicate that an async operation is in progress.
 #[allow(dead_code)]
 pub struct AsyncInProgress(mpsc::Sender<()>);

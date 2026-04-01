@@ -30,7 +30,7 @@ use vector_store::httproutes::NodeStatus;
 #[tokio::test]
 /// The test case scenario:
 /// - start scylla cluster
-/// - create a keyspace and a table with 1_000_000 vectors
+/// - create a keyspace and a table with 1_000 vectors
 /// - check used memory - setup limit memory as `used memory + 20MB`
 /// - start the vector-store with the memory limit
 /// - start building an index
@@ -73,25 +73,17 @@ async fn memory_limit_during_index_build() {
     )
     .unwrap();
 
+    const VECTOR_COUNT: i32 = 1_000;
     db.add_index(
-        &index.keyspace_name,
-        index.index_name.clone(),
-        index.clone().into(),
-    )
-    .unwrap();
-
-    const VECTOR_COUNT: i32 = 1_000_000;
-    db.insert_values(
-        &index.keyspace_name,
-        &index.table_name,
-        &index.target_column,
-        (0..VECTOR_COUNT).map(|i| {
+        index.clone(),
+        Some(db_basic::scan_fn((0..VECTOR_COUNT).map(|i| {
             (
                 [CqlValue::Int(i)].into(),
                 Some(vec![0.0, 0.0, 0.0].into()),
                 Timestamp::from_unix_timestamp(10),
             )
-        }),
+        }))),
+        None,
     )
     .unwrap();
 
