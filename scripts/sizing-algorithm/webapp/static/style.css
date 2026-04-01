@@ -458,6 +458,13 @@ input[type="range"]::-moz-range-thumb {
   margin-top: .4rem;
 }
 
+.cost-banner .cost-ondemand-notice {
+  font-size: .78rem;
+  opacity: .85;
+  margin-top: .4rem;
+  font-style: italic;
+}
+
 /* ── Error box ──────────────────────────────────────────── */
 
 .error-box {

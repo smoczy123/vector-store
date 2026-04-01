@@ -79,22 +79,27 @@ def _build_instances(
 ) -> list[vs.InstanceType]:
     """Build InstanceType objects by merging API prices with hardware specs.
 
-    Only instances for which *both* on-demand and yearly prices were fetched
-    are included.  Instances without pricing data are skipped.
+    Instances with both on-demand and yearly prices use their respective
+    values.  Instances with only on-demand pricing (e.g. GCP ``e2-medium``)
+    are still included with ``on_demand_only=True`` and the on-demand price
+    used for the yearly field.  Instances without any on-demand pricing data
+    are skipped.
     """
     specs = vs.get_instance_specs(cloud_provider)
     result: list[vs.InstanceType] = []
     for spec in specs:
         od = on_demand_prices.get(spec.name)
+        if od is None:
+            continue
         yr = yearly_prices.get(spec.name)
-        if od is not None and yr is not None:
-            result.append(vs.InstanceType(
-                name=spec.name,
-                vcpus=spec.vcpus,
-                ram_gb=spec.ram_gb,
-                cost_per_hour=od,
-                cost_per_hour_yearly=yr,
-            ))
+        result.append(vs.InstanceType(
+            name=spec.name,
+            vcpus=spec.vcpus,
+            ram_gb=spec.ram_gb,
+            cost_per_hour=od,
+            cost_per_hour_yearly=yr if yr is not None else od,
+            on_demand_only=yr is None,
+        ))
     return result
 
 

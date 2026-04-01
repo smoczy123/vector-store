@@ -38,7 +38,7 @@ _AWS_TEST_INSTANCES: list[vs.InstanceType] = [
 ]
 
 _GCP_TEST_INSTANCES: list[vs.InstanceType] = [
-    vs.InstanceType("e2-medium",      2,    4,    0.134,    0.13402284),
+    vs.InstanceType("e2-medium",      2,    4,    0.134,    0.134,    on_demand_only=True),
     vs.InstanceType("n4-highmem-2",   2,   16,    0.476,    0.29992),
     vs.InstanceType("n4-highmem-4",   4,   32,    0.952,    0.59984),
     vs.InstanceType("n4-highmem-8",   8,   64,    1.904,    1.19968),
@@ -941,6 +941,39 @@ class TestGCPEndToEnd(unittest.TestCase):
         result = vs.compute_sizing(inp, _GCP_TEST_INSTANCES)
         self.assertEqual(result.instance_selection.instance_type.name, "e2-medium")
         self.assertEqual(result.instance_selection.num_instances, 2)
+        self.assertTrue(result.instance_selection.on_demand_only)
+
+    def test_gcp_on_demand_only_not_set_for_large_instances(self) -> None:
+        inp = vs.SizingInput(
+            num_vectors=50_000_000,
+            dimensions=1536,
+            target_qps=5_000,
+            recall=95,
+            k=10,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        result = vs.compute_sizing(inp, _GCP_TEST_INSTANCES)
+        self.assertFalse(result.instance_selection.on_demand_only)
+
+    def test_gcp_minimal_workload_selects_e2_medium(self) -> None:
+        """Regression: small GCP workloads must select e2-medium (on-demand only)."""
+        inp = vs.SizingInput(
+            num_vectors=10_000,
+            dimensions=128,
+            target_qps=10,
+            recall=95,
+            k=10,
+            cloud_provider=vs.CloudProvider.GCP,
+        )
+        result = vs.compute_sizing(inp, _GCP_TEST_INSTANCES)
+        self.assertEqual(result.instance_selection.instance_type.name, "e2-medium")
+        self.assertEqual(result.instance_selection.num_instances, 2)
+        self.assertTrue(result.instance_selection.on_demand_only)
+        # On-demand only: yearly cost equals on-demand cost.
+        self.assertEqual(
+            result.instance_selection.total_cost_per_hour,
+            result.instance_selection.total_cost_per_hour_yearly,
+        )
 
     def test_gcp_large_deployment(self) -> None:
         inp = vs.SizingInput(

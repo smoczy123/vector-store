@@ -283,10 +283,17 @@
     var provider = cloudEl ? cloudEl.value : "aws";
     var pricingRegion = provider === "gcp" ? "us-east1" : "us-east-1";
     html += '<div class="cost-banner">';
-    html += '  <div class="small-label">Estimated Vector Store Node Cost (1-year commitment)</div>';
-    html += '  <div class="big-number">$' + esc(fmt(Math.round(i.total_cost_per_month_yearly))) + " / mo</div>";
-    html += '  <div class="small-label">$' + esc(i.total_cost_per_hour_yearly.toFixed(2)) + " / hr</div>";
-    html += '  <div class="cost-ondemand">On-demand: $' + esc(fmt(Math.round(i.total_cost_per_month))) + ' / mo ($' + esc(i.total_cost_per_hour.toFixed(2)) + ' / hr)</div>';
+    if (i.on_demand_only) {
+      html += '  <div class="small-label">Estimated Vector Store Node Cost (on-demand only)</div>';
+      html += '  <div class="big-number">$' + esc(fmt(Math.round(i.total_cost_per_month))) + " / mo</div>";
+      html += '  <div class="small-label">$' + esc(i.total_cost_per_hour.toFixed(2)) + " / hr</div>";
+      html += '  <div class="cost-ondemand-notice">1-year commitment pricing is not available for ' + esc(i.instance_type) + ' instances.</div>';
+    } else {
+      html += '  <div class="small-label">Estimated Vector Store Node Cost (1-year commitment)</div>';
+      html += '  <div class="big-number">$' + esc(fmt(Math.round(i.total_cost_per_month_yearly))) + " / mo</div>";
+      html += '  <div class="small-label">$' + esc(i.total_cost_per_hour_yearly.toFixed(2)) + " / hr</div>";
+      html += '  <div class="cost-ondemand">On-demand: $' + esc(fmt(Math.round(i.total_cost_per_month))) + ' / mo ($' + esc(i.total_cost_per_hour.toFixed(2)) + ' / hr)</div>';
+    }
     html += '  <div class="pricing-region">Based on ' + esc(provider.toUpperCase()) + ' ' + esc(pricingRegion) + ' pricing</div>';
     html += "</div>";
 

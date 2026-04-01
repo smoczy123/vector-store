@@ -199,6 +199,7 @@ class InstanceType:
     ram_gb: float
     cost_per_hour: float
     cost_per_hour_yearly: float
+    on_demand_only: bool = False
 
 # ScyllaDB Cloud currently supports the following instance
 # ScyllaDB Cloud currently supports the following instance
@@ -366,6 +367,7 @@ class InstanceSelection:
     total_ram_gb: float
     total_cost_per_hour: float
     total_cost_per_hour_yearly: float
+    on_demand_only: bool = False
 
 
 @dataclass
@@ -612,6 +614,7 @@ def _select_instance(
             total_ram_gb=round(num * inst.ram_gb, 2),
             total_cost_per_hour=round(total_cost, 2),
             total_cost_per_hour_yearly=round(total_cost_yearly, 2),
+            on_demand_only=inst.on_demand_only,
         )
 
     # Phase 1: start with the smallest eligible instance.
