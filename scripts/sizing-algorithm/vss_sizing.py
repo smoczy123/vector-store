@@ -63,6 +63,12 @@ from enum import Enum
 
 
 # ---------------------------------------------------------------------------
+# Algorithm version — bump when formulas or heuristics change.
+# ---------------------------------------------------------------------------
+
+ALGORITHM_VERSION = 1
+
+# ---------------------------------------------------------------------------
 # Enums & constants
 # ---------------------------------------------------------------------------
 
@@ -199,46 +205,56 @@ class InstanceType:
     ram_gb: float
     cost_per_hour: float
     cost_per_hour_yearly: float
+    on_demand_only: bool = False
 
 # ScyllaDB Cloud currently supports the following instance
-# types for Vector Store nodes.
-# AWS prices as of 2026-02-26 (us-east-1 region).
-AWS_INSTANCES: list[InstanceType] = [
-    InstanceType("t4g.medium",     2,    4,    0.067,    0.0392),
-    InstanceType("r7g.medium",     1,    8,    0.107,    0.0662),
-    InstanceType("r7g.large",      2,   16,    0.214,    0.1322),
-    InstanceType("r7g.xlarge",     4,   32,    0.4285,   0.2644),
-    InstanceType("r7g.2xlarge",    8,   64,    0.857,    0.529),
-    InstanceType("r7g.4xlarge",   16,  128,    1.7135,   1.058),
-    InstanceType("r7g.8xlarge",   32,  256,    3.427,    2.116),
-    InstanceType("r7g.12xlarge",  48,  384,    5.141,    3.174),
-    InstanceType("r7g.16xlarge",  64,  512,    6.8545,   4.232),
-    InstanceType("r7i.24xlarge",  96,  768,   12.701,    7.8416),
-    InstanceType("r7i.48xlarge", 192, 1536,   25.4015,  15.6828),
+# ScyllaDB Cloud currently supports the following instance
+# types (hardware specs) for Vector Store nodes.  Prices are
+# *not* embedded here — they must be supplied by the caller
+# (typically fetched from the pricing API at startup).
+
+@dataclass(frozen=True)
+class InstanceSpec:
+    """Hardware specification of a cloud instance (no pricing)."""
+    name: str
+    vcpus: int
+    ram_gb: float
+
+
+AWS_INSTANCE_SPECS: list[InstanceSpec] = [
+    InstanceSpec("t4g.medium",     2,    4),
+    InstanceSpec("r7g.medium",     1,    8),
+    InstanceSpec("r7g.large",      2,   16),
+    InstanceSpec("r7g.xlarge",     4,   32),
+    InstanceSpec("r7g.2xlarge",    8,   64),
+    InstanceSpec("r7g.4xlarge",   16,  128),
+    InstanceSpec("r7g.8xlarge",   32,  256),
+    InstanceSpec("r7g.12xlarge",  48,  384),
+    InstanceSpec("r7g.16xlarge",  64,  512),
+    InstanceSpec("r7i.24xlarge",  96,  768),
+    InstanceSpec("r7i.48xlarge", 192, 1536),
 ]
 
-# GCP prices as of 2026-02-26 (us-east1 region).
-GCP_INSTANCES: list[InstanceType] = [
-    InstanceType("e2-medium",      2,    4,    0.067,    0.06701142),
-    InstanceType("n4-highmem-2",   2,   16,    0.238,    0.14996),
-    InstanceType("n4-highmem-4",   4,   32,    0.476,    0.29992),
-    InstanceType("n4-highmem-8",   8,   64,    0.952,    0.59984),
-    InstanceType("n4-highmem-16", 16,  128,    1.9045,   1.19968),
-    InstanceType("n4-highmem-32", 32,  256,    3.8085,   2.39936),
-    InstanceType("n4-highmem-48", 48,  384,    5.713,    3.59904),
-    InstanceType("n4-highmem-64", 64,  512,    7.6175,   4.79872),
-    InstanceType("n4-highmem-80", 80,  640,    9.5215,   5.9984),
+GCP_INSTANCE_SPECS: list[InstanceSpec] = [
+    InstanceSpec("e2-medium",      2,    4),
+    InstanceSpec("n4-highmem-2",   2,   16),
+    InstanceSpec("n4-highmem-4",   4,   32),
+    InstanceSpec("n4-highmem-8",   8,   64),
+    InstanceSpec("n4-highmem-16", 16,  128),
+    InstanceSpec("n4-highmem-32", 32,  256),
+    InstanceSpec("n4-highmem-48", 48,  384),
+    InstanceSpec("n4-highmem-64", 64,  512),
+    InstanceSpec("n4-highmem-80", 80,  640),
 ]
 
-# Default instance list (AWS) for backward compatibility.
-AVAILABLE_INSTANCES: list[InstanceType] = AWS_INSTANCES
 
-
-def get_instances(cloud_provider: CloudProvider = CloudProvider.AWS) -> list[InstanceType]:
-    """Return the list of available instances for the given cloud provider."""
+def get_instance_specs(
+    cloud_provider: CloudProvider = CloudProvider.AWS,
+) -> list[InstanceSpec]:
+    """Return instance hardware specs for the given cloud provider."""
     if cloud_provider is CloudProvider.GCP:
-        return GCP_INSTANCES
-    return AWS_INSTANCES
+        return GCP_INSTANCE_SPECS
+    return AWS_INSTANCE_SPECS
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +373,7 @@ class InstanceSelection:
     total_ram_gb: float
     total_cost_per_hour: float
     total_cost_per_hour_yearly: float
+    on_demand_only: bool = False
 
 
 @dataclass
@@ -551,34 +568,21 @@ def _effective_qps_per_vcpu(
 def _select_instance(
     index_ram_gb: float,
     required_vcpus: int,
-    cloud_provider: CloudProvider = CloudProvider.AWS,
+    instances: list[InstanceType],
 ) -> InstanceSelection:
     """Select the instance configuration for Vector Store-node replicas.
 
     The algorithm works in two phases:
 
-    1. **Smallest-fit selection** — find the *smallest* instance type whose
-       RAM is at least *index_ram_gb* (every replica holds the full HNSW
-       index in memory).  Compute how many replicas are needed to meet the
-       aggregate *required_vcpus* (at least ``MIN_VECTOR_STORE_REPLICAS``
-       for high availability).
-
-    2. **Upscale optimisation** — if the initial selection requires more than
-       ``INSTANCE_UPSCALE_TRIGGER`` instances, try progressively larger
-       instance types.  Accept a larger instance when the total hourly cost
-       does not exceed ``INSTANCE_UPSCALE_COST_FACTOR`` times the initial
-       cost **and** the number of instances is strictly reduced.
-
-    When more than two replicas are needed, the count is rounded up to the
-    next multiple of 3 so that replicas can be evenly distributed across
-    availability zones.
+    The function evaluates every entry in *instances* and returns
+    the option with the lowest total hourly cost.
 
     Raises
     ------
     ValueError
         If no available instance has enough RAM for the index.
     """
-    instances = get_instances(cloud_provider)
+    best: InstanceSelection | None = None
 
     # Sort by RAM ascending (vCPUs as tiebreaker) so that eligible[0] is
     # the smallest instance that can hold the index.
@@ -616,6 +620,7 @@ def _select_instance(
             total_ram_gb=round(num * inst.ram_gb, 2),
             total_cost_per_hour=round(total_cost, 2),
             total_cost_per_hour_yearly=round(total_cost_yearly, 2),
+            on_demand_only=inst.on_demand_only,
         )
 
     # Phase 1: start with the smallest eligible instance.
@@ -637,7 +642,10 @@ def _select_instance(
     return best
 
 
-def compute_sizing(inp: SizingInput) -> SizingResult:
+def compute_sizing(
+    inp: SizingInput,
+    instances: list[InstanceType],
+) -> SizingResult:
     """Run the full 3-step VSS sizing algorithm.
 
     Steps
@@ -652,6 +660,8 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
     ----------
     inp : SizingInput
         All user-supplied sizing parameters.
+    instances : list[InstanceType]
+        Instance types with pricing to consider for the deployment.
 
     Returns
     -------
@@ -711,7 +721,7 @@ def compute_sizing(inp: SizingInput) -> SizingResult:
 
     # --- Step 2b: Instance selection (Vector Store nodes) ---
     instance_sel = _select_instance(
-        total_search_ram_gb, vs_vcpus, inp.cloud_provider,
+        total_search_ram_gb, vs_vcpus, instances,
     )
 
     # --- Step 3: ScyllaDB node sizing ---

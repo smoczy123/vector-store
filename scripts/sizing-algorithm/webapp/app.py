@@ -7,7 +7,9 @@ delegates to ``vss_sizing.compute_sizing``.
 
 from __future__ import annotations
 
+import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Allow importing vss_sizing from the parent directory.
@@ -16,20 +18,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, jsonify, render_template, request
 
 import vss_sizing as vs
+from pricing import fetch_all_prices
+
+log = logging.getLogger(__name__)
+
+# Fetch once at module load (application startup).
+_LIVE_INSTANCES, _PRICING_ERRORS = fetch_all_prices()
 
 app = Flask(__name__)
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' https://calculator.scylladb.com"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 @app.route("/")
 def index():
     """Serve the single-page sizing calculator."""
-    return render_template("index.html")
+    return render_template(
+        "index.html",
+        year=datetime.now(timezone.utc).year,
+        pricing_errors=_PRICING_ERRORS,
+        algorithm_version=vs.ALGORITHM_VERSION,
+    )
 
 
 @app.route("/api/compute", methods=["POST"])
 def compute():
     """Run the sizing algorithm and return the result as JSON."""
-    data = request.get_json(force=True)
+    data = request.get_json()
+    if data is None:
+        return jsonify({"error": "Request must have Content-Type: application/json."}), 400
 
     try:
         inp = vs.SizingInput(
@@ -51,11 +80,20 @@ def compute():
                 data.get("cloud_provider", vs.CloudProvider.AWS.value)
             ),
         )
-    except (ValueError, KeyError) as exc:
-        return jsonify({"error": str(exc)}), 400
+    except (ValueError, KeyError):
+        return jsonify({"error": "Invalid input parameters."}), 400
 
     try:
-        result = vs.compute_sizing(inp)
+        instances = _LIVE_INSTANCES.get(inp.cloud_provider)
+        if not instances:
+            return jsonify({
+                "error": (
+                    f"Pricing data is unavailable for "
+                    f"{inp.cloud_provider.value.upper()}. "
+                    f"The calculator cannot run without live pricing."
+                ),
+            }), 503
+        result = vs.compute_sizing(inp, instances)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -90,6 +128,7 @@ def compute():
             "total_cost_per_month_yearly": round(
                 result.instance_selection.total_cost_per_hour_yearly * 730, 2
             ),
+            "on_demand_only": result.instance_selection.on_demand_only,
         },
         "scylladb_node": {
             "num_nodes": result.scylladb_node.num_nodes,
@@ -105,6 +144,7 @@ def compute():
         },
         "vector_store_replicas": result.vector_store_replicas,
         "summary": result.summary,
+        "algorithm_version": vs.ALGORITHM_VERSION,
     })
 
 
