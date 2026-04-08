@@ -867,6 +867,8 @@ fn try_to_json(value: CqlValue) -> anyhow::Result<Value> {
             })?,
         )),
 
+        CqlValue::Blob(value) => Ok(Value::String(const_hex::encode_prefixed(&value))),
+
         _ => unimplemented!(),
     }
 }
@@ -919,6 +921,14 @@ fn try_from_json(value: Value, cql_type: &NativeType) -> anyhow::Result<CqlValue
                 })
                 .map_err(|err| anyhow!("Failed to parse Timestamp from string '{value}': {err}"))?;
                 Ok(CqlValue::Timestamp(datetime.into()))
+            }
+            NativeType::Blob => {
+                if !value.starts_with("0x") {
+                    bail!("Blob value must be a '0x'-prefixed hex string");
+                }
+                let bytes = const_hex::decode(&value)
+                    .map_err(|err| anyhow!("Invalid hex in blob value: {err}"))?;
+                Ok(CqlValue::Blob(bytes))
             }
             _ => bail!("Cannot convert string to CqlValue::{cql_type:?}, unsupported type"),
         },
@@ -1547,6 +1557,26 @@ mod tests {
             .unwrap(),
             CqlValue::Timestamp(OffsetDateTime::from_unix_timestamp(64).unwrap().into())
         );
+
+        assert_eq!(
+            try_from_json(Value::String("0xdeadbeef".to_string()), &NativeType::Blob).unwrap(),
+            CqlValue::Blob(vec![0xde, 0xad, 0xbe, 0xef])
+        );
+        assert_eq!(
+            try_from_json(Value::String("0x".to_string()), &NativeType::Blob).unwrap(),
+            CqlValue::Blob(vec![])
+        );
+        assert_eq!(
+            try_from_json(Value::String("0x00".to_string()), &NativeType::Blob).unwrap(),
+            CqlValue::Blob(vec![0x00])
+        );
+
+        // missing 0x prefix
+        assert!(try_from_json(Value::String("deadbeef".to_string()), &NativeType::Blob).is_err());
+        // invalid hex characters
+        assert!(try_from_json(Value::String("0xgg".to_string()), &NativeType::Blob).is_err());
+        // odd-length hex digits (after stripping prefix)
+        assert!(try_from_json(Value::String("0xabc".to_string()), &NativeType::Blob).is_err());
     }
 
     #[test]
@@ -1639,6 +1669,19 @@ mod tests {
         );
         assert!(try_to_json(CqlValue::Float(f32::NAN)).is_err());
         assert!(try_to_json(CqlValue::Double(f64::NAN)).is_err());
+
+        assert_eq!(
+            try_to_json(CqlValue::Blob(vec![0xde, 0xad, 0xbe, 0xef])).unwrap(),
+            Value::String("0xdeadbeef".to_string())
+        );
+        assert_eq!(
+            try_to_json(CqlValue::Blob(vec![])).unwrap(),
+            Value::String("0x".to_string())
+        );
+        assert_eq!(
+            try_to_json(CqlValue::Blob(vec![0x00])).unwrap(),
+            Value::String("0x00".to_string())
+        );
     }
 
     #[test]
