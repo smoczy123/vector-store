@@ -191,7 +191,7 @@ jobs:
         testcase: ${{matrix.testcase}}
         TARGETARCH: ${{matrix.arch}}
       run: |
-        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store-${TARGETARCH} vector-search-validator-${TARGETARCH} ${testcase}:: --verbose
+        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store-${TARGETARCH} vector-search-validator-${TARGETARCH} "\"${testcase}\"::" --verbose
 
   daily-save-scylla-nightly-digest:
     needs: daily-validator-tests
