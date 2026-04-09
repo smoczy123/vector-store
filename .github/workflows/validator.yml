@@ -141,7 +141,7 @@ jobs:
       env:
         testcase: ${{matrix.testcase}}
       run: |
-        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator ${testcase}:: --verbose
+        ./run-validator-with-scylla-docker scylladb/scylla-nightly@$(cat scylla-nightly-digest) vector-store vector-search-validator "\"${testcase}\"::" --verbose
 
   validator-workflow-status:
     needs: ["validator-scylla-nightly-digest", "validator-build", "validator-tests"]

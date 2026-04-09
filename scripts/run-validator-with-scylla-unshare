@@ -18,6 +18,8 @@ validator=$(realpath $3)
 
 shift 3
 
+validator_args=$(printf ' %q' "$@")
+
 dns_ip=127.0.1.1
 base_ip=127.0.2
 
@@ -32,7 +34,7 @@ for i in {1..10}; do
     ip addr add $base_ip.\$i/32 dev lo
 done
 cat /etc/resolv.conf
-$validator run --dns-ip $dns_ip --base-ip $base_ip.1 $scylla $vector_store $@
+$validator run --dns-ip $dns_ip --base-ip $base_ip.1 $scylla $vector_store$validator_args
 EOF
 
 rm $tmp_resolv_conf
