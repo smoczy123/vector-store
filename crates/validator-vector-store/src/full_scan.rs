@@ -13,8 +13,15 @@ use tracing::info;
 use vector_search_validator_tests::common::*;
 use vector_search_validator_tests::*;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "full_scan",
+        factory: || Box::pin(new()),
+    }
+}
+
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init_with_proxy_single_vs)

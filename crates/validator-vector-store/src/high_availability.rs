@@ -12,8 +12,15 @@ use vector_search_validator_tests::ScyllaNodeConfig;
 use vector_search_validator_tests::common::*;
 use vector_search_validator_tests::*;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "high_availability",
+        factory: || Box::pin(new()),
+    }
+}
+
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty().with_cleanup(timeout, cleanup).with_test(
         "secondary_uri_works_correctly",

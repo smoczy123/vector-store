@@ -11,8 +11,15 @@ use vector_store::IndexName;
 use vector_store::KeyspaceName;
 use vector_store::httproutes::IndexStatus;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "index_status",
+        factory: || Box::pin(new()),
+    }
+}
+
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init)

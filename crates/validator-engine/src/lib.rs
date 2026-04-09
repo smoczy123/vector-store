@@ -10,6 +10,9 @@ mod scylla_proxy_cluster;
 mod tls;
 mod vector_store_cluster;
 
+// Force linking so that inventory discovers TestCaseEntry submissions.
+extern crate vector_search_validator_vector_store;
+
 use async_backtrace::frame;
 use async_backtrace::framed;
 use clap::Parser;
@@ -202,9 +205,7 @@ fn parse_test_filters(
 #[framed]
 /// Returns a vector of all known test cases to be run. Each test case is registered with a name
 async fn register() -> Vec<(String, TestCase)> {
-    vector_search_validator_vector_store::test_cases()
-        .await
-        .collect()
+    vector_search_validator_tests::test_cases().await
 }
 
 #[framed]

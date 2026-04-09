@@ -14,6 +14,13 @@ use vector_search_validator_tests::*;
 use vector_store::httproutes::IndexStatus;
 use vector_store::httproutes::NodeStatus;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "auth",
+        factory: || Box::pin(new()),
+    }
+}
+
 const WAITING_FOR_DB_DISCOVERY: Duration = Duration::from_secs(5);
 
 static SUPERUSER_NAME: LazyLock<String> = LazyLock::new(|| Uuid::new_v4().simple().to_string());
@@ -37,7 +44,7 @@ fn scylla_auth_config() -> Vec<u8> {
 }
 
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_test(

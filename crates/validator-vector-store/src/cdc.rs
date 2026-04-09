@@ -11,8 +11,15 @@ use vector_search_validator_tests::*;
 
 const FINE_GRAINED_CDC_MAX_LATENCY: Duration = Duration::from_secs(2);
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "cdc",
+        factory: || Box::pin(new()),
+    }
+}
+
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init)

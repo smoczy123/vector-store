@@ -9,8 +9,15 @@ use vector_search_validator_tests::common::*;
 use vector_search_validator_tests::*;
 use vector_store::httproutes::IndexStatus;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "crud",
+        factory: || Box::pin(new()),
+    }
+}
+
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init)

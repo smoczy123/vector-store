@@ -1582,7 +1582,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpclient"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1838,6 +1838,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2066,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "macros"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "quote",
  "syn 2.0.110",
@@ -4154,7 +4163,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vector-search-benchmark"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "arrow-array",
  "clap",
@@ -4176,14 +4185,14 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "vector-search-validator-engine",
 ]
 
 [[package]]
 name = "vector-search-validator-engine"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "anyhow",
  "async-backtrace",
@@ -4208,11 +4217,12 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-tests"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "async-backtrace",
  "futures",
  "httpclient",
+ "inventory",
  "itertools 0.14.0",
  "rustls",
  "scylla",
@@ -4226,11 +4236,12 @@ dependencies = [
 
 [[package]]
 name = "vector-search-validator-vector-store"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "async-backtrace",
  "bcrypt",
  "httpclient",
+ "inventory",
  "scylla",
  "scylla-proxy",
  "serde_json",
@@ -4244,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "vector-store"
-version = "0.0.0-dev"
+version = "0.0.0-dev-29-g6d6d5c9-dirty"
 dependencies = [
  "anyhow",
  "async-trait",

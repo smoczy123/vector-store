@@ -13,6 +13,13 @@ use vector_search_validator_tests::*;
 use vector_store::IndexInfo;
 use vector_store::TableName;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "quantization_and_rescoring",
+        factory: || Box::pin(new()),
+    }
+}
+
 /// Generate test vectors for quantization precision testing
 /// Creates a query vector and embeddings with small directional differences
 /// that will be lost during quantization when using the cosine metric.
@@ -64,7 +71,7 @@ async fn insert_vectors(session: &Session, table: &TableName, embeddings: &HashM
 }
 
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init)

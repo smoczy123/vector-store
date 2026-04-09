@@ -32,8 +32,10 @@ pub use scylla_proxy_cluster::ScyllaProxyNodeConfig;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future;
+use std::future::Future;
 use std::net::Ipv4Addr;
 use std::panic;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -84,6 +86,23 @@ pub struct TestActors {
     pub db: mpsc::Sender<ScyllaCluster>,
     pub vs: mpsc::Sender<VectorStoreCluster>,
     pub db_proxy: mpsc::Sender<ScyllaProxyCluster>,
+}
+
+/// An entry for registering a test case via the `inventory` crate.
+pub struct TestCaseEntry {
+    pub name: &'static str,
+    pub factory: fn() -> Pin<Box<dyn Future<Output = TestCase> + Send>>,
+}
+
+inventory::collect!(TestCaseEntry);
+
+/// Collects all registered test cases from the inventory.
+pub async fn test_cases() -> Vec<(String, TestCase)> {
+    let mut cases = Vec::new();
+    for entry in inventory::iter::<TestCaseEntry> {
+        cases.push((entry.name.to_string(), (entry.factory)().await));
+    }
+    cases
 }
 
 type TestFuture = BoxFuture<'static, ()>;

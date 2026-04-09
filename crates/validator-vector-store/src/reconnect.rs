@@ -16,12 +16,19 @@ use vector_search_validator_tests::common::*;
 use vector_search_validator_tests::*;
 use vector_store::httproutes::IndexStatus;
 
+inventory::submit! {
+    TestCaseEntry {
+        name: "reconnect",
+        factory: || Box::pin(new()),
+    }
+}
+
 const FRAME_DELAY: Duration = Duration::from_millis(100);
 const DATASET_SIZE: i32 = 100;
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(12); // slightly more than default 10s
 
 #[framed]
-pub(crate) async fn new() -> TestCase {
+async fn new() -> TestCase {
     let timeout = DEFAULT_TEST_TIMEOUT;
     TestCase::empty()
         .with_init(timeout, init_with_proxy_single_vs)
