@@ -106,8 +106,38 @@ jobs:
     - name: Run cargo-machete checks
       run: cargo machete
 
+  cargo-sbom:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Setup cargo-cyclonedx
+      uses: taiki-e/install-action@cargo-cyclonedx
+
+    - name: Print cargo-cyclonedx version
+      run: cargo cyclonedx --version
+
+    - name: Generate SBOM
+      run: cargo cyclonedx --manifest-path crates/vector-store/Cargo.toml --format json
+
+    - name: Validate SBOM
+      run: |
+        file=crates/vector-store/vector-store.cdx.json
+        [[ -s $file ]] || { echo "SBOM file is empty"; exit 1; }
+        python3 -c "import json; json.load(open('$file'))"
+
+    - name: Upload SBOM artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: crates/vector-store/vector-store.cdx.json
+        retention-days: 7
+
   rust-workflow-status:
-    needs: ["cargo-clippy", "cargo-fmt", "cargo-test", "cargo-deny", "cargo-machete"]
+    needs: ["cargo-clippy", "cargo-fmt", "cargo-test", "cargo-deny", "cargo-machete", "cargo-sbom"]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -137,6 +167,11 @@ jobs:
 
         if [[ "${{ needs.cargo-machete.result }}" == "failure" ]]; then
           echo "cargo-machete job failed"
+          return_code=1
+        fi
+
+        if [[ "${{ needs.cargo-sbom.result }}" == "failure" ]]; then
+          echo "cargo-sbom job failed"
           return_code=1
         fi
 

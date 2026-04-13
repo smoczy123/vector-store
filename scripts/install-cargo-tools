@@ -5,6 +5,7 @@
 CARGO_TOOLS=(
     "cargo-deny"
     "cargo-machete"
+    "cargo-cyclonedx"
 )
 
 cargo install --locked "${CARGO_TOOLS[@]}" "$@"

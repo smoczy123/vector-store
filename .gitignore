@@ -24,3 +24,6 @@ target/
 .venv/
 __pycache__/
 *.pyc
+
+# Generated SBOM files
+*.cdx.json
