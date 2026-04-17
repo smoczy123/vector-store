@@ -78,6 +78,11 @@ def install_node_exporter(arch):
     except Exception as e:
         print("could not place node-exporter file in user/lib/systemd" + str(e))
         print(e.output)
+    try:
+        run('cp {_HOME}/node-exporter-defaults /etc/default/node-exporter')
+    except Exception as e:
+        print("could not place node-exporter defaults file" + str(e))
+        print(e.output)
     run('systemctl daemon-reload')
     run('systemctl enable node-exporter.service')
     run('systemctl start node-exporter.service')
