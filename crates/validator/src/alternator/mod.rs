@@ -24,6 +24,7 @@ use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableOutput;
 use aws_sdk_dynamodb::operation::delete_table::DeleteTableError;
+use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeDefinition;
 use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::types::BillingMode;
@@ -34,6 +35,7 @@ use aws_smithy_runtime_api::box_error::BoxError;
 use aws_smithy_runtime_api::client::interceptors::Intercept;
 use aws_smithy_runtime_api::client::interceptors::context::BeforeTransmitInterceptorContextMut;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
+use aws_smithy_types::base64;
 use aws_smithy_types::body::SdkBody;
 use aws_smithy_types::config_bag::ConfigBag;
 use e2etest::TestCase;
@@ -201,6 +203,91 @@ impl Intercept for JsonBodyInjectInterceptor {
     }
 }
 
+/// Magic prefix for FLOAT32VECTOR-encoded binary attribute values.
+/// Same prefix as used by the Java Alternator client (`alternator-client-java`).
+/// When the interceptor detects this prefix in a Base64-encoded `B` attribute,
+/// it replaces the entire attribute with `{"FLOAT32VECTOR": [...]}`.
+const F32VEC_MAGIC: &[u8] = &[0xF2, 0xF3, 0x2F, 0xEC, 0x4A, 0x7B, 0x19, 0xD3];
+
+/// Base64 encoding of the magic prefix, used for fast pre-scanning of the body.
+/// Corresponds to `base64::encode(F32VEC_MAGIC)` truncated to a unique prefix.
+const F32VEC_BASE64_PREFIX: &str = "8vMv7Ep7";
+
+/// Encodes a float vector as a `B` [`AttributeValue`] with a magic prefix.
+/// The [`Float32VectorInterceptor`] will transcode it to `{"FLOAT32VECTOR": [...]}`.
+fn float32_vector(v: impl IntoIterator<Item = f32>) -> AttributeValue {
+    let v: Vec<f32> = v.into_iter().collect();
+    let mut bytes = Vec::with_capacity(F32VEC_MAGIC.len() + v.len() * 4);
+    bytes.extend_from_slice(F32VEC_MAGIC);
+    for f in &v {
+        bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    AttributeValue::B(Blob::new(bytes))
+}
+
+fn decode_float32_vector(bytes: &[u8]) -> Vec<f32> {
+    bytes[F32VEC_MAGIC.len()..]
+        .chunks(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+/// Rewrites any `B`-attribute with the magic prefix into the `FLOAT32VECTOR` wire
+/// format that Alternator expects. This is a no-op for requests without such attributes.
+#[derive(Debug, Clone)]
+struct Float32VectorInterceptor;
+
+impl Intercept for Float32VectorInterceptor {
+    fn name(&self) -> &'static str {
+        "Float32VectorInterceptor"
+    }
+
+    fn modify_before_signing(
+        &self,
+        context: &mut BeforeTransmitInterceptorContextMut<'_>,
+        _runtime_components: &RuntimeComponents,
+        _cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        let body_bytes = context
+            .request()
+            .body()
+            .bytes()
+            .ok_or("expected in-memory body for Alternator request")?;
+
+        // Fast pre-scan: skip transcoding if no magic-prefixed B attributes present.
+        let body_str = std::str::from_utf8(body_bytes)?;
+        if !body_str.contains(F32VEC_BASE64_PREFIX) {
+            return Ok(());
+        }
+
+        let mut json: Value = serde_json::from_str(body_str)?;
+
+        // Walk all `Item` values in the JSON body.
+        if let Some(item) = json.get_mut("Item").and_then(|v| v.as_object_mut()) {
+            for (_attr_name, attr_val) in item.iter_mut() {
+                if let Some(b64) = attr_val.get("B").and_then(|v| v.as_str())
+                    && let Ok(bytes) = base64::decode(b64)
+                    && bytes.starts_with(F32VEC_MAGIC)
+                {
+                    let floats = decode_float32_vector(&bytes);
+                    *attr_val = serde_json::json!({ "FLOAT32VECTOR": floats });
+                }
+            }
+        }
+
+        let new_bytes = serde_json::to_vec(&json)?;
+        let new_len = new_bytes.len();
+        let request = context.request_mut();
+        *request.body_mut() = SdkBody::from(new_bytes);
+        request.headers_mut().insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&new_len.to_string()).expect("content-length value is valid"),
+        );
+
+        Ok(())
+    }
+}
+
 /// Builds a DynamoDB client pointing at the ScyllaDB Alternator endpoint on
 /// `db_ip`.
 ///
@@ -214,7 +301,11 @@ async fn make_dynamodb_client(db_ip: Ipv4Addr) -> Client {
         .region(Region::new("us-east-1"))
         .load()
         .await;
-    Client::new(&config)
+    Client::from_conf(
+        aws_sdk_dynamodb::config::Builder::from(&config)
+            .interceptor(Float32VectorInterceptor)
+            .build(),
+    )
 }
 
 /// Polls the Alternator HTTP endpoint on `db_ip` until it responds successfully.
@@ -294,6 +385,11 @@ impl Item {
 
     fn vec(mut self, vec_attr: &str, v: [f32; Self::VEC_DIMS]) -> Self {
         self.0.insert(vec_attr.to_string(), float_list(v));
+        self
+    }
+
+    fn vec_optimized(mut self, vec_attr: &str, v: [f32; Self::VEC_DIMS]) -> Self {
+        self.0.insert(vec_attr.to_string(), float32_vector(v));
         self
     }
 
