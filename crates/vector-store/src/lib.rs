@@ -39,6 +39,7 @@ pub use crate::distance::Distance;
 pub use crate::httpserver::HttpServer;
 pub use crate::httpserver::HttpServerExt;
 pub use crate::index_key::IndexKey;
+use crate::indexes::Indexes;
 pub use crate::info::Info;
 use crate::internals::Internals;
 use crate::metrics::Metrics;
@@ -65,6 +66,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::runtime::Builder;
 use tokio::runtime::Handle;
@@ -647,17 +649,21 @@ pub async fn run(
 ) -> anyhow::Result<(Sender<HttpServer>, Sender<HttpServer>)> {
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
+    let indexes = Arc::new(RwLock::new(Indexes::new()));
+
     let engine = engine::new(
         db_actor,
         index_factory,
         node_state.clone(),
         metrics.clone(),
+        Arc::clone(&indexes),
         receivers.config,
     )
     .await?;
 
     let main = httpserver::new(
         node_state.clone(),
+        Arc::clone(&indexes),
         engine.clone(),
         metrics.clone(),
         internals.clone(),
@@ -668,6 +674,7 @@ pub async fn run(
 
     let mtls = httpserver::new(
         node_state,
+        indexes,
         engine,
         metrics,
         internals,
@@ -754,7 +761,7 @@ pub async fn wait_for_shutdown() {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Percentage {
     value: f64,
 }
@@ -779,7 +786,7 @@ impl TryFrom<f64> for Percentage {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Progress {
     Done,
     InProgress(Percentage),

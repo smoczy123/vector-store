@@ -5,6 +5,7 @@
 
 use crate::Filter;
 use crate::IndexKey;
+use crate::Indexes;
 use crate::Progress;
 use crate::Quantization;
 use crate::Restriction;
@@ -61,6 +62,7 @@ use std::num::NonZero;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::RwLock;
 use time::Date;
 use time::OffsetDateTime;
 use time::Time;
@@ -119,6 +121,7 @@ struct RoutesInnerState {
 }
 
 pub(crate) fn new(
+    indexes: Arc<RwLock<Indexes>>,
     engine: Sender<Engine>,
     metrics: Arc<Metrics>,
     node_state: Sender<NodeState>,

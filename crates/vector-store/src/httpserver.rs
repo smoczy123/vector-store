@@ -6,6 +6,7 @@
 use crate::config_manager::HttpServerConfig;
 use crate::engine::Engine;
 use crate::httproutes;
+use crate::indexes::Indexes;
 use crate::internals::Internals;
 use crate::metrics::Metrics;
 use crate::node_state::NodeState;
@@ -15,6 +16,7 @@ use axum_server::accept::NoDelayAcceptor;
 use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -60,6 +62,7 @@ impl HttpServerExt for mpsc::Sender<HttpServer> {
 
 struct ServerDeps {
     state: Sender<NodeState>,
+    indexes: Arc<RwLock<Indexes>>,
     engine: Sender<Engine>,
     metrics: Arc<Metrics>,
     internals: Sender<Internals>,
@@ -207,6 +210,7 @@ async fn handle_config_change(
 
 pub(crate) async fn new(
     state: Sender<NodeState>,
+    indexes: Arc<RwLock<Indexes>>,
     engine: Sender<Engine>,
     metrics: Arc<Metrics>,
     internals: Sender<Internals>,
@@ -221,6 +225,7 @@ pub(crate) async fn new(
 
     let deps = ServerDeps {
         state,
+        indexes,
         engine,
         metrics,
         internals,
@@ -301,6 +306,7 @@ async fn spawn_server(
     let handle = Handle::new();
 
     let router = httproutes::new(
+        Arc::clone(&deps.indexes),
         deps.engine.clone(),
         deps.metrics.clone(),
         deps.state.clone(),
