@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-use crate::ColumnName;
 use crate::Config;
 use crate::DbIndexType;
 use crate::IndexKey;
@@ -17,7 +16,6 @@ use crate::db_index::DbIndexExt;
 use crate::factory::IndexFactory;
 use crate::index::Index;
 use crate::index::factory::IndexConfiguration;
-use crate::indexes::BestIndexState;
 use crate::indexes::IndexEntry;
 use crate::indexes::Indexes;
 use crate::memory;
@@ -45,7 +43,6 @@ use tracing::trace;
 type GetIndexKeysR = Vec<(IndexKey, Quantization)>;
 type AddIndexR = anyhow::Result<()>;
 type GetIndexR = Option<(mpsc::Sender<Index>, mpsc::Sender<DbIndex>)>;
-type GetBestIndexR = BestIndexState;
 
 pub(crate) enum Engine {
     GetIndexIds {
@@ -62,12 +59,6 @@ pub(crate) enum Engine {
         key: IndexKey,
         tx: oneshot::Sender<GetIndexR>,
     },
-    GetBestIndex {
-        key: IndexKey,
-        equality_columns: Vec<ColumnName>,
-        range_columns: Vec<ColumnName>,
-        tx: oneshot::Sender<GetBestIndexR>,
-    },
 }
 
 pub(crate) trait EngineExt {
@@ -75,12 +66,6 @@ pub(crate) trait EngineExt {
     async fn add_index(&self, metadata: IndexMetadata) -> AddIndexR;
     async fn del_index(&self, key: IndexKey);
     async fn get_index(&self, key: IndexKey) -> GetIndexR;
-    async fn get_best_index(
-        &self,
-        key: IndexKey,
-        equality_columns: Vec<ColumnName>,
-        range_columns: Vec<ColumnName>,
-    ) -> GetBestIndexR;
 }
 
 impl EngineExt for mpsc::Sender<Engine> {
@@ -115,25 +100,6 @@ impl EngineExt for mpsc::Sender<Engine> {
             .expect("EngineExt::get_index: internal actor should receive request");
         rx.await
             .expect("EngineExt::get_index: internal actor should send response")
-    }
-
-    async fn get_best_index(
-        &self,
-        key: IndexKey,
-        equality_columns: Vec<ColumnName>,
-        range_columns: Vec<ColumnName>,
-    ) -> GetBestIndexR {
-        let (tx, rx) = oneshot::channel();
-        self.send(Engine::GetBestIndex {
-            key,
-            equality_columns,
-            range_columns,
-            tx,
-        })
-        .await
-        .expect("EngineExt::get_best_index: internal actor should receive request");
-        rx.await
-            .expect("EngineExt::get_best_index: internal actor should send response")
     }
 }
 
@@ -188,20 +154,6 @@ pub(crate) async fn new(
 
                             Engine::GetIndex { key, tx } => get_index(key, tx, &indexes).await,
 
-                            Engine::GetBestIndex {
-                                key,
-                                equality_columns,
-                                range_columns,
-                                tx,
-                            } => {
-                                get_best_index(
-                                    key,
-                                    equality_columns,
-                                    range_columns,
-                                    tx,
-                                    &indexes,
-                                ).await
-                            }
                         }
                     }
 
@@ -348,21 +300,6 @@ async fn get_index(key: IndexKey, tx: oneshot::Sender<GetIndexR>, indexes: &RwLo
     );
 }
 
-async fn get_best_index(
-    key: IndexKey,
-    equality_columns: Vec<ColumnName>,
-    range_columns: Vec<ColumnName>,
-    tx: oneshot::Sender<GetBestIndexR>,
-    indexes: &RwLock<Indexes>,
-) {
-    let result = indexes
-        .read()
-        .unwrap()
-        .best_index(&key, &equality_columns, &range_columns);
-    tx.send(result)
-        .unwrap_or_else(|_| trace!("get_best_index: unable to send response"));
-}
-
 async fn update_indexes(node_state: &Sender<NodeState>, indexes: &RwLock<Indexes>) {
     let actual_indexes = indexes
         .read()
@@ -419,14 +356,6 @@ pub(crate) mod tests {
             key: IndexKey,
             tx: oneshot::Sender<GetIndexR>,
         ) -> impl Future<Output = ()> + Send + 'static;
-
-        fn get_best_index(
-            &self,
-            key: IndexKey,
-            equality_columns: Vec<ColumnName>,
-            range_columns: Vec<ColumnName>,
-            tx: oneshot::Sender<GetBestIndexR>,
-        ) -> impl Future<Output = ()> + Send + 'static;
     }
 
     pub(crate) fn new(sim: impl SimEngine + Send + 'static) -> mpsc::Sender<Engine> {
@@ -449,15 +378,6 @@ pub(crate) mod tests {
                         Engine::AddIndex { metadata, tx } => sim.add_index(metadata, tx).await,
                         Engine::DelIndex { key } => sim.del_index(key).await,
                         Engine::GetIndex { key, tx } => sim.get_index(key, tx).await,
-                        Engine::GetBestIndex {
-                            key,
-                            equality_columns,
-                            range_columns,
-                            tx,
-                        } => {
-                            sim.get_best_index(key, equality_columns, range_columns, tx)
-                                .await
-                        }
                     }
                 }
 
