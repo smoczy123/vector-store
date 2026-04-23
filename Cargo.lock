@@ -4220,7 +4220,19 @@ dependencies = [
 name = "vector-search-validator"
 version = "0.0.0-dev"
 dependencies = [
+ "async-backtrace",
+ "bcrypt",
+ "httpclient",
+ "scylla",
+ "scylla-proxy",
+ "serde_json",
+ "tap",
+ "tokio",
+ "tracing",
+ "uuid",
  "vector-search-validator-engine",
+ "vector-search-validator-tests",
+ "vector-store",
 ]
 
 [[package]]
@@ -4244,7 +4256,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vector-search-validator-tests",
- "vector-search-validator-vector-store",
  "vector-store",
 ]
 
@@ -4263,24 +4274,6 @@ dependencies = [
  "tap",
  "tokio",
  "tracing",
- "vector-store",
-]
-
-[[package]]
-name = "vector-search-validator-vector-store"
-version = "0.0.0-dev"
-dependencies = [
- "async-backtrace",
- "bcrypt",
- "httpclient",
- "scylla",
- "scylla-proxy",
- "serde_json",
- "tap",
- "tokio",
- "tracing",
- "uuid",
- "vector-search-validator-tests",
  "vector-store",
 ]
 
