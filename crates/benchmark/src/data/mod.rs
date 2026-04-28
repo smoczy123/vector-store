@@ -169,7 +169,11 @@ pub(crate) async fn build_and_write_buckets(data_dir: PathBuf) {
 async fn read_buckets(path: &Path) -> HashMap<i64, u8> {
     let path = path.join(BUCKETS_FILENAME);
     info!("Readings buckets from {path:?}...");
-    let mut buckets_reader = BufReader::new(File::open(path).await.unwrap());
+    let Ok(file) = File::open(&path).await else {
+        info!("Not found {path:?}. No buckets will be used.");
+        return HashMap::new();
+    };
+    let mut buckets_reader = BufReader::new(file);
     let mut buckets = HashMap::new();
     loop {
         let Ok(id) = buckets_reader.read_i64().await else {
