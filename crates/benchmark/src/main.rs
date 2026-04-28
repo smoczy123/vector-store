@@ -11,7 +11,6 @@ use crate::data::Query;
 use crate::db::Scylla;
 use clap::Parser;
 use clap::Subcommand;
-use clap::ValueEnum;
 use futures::future;
 use itertools::Itertools;
 use std::cmp;
@@ -39,21 +38,6 @@ const INDEX: &str = "vsb_index";
 struct Args {
     #[command(subcommand)]
     command: Command,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum MetricType {
-    Cosine,
-    Euclidean,
-    DotProduct,
-}
-
-struct IndexOption {
-    local: bool,
-    metric_type: MetricType,
-    m: usize,
-    ef_construction: usize,
-    ef_search: usize,
 }
 
 #[derive(Subcommand)]
@@ -119,16 +103,7 @@ enum Command {
         local: bool,
 
         #[clap(long)]
-        metric_type: MetricType,
-
-        #[clap(long)]
-        m: usize,
-
-        #[clap(long)]
-        ef_construction: usize,
-
-        #[clap(long)]
-        ef_search: usize,
+        options: String,
     },
 
     DropTable {
@@ -293,27 +268,13 @@ async fn main() {
             index,
             vector_store,
             local,
-            metric_type,
-            m,
-            ef_construction,
-            ef_search,
+            options,
         } => {
             let scylla = Scylla::new(scylla, user, passwd_path, &keyspace, &table).await;
             let clients = vs::new_http_clients(vector_store);
             let (duration, _) = measure_duration(async move {
                 scylla
-                    .create_index(
-                        &keyspace,
-                        &table,
-                        &index,
-                        IndexOption {
-                            local,
-                            metric_type,
-                            m,
-                            ef_construction,
-                            ef_search,
-                        },
-                    )
+                    .create_index(&keyspace, &table, &index, local, &options)
                     .await;
                 vs::wait_for_indexes_ready(&keyspace, &index, &clients).await;
             })
