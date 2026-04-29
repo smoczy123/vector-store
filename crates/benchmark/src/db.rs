@@ -12,7 +12,7 @@ use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -180,7 +180,7 @@ impl Scylla {
         &self,
         keyspace: &str,
         table: &str,
-        buckets: Arc<HashMap<i64, u8>>,
+        buckets: Arc<BTreeMap<i64, u8>>,
         mut stream: BoxStream<'static, (i64, Vec<f32>)>,
         concurrency: usize,
     ) {
