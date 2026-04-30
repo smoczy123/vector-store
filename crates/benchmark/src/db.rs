@@ -4,9 +4,7 @@
  */
 
 use crate::Query;
-use futures::StreamExt;
 use futures::TryStreamExt;
-use futures::stream::BoxStream;
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
@@ -20,6 +18,7 @@ use std::time::Duration;
 use tap::Pipe;
 use tokio::fs;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 use tokio::time;
 use tracing::error;
 use tracing::info;
@@ -181,7 +180,7 @@ impl Scylla {
         keyspace: &str,
         table: &str,
         buckets: Arc<BTreeMap<i64, u8>>,
-        mut stream: BoxStream<'static, (i64, Vec<f32>)>,
+        mut rx: mpsc::Receiver<(i64, Box<[f32]>)>,
         concurrency: usize,
     ) {
         let mut st_insert = self
@@ -197,7 +196,7 @@ impl Scylla {
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut count = 0;
-        while let Some((vector_id, vector)) = stream.next().await {
+        while let Some((vector_id, vector)) = rx.recv().await {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let scylla = Arc::clone(&self.0);
             let st_insert = st_insert.clone();

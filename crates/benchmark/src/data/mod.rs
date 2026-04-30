@@ -7,7 +7,6 @@ mod fbin;
 mod parquet;
 
 use futures::StreamExt;
-use futures::stream::BoxStream;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -20,6 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::io::BufWriter;
+use tokio::sync::mpsc;
 use tracing::info;
 
 const DATASET_FILENAME: &str = "dataset.toml";
@@ -73,7 +73,7 @@ impl Data {
         }
     }
 
-    pub(crate) async fn vector_stream(&self) -> BoxStream<'static, (i64, Vec<f32>)> {
+    pub(crate) async fn vector_stream(&self) -> mpsc::Receiver<(i64, Box<[f32]>)> {
         match &self.format {
             Format::Parquet(config) => {
                 parquet::vector_stream(Arc::clone(&self.path), Arc::clone(config)).await

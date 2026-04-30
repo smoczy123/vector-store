@@ -24,6 +24,8 @@ use std::sync::Arc;
 use tap::Pipe;
 use tokio::fs;
 use tokio::fs::File;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReadDirStream;
 
 #[derive(Deserialize)]
@@ -150,13 +152,19 @@ async fn train_files(path: Arc<PathBuf>, config: Arc<Config>) -> impl Stream<Ite
 fn extract_embedding(
     ids: impl Iterator<Item = i64>,
     embs: impl Iterator<Item = Option<Arc<dyn Array>>>,
-) -> Vec<(i64, Vec<f32>)> {
+) -> Vec<(i64, Box<[f32]>)> {
     let embs = embs.map(|emb| emb.unwrap()).map(|emb| {
         if let Some(emb) = emb.as_primitive_opt::<Float64Type>() {
-            emb.iter().map(|v| v.unwrap() as f32).collect_vec()
+            emb.iter()
+                .map(|v| v.unwrap() as f32)
+                .collect_vec()
+                .into_boxed_slice()
         } else {
             let emb = emb.as_primitive::<Float32Type>();
-            emb.iter().map(|v| v.unwrap()).collect_vec()
+            emb.iter()
+                .map(|v| v.unwrap())
+                .collect_vec()
+                .into_boxed_slice()
         }
     });
     ids.zip(embs).collect_vec()
@@ -203,8 +211,8 @@ pub(crate) async fn ids_stream(path: Arc<PathBuf>, config: Arc<Config>) -> BoxSt
 pub(crate) async fn vector_stream(
     path: Arc<PathBuf>,
     config: Arc<Config>,
-) -> BoxStream<'static, (i64, Vec<f32>)> {
-    train_files(path, Arc::clone(&config))
+) -> mpsc::Receiver<(i64, Box<[f32]>)> {
+    let mut stream = train_files(path, Arc::clone(&config))
         .await
         .then({
             let config = Arc::clone(&config);
@@ -255,7 +263,19 @@ pub(crate) async fn vector_stream(
             stream::iter(ids_embs)
         })
         .flatten()
-        .boxed()
+        .boxed();
+
+    let workers = Handle::current().metrics().num_workers();
+    const OVERLOAD_FACTOR: usize = 3;
+    let (tx, rx) = mpsc::channel(workers * OVERLOAD_FACTOR);
+    tokio::spawn(async move {
+        while let Some(id_emb) = stream.next().await {
+            if tx.send(id_emb).await.is_err() {
+                return;
+            }
+        }
+    });
+    rx
 }
 
 pub(crate) async fn queries(
