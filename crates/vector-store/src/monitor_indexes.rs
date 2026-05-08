@@ -81,20 +81,9 @@ pub(crate) async fn new(
                         };
 
                         if alter_index_simulator {
-                            node_state.send_event(
-                                Event::IndexesDiscovered(
-                                    indexes
-                                        .iter()
-                                        .filter(|idx| !should_delete_simulator(idx, &new_indexes))
-                                        .chain(
-                                            new_indexes
-                                                .iter()
-                                                .filter(|idx| should_add_simulator(idx, &indexes))
-                                        )
-                                        .cloned()
-                                        .collect()
-                                )
-                            ).await;
+                            node_state.send_event(Event::IndexesDiscovered(
+                                discovered_indexes_simulator(&indexes, &new_indexes)
+                            )).await;
                         } else {
                             node_state.send_event(
                                 Event::IndexesDiscovered(new_indexes.clone()),
@@ -299,9 +288,27 @@ fn should_delete_simulator(curr_idx: &IndexMetadata, new_indexes: &HashSet<Index
 
 /// add the index if it appears only in the new_indexes
 fn should_add_simulator(new_idx: &IndexMetadata, curr_indexes: &HashSet<IndexMetadata>) -> bool {
+    let new_idx = new_idx.discard_version();
     curr_indexes
         .iter()
-        .all(|curr_idx| curr_idx.key() != new_idx.key())
+        .map(|curr_idx| curr_idx.discard_version())
+        .all(|curr_idx| curr_idx != new_idx)
+}
+
+fn discovered_indexes_simulator(
+    curr_indexes: &HashSet<IndexMetadata>,
+    new_indexes: &HashSet<IndexMetadata>,
+) -> HashSet<IndexMetadata> {
+    curr_indexes
+        .iter()
+        .filter(|idx| !should_delete_simulator(idx, new_indexes))
+        .chain(
+            new_indexes
+                .iter()
+                .filter(|idx| should_add_simulator(idx, curr_indexes)),
+        )
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -813,6 +820,14 @@ mod tests {
             },
             &[idx.clone()].into_iter().collect()
         ));
+        assert!(should_delete_simulator(
+            &IndexMetadata {
+                quantization: Quantization::I8,
+                version: Uuid::new_v4().into(),
+                ..idx.clone()
+            },
+            &[idx.clone()].into_iter().collect()
+        ));
     }
 
     #[test]
@@ -841,8 +856,8 @@ mod tests {
             &[idx.clone()].into_iter().collect()
         ));
     }
-    #[test]
 
+    #[test]
     fn validate_should_add_simulator() {
         let idx = IndexMetadata {
             keyspace_name: "ks".into(),
@@ -874,5 +889,65 @@ mod tests {
             },
             &[idx.clone()].into_iter().collect()
         ));
+        assert!(should_add_simulator(
+            &IndexMetadata {
+                quantization: Quantization::I8,
+                version: Uuid::new_v4().into(),
+                ..idx.clone()
+            },
+            &[idx.clone()].into_iter().collect()
+        ));
+    }
+
+    #[test]
+    fn validate_discovered_indexes_simulator() {
+        let discovered = discovered_indexes_simulator(&HashSet::new(), &HashSet::new());
+        assert_eq!(discovered.len(), 0);
+
+        let idx1 = IndexMetadata {
+            keyspace_name: "ks".into(),
+            index_name: "idx".into(),
+            table_name: "tbl".into(),
+            target_column: "embedding".into(),
+            index_type: DbIndexType::Global,
+            filtering_columns: Arc::new(Vec::new()),
+            dimensions: NonZeroUsize::new(3).unwrap().into(),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            version: Uuid::new_v4().into(),
+            quantization: Default::default(),
+        };
+
+        let discovered =
+            discovered_indexes_simulator(&HashSet::new(), &[idx1.clone()].into_iter().collect());
+        assert_eq!(discovered.len(), 1);
+        assert!(discovered.contains(&idx1));
+
+        let discovered =
+            discovered_indexes_simulator(&[idx1.clone()].into_iter().collect(), &HashSet::new());
+        assert_eq!(discovered.len(), 1);
+        assert!(discovered.contains(&idx1));
+
+        let discovered = discovered_indexes_simulator(
+            &[idx1.clone()].into_iter().collect(),
+            &[idx1.clone()].into_iter().collect(),
+        );
+        assert_eq!(discovered.len(), 1);
+        assert!(discovered.contains(&idx1));
+
+        let idx2 = IndexMetadata {
+            quantization: Quantization::I8,
+            version: Uuid::new_v4().into(),
+            ..idx1.clone()
+        };
+        let discovered = discovered_indexes_simulator(
+            &[idx1.clone()].into_iter().collect(),
+            &[idx2.clone()].into_iter().collect(),
+        );
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered.contains(&idx1));
+        assert!(discovered.contains(&idx2));
     }
 }
