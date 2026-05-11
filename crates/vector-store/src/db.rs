@@ -302,6 +302,7 @@ pub(crate) async fn new(
                         warn!("CDC error notification received, cancelling the current ScyllaDB connection...");
                         // Cancel existing session and let reconnection timer handle it
                         session_tx.send(None).ok();
+                        internals.create_session(None).await;
                     }
 
                     // Config changes - check if URI/credentials changed
@@ -309,37 +310,18 @@ pub(crate) async fn new(
                         if result.is_ok() {
                             let new_config = config_rx.borrow_and_update().clone();
 
-                            // Check if credentials or URI changed
-                            let uri_changed = new_config.scylladb_uri != config.scylladb_uri;
-                            let credentials_changed = match (&new_config.credentials, &config.credentials) {
-                                (None, None) => false,
-                                (Some(_), None) | (None, Some(_)) => true,
-                                (Some(new_creds), Some(old_creds)) => {
-                                    new_creds.username != old_creds.username
-                                        || new_creds.certificate_path != old_creds.certificate_path
-                                        // SecretString doesn't implement PartialEq, so we compare exposed secrets
-                                        || match (&new_creds.password, &old_creds.password) {
-                                            (None, None) => false,
-                                            (Some(_), None) | (None, Some(_)) => true,
-                                            (Some(new_pass), Some(old_pass)) => {
-                                                new_pass.expose_secret() != old_pass.expose_secret()
-                                            }
-                                        }
-                                }
-                            };
+                            let reconnect_reasons = reconnect_reasons(&config, &new_config);
 
-                            if uri_changed || credentials_changed {
-                                if uri_changed {
-                                    warn!("ScyllaDB URI changed from {} to {}, will reconnect...",
-                                          config.scylladb_uri, new_config.scylladb_uri);
-                                }
-                                if credentials_changed {
-                                    warn!("ScyllaDB credentials changed, will reconnect...");
-                                }
+                            if !reconnect_reasons.is_empty() {
+                                warn!(
+                                    "ScyllaDB session configuration changed ({}), will reconnect...",
+                                    reconnect_reasons.join(", ")
+                                );
                                 config = new_config;
 
                                 // Cancel existing session and let reconnection timer handle it
                                 session_tx.send(None).ok();
+                                internals.create_session(None).await;
                                 info!("Session canceled, reconnection will occur on next timer tick");
                             }
                         }
@@ -463,6 +445,55 @@ async fn process(
         Db::IsValidIndex { metadata, tx } => tx
             .send(statements.is_valid_index(metadata).await)
             .unwrap_or_else(|_| trace!("process: Db::IsValidIndex: unable to send response")),
+    }
+}
+
+fn reconnect_reasons(old_config: &Config, new_config: &Config) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+
+    if new_config.scylladb_uri != old_config.scylladb_uri {
+        reasons.push("ScyllaDB URI");
+    }
+    if credentials_changed(&old_config.credentials, &new_config.credentials) {
+        reasons.push("ScyllaDB credentials");
+    }
+    if new_config.cql_connection_timeout != old_config.cql_connection_timeout {
+        reasons.push("CQL connection timeout");
+    }
+    if new_config.cql_keepalive_interval != old_config.cql_keepalive_interval {
+        reasons.push("CQL keepalive interval");
+    }
+    if new_config.cql_keepalive_timeout != old_config.cql_keepalive_timeout {
+        reasons.push("CQL keepalive timeout");
+    }
+    if new_config.cql_tcp_keepalive_interval != old_config.cql_tcp_keepalive_interval {
+        reasons.push("CQL TCP keepalive interval");
+    }
+    if new_config.cql_uri_translation_map != old_config.cql_uri_translation_map {
+        reasons.push("CQL URI translation map");
+    }
+
+    reasons
+}
+
+fn credentials_changed(
+    old_credentials: &Option<Credentials>,
+    new_credentials: &Option<Credentials>,
+) -> bool {
+    match (old_credentials, new_credentials) {
+        (None, None) => false,
+        (Some(_), None) | (None, Some(_)) => true,
+        (Some(old_creds), Some(new_creds)) => {
+            old_creds.username != new_creds.username
+                || old_creds.certificate_path != new_creds.certificate_path
+                || match (&old_creds.password, &new_creds.password) {
+                    (None, None) => false,
+                    (Some(_), None) | (None, Some(_)) => true,
+                    (Some(old_pass), Some(new_pass)) => {
+                        old_pass.expose_secret() != new_pass.expose_secret()
+                    }
+                }
+        }
     }
 }
 
@@ -1036,6 +1067,8 @@ fn from_target_option(
 pub(crate) mod tests {
     use super::*;
     use mockall::automock;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
     use tracing::debug;
 
     #[automock]
@@ -1142,5 +1175,26 @@ pub(crate) mod tests {
         );
 
         tx
+    }
+
+    #[test]
+    fn reconnects_when_cql_translation_map_changes() {
+        let from = SocketAddr::from(([127, 0, 0, 1], 9042));
+        let old_to = SocketAddr::from(([127, 0, 0, 1], 9142));
+        let new_to = SocketAddr::from(([127, 0, 0, 1], 9242));
+
+        let old_config = Config {
+            cql_uri_translation_map: Some(HashMap::from([(from, old_to)])),
+            ..Config::default()
+        };
+        let new_config = Config {
+            cql_uri_translation_map: Some(HashMap::from([(from, new_to)])),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            reconnect_reasons(&old_config, &new_config),
+            vec!["CQL URI translation map"]
+        );
     }
 }
