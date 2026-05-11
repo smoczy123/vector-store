@@ -1348,7 +1348,8 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "e2etest"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "async-backtrace",
  "clap",
@@ -1359,7 +1360,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-dns"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "async-backtrace",
  "hickory-server",
@@ -1369,7 +1371,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-firewall"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "anyhow",
  "async-backtrace",
@@ -1380,7 +1383,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-scylla-cluster"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "async-backtrace",
  "e2etest",
@@ -1393,7 +1397,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-scylla-proxy-cluster"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "async-backtrace",
  "scylla-proxy",
@@ -1403,7 +1408,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-tls"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "async-backtrace",
  "rcgen",
@@ -1416,7 +1422,8 @@ dependencies = [
 
 [[package]]
 name = "e2etest-vector-store-cluster"
-version = "0.0.0-dev"
+version = "0.1.0"
+source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
 dependencies = [
  "anyhow",
  "async-backtrace",
