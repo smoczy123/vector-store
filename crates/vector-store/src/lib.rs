@@ -24,12 +24,14 @@ mod monitor_indexes;
 mod monitor_items;
 pub mod node_state;
 mod partition_key;
+mod perf;
 mod primary_key;
 mod similarity;
 mod table;
 mod timestamp;
 pub mod tls;
 mod vector;
+mod worker;
 
 pub use crate::config_manager::ConfigManager;
 pub use crate::config_manager::ConfigReceivers;
@@ -39,6 +41,7 @@ pub use crate::distance::Distance;
 pub use crate::httpserver::HttpServer;
 pub use crate::httpserver::HttpServerExt;
 pub use crate::index_key::IndexKey;
+use crate::indexes::Indexes;
 pub use crate::info::Info;
 use crate::internals::Internals;
 use crate::metrics::Metrics;
@@ -65,15 +68,13 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use tokio::runtime::Builder;
-use tokio::runtime::Handle;
 use tokio::signal;
-use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::watch;
-use tokio::task;
 use utoipa::openapi::OpenApi;
 use uuid::Uuid;
 pub use vector::Vector;
@@ -615,13 +616,6 @@ pub struct DbEmbedding {
 pub struct AsyncInProgress(mpsc::Sender<()>);
 
 pub fn block_on<Output>(threads: Option<usize>, f: impl AsyncFnOnce() -> Output) -> Output {
-    if let Some(threads @ 1..) = threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .unwrap();
-    }
-
     let mut builder = match threads {
         Some(0) | None => Builder::new_multi_thread(),
         Some(1) => Builder::new_current_thread(),
@@ -647,17 +641,21 @@ pub async fn run(
 ) -> anyhow::Result<(Sender<HttpServer>, Sender<HttpServer>)> {
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
+    let indexes = Arc::new(RwLock::new(Indexes::new()));
+
     let engine = engine::new(
         db_actor,
         index_factory,
         node_state.clone(),
         metrics.clone(),
+        Arc::clone(&indexes),
         receivers.config,
     )
     .await?;
 
     let main = httpserver::new(
         node_state.clone(),
+        Arc::clone(&indexes),
         engine.clone(),
         metrics.clone(),
         internals.clone(),
@@ -668,6 +666,7 @@ pub async fn run(
 
     let mtls = httpserver::new(
         node_state,
+        indexes,
         engine,
         metrics,
         internals,
@@ -695,32 +694,10 @@ pub fn new_internals() -> Sender<Internals> {
     internals::new()
 }
 
-// yield to let other tasks run before cpu-intensive processing, as it is CPU intensive and can
-// block other tasks (increase tail latency)
-async fn move_to_the_end_of_async_runtime_queue() {
-    task::yield_now().await;
-}
-
 pub fn new_index_factory_usearch(
     config_tx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    // A semaphore that limits the concurrency of search operations, which are performed on Tokio threads.
-    // This is a global concurrency limit for all indexes.
-    let search_concurrency = Handle::current().metrics().num_workers();
-    let tokio_semaphore = Arc::new(Semaphore::new(search_concurrency));
-    // A semaphore that limits the concurrency of add/remove operations, which are performed on Rayon threads.
-    // This is a global concurrency limit for all indexes.
-    // The limit is set to 3 times the number of Rayon threads to ensure high throughput.
-    const RAYON_CONCURRENCY_MULTIPLIER: usize = 3;
-    let add_remove_concurrency =
-        (rayon::current_num_threads() * RAYON_CONCURRENCY_MULTIPLIER).min(Semaphore::MAX_PERMITS);
-    let rayon_semaphore = Arc::new(Semaphore::new(add_remove_concurrency));
-
-    Ok(Box::new(index::usearch::new_usearch(
-        tokio_semaphore,
-        rayon_semaphore,
-        config_tx,
-    )?))
+    Ok(Box::new(index::usearch::new_usearch(config_tx)?))
 }
 
 pub fn new_index_factory_opensearch(
@@ -754,7 +731,7 @@ pub async fn wait_for_shutdown() {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Percentage {
     value: f64,
 }
@@ -779,7 +756,7 @@ impl TryFrom<f64> for Percentage {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Progress {
     Done,
     InProgress(Percentage),
