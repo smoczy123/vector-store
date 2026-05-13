@@ -166,7 +166,7 @@ enum Command {
         #[clap(long, value_parser = clap::value_parser!(u8).range(0..=8))]
         bucket: Option<u8>,
 
-        #[clap(long, value_parser = clap::value_parser!(u32).range(1..=100))]
+        #[clap(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
         limit: u32,
 
         #[clap(long)]
@@ -195,7 +195,7 @@ enum Command {
         #[clap(long)]
         vector_store: Vec<SocketAddr>,
 
-        #[clap(long, value_parser = clap::value_parser!(u32).range(1..=100))]
+        #[clap(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
         limit: u32,
 
         #[clap(long)]
