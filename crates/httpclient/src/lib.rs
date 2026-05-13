@@ -67,13 +67,12 @@ impl HttpClient {
         Vec<Distance>,
         Vec<SimilarityScore>,
     ) {
-        let resp = dbg!(
-            self.post_ann(keyspace_name, index_name, vector, filter, limit)
-                .await
-        )
-        .json::<PostIndexAnnResponse>()
-        .await
-        .unwrap();
+        let resp = self
+            .post_ann(keyspace_name, index_name, vector, filter, limit)
+            .await
+            .json::<PostIndexAnnResponse>()
+            .await
+            .unwrap();
         (resp.primary_keys, resp.distances, resp.similarity_scores)
     }
 
