@@ -3,18 +3,14 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-use crate::IndexOption;
-use crate::MetricType;
 use crate::Query;
-use futures::StreamExt;
 use futures::TryStreamExt;
-use futures::stream::BoxStream;
 use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +18,7 @@ use std::time::Duration;
 use tap::Pipe;
 use tokio::fs;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
 use tokio::time;
 use tracing::error;
 use tracing::info;
@@ -147,14 +144,10 @@ impl Scylla {
         keyspace: &str,
         table: &str,
         index: &str,
-        config: IndexOption,
+        local: bool,
+        options: &str,
     ) {
-        let metric_type = match config.metric_type {
-            MetricType::Euclidean => "EUCLIDEAN",
-            MetricType::Cosine => "COSINE",
-            MetricType::DotProduct => "DOT_PRODUCT",
-        };
-        let local = if config.local {
+        let local = if local {
             format!("({BUCKET}), ")
         } else {
             String::new()
@@ -165,16 +158,8 @@ impl Scylla {
                 format!(
                     "
                     CREATE CUSTOM INDEX {index} ON {keyspace}.{table} ({local}{VECTOR})
-                    USING 'vector_index' WITH OPTIONS = {{
-                        'similarity_function': '{metric_type}',
-                        'maximum_node_connections': '{m}',
-                        'construction_beam_width': '{ef_construction}',
-                        'search_beam_width': '{ef_search}'
-                   }}
-                   ",
-                    m = config.m,
-                    ef_construction = config.ef_construction,
-                    ef_search = config.ef_search
+                    USING 'vector_index' WITH OPTIONS = {options}
+                   "
                 ),
                 &[],
             )
@@ -194,8 +179,8 @@ impl Scylla {
         &self,
         keyspace: &str,
         table: &str,
-        buckets: Arc<HashMap<i64, u8>>,
-        mut stream: BoxStream<'static, (i64, Vec<f32>)>,
+        buckets: Arc<BTreeMap<i64, u8>>,
+        mut rx: mpsc::Receiver<(i64, Box<[f32]>)>,
         concurrency: usize,
     ) {
         let mut st_insert = self
@@ -211,7 +196,7 @@ impl Scylla {
         let semaphore = Arc::new(Semaphore::new(concurrency));
 
         let mut count = 0;
-        while let Some((vector_id, vector)) = stream.next().await {
+        while let Some((vector_id, vector)) = rx.recv().await {
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let scylla = Arc::clone(&self.0);
             let st_insert = st_insert.clone();

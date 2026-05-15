@@ -7,9 +7,8 @@ mod fbin;
 mod parquet;
 
 use futures::StreamExt;
-use futures::stream::BoxStream;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -20,6 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::io::BufWriter;
+use tokio::sync::mpsc;
 use tracing::info;
 
 const DATASET_FILENAME: &str = "dataset.toml";
@@ -33,7 +33,7 @@ pub(crate) struct Query {
 pub(crate) struct Data {
     path: Arc<PathBuf>,
     format: Format,
-    buckets: Arc<HashMap<i64, u8>>,
+    buckets: Arc<BTreeMap<i64, u8>>,
 }
 
 enum Format {
@@ -73,7 +73,7 @@ impl Data {
         }
     }
 
-    pub(crate) async fn vector_stream(&self) -> BoxStream<'static, (i64, Vec<f32>)> {
+    pub(crate) async fn vector_stream(&self) -> mpsc::Receiver<(i64, Box<[f32]>)> {
         match &self.format {
             Format::Parquet(config) => {
                 parquet::vector_stream(Arc::clone(&self.path), Arc::clone(config)).await
@@ -84,7 +84,7 @@ impl Data {
         }
     }
 
-    pub(crate) fn buckets(&self) -> Arc<HashMap<i64, u8>> {
+    pub(crate) fn buckets(&self) -> Arc<BTreeMap<i64, u8>> {
         Arc::clone(&self.buckets)
     }
 }
@@ -113,7 +113,7 @@ async fn format(path: &Path) -> Format {
     Format::Parquet(Arc::new(parquet::Config::default()))
 }
 
-async fn build_buckets(path: Arc<PathBuf>, format: &Format) -> HashMap<i64, u8> {
+async fn build_buckets(path: Arc<PathBuf>, format: &Format) -> BTreeMap<i64, u8> {
     let stream = match &format {
         Format::Parquet(config) => parquet::ids_stream(Arc::clone(&path), Arc::clone(config)).await,
         Format::Fbin(config) => fbin::ids_stream(Arc::clone(&path), Arc::clone(config)).await,
@@ -121,7 +121,7 @@ async fn build_buckets(path: Arc<PathBuf>, format: &Format) -> HashMap<i64, u8> 
     info!("Building buckets for dataset at {path:?}...");
     let mut buckets = stream
         .map(|id| (id, u8::MAX))
-        .collect::<HashMap<_, _>>()
+        .collect::<BTreeMap<_, _>>()
         .await;
     const BUCKETS: usize = 9;
     let max_buckets = [
@@ -149,7 +149,7 @@ async fn build_buckets(path: Arc<PathBuf>, format: &Format) -> HashMap<i64, u8> 
     buckets
 }
 
-async fn write_buckets(path: &Path, buckets: HashMap<i64, u8>) {
+async fn write_buckets(path: &Path, buckets: BTreeMap<i64, u8>) {
     let path = path.join(BUCKETS_FILENAME);
     info!("Writing buckets at {path:?}...");
     let mut buckets_writer = BufWriter::new(File::create(path).await.unwrap());
@@ -166,11 +166,15 @@ pub(crate) async fn build_and_write_buckets(data_dir: PathBuf) {
     write_buckets(&data_dir, buckets).await;
 }
 
-async fn read_buckets(path: &Path) -> HashMap<i64, u8> {
+async fn read_buckets(path: &Path) -> BTreeMap<i64, u8> {
     let path = path.join(BUCKETS_FILENAME);
     info!("Readings buckets from {path:?}...");
-    let mut buckets_reader = BufReader::new(File::open(path).await.unwrap());
-    let mut buckets = HashMap::new();
+    let Ok(file) = File::open(&path).await else {
+        info!("Not found {path:?}. No buckets will be used.");
+        return BTreeMap::new();
+    };
+    let mut buckets_reader = BufReader::new(file);
+    let mut buckets = BTreeMap::new();
     loop {
         let Ok(id) = buckets_reader.read_i64().await else {
             break;

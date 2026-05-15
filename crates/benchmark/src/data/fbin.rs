@@ -18,6 +18,8 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 use tokio::io::BufReader;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 
 #[derive(Deserialize)]
 pub(crate) struct Config {
@@ -57,7 +59,7 @@ pub(crate) async fn ids_stream(path: Arc<PathBuf>, config: Arc<Config>) -> BoxSt
 pub(crate) async fn vector_stream(
     path: Arc<PathBuf>,
     config: Arc<Config>,
-) -> BoxStream<'static, (i64, Vec<f32>)> {
+) -> mpsc::Receiver<(i64, Box<[f32]>)> {
     let header = Header::header(&path.join(&config.data_fbin)).await;
 
     let mut data_fbin = BufReader::new(File::open(path.join(&config.data_fbin)).await.unwrap());
@@ -67,21 +69,21 @@ pub(crate) async fn vector_stream(
         .await
         .unwrap();
 
-    stream::unfold(
-        (0, header, data_fbin),
-        |(id, header, mut data_fbin)| async move {
-            if id == header.count {
-                return None;
-            }
-
+    let workers = Handle::current().metrics().num_workers();
+    const OVERLOAD_FACTOR: usize = 3;
+    let (tx, rx) = mpsc::channel(workers * OVERLOAD_FACTOR);
+    tokio::spawn(async move {
+        for id in 0..header.count as i64 {
             let mut vector = Vec::with_capacity(header.dimension as usize);
             for _ in 0..header.dimension {
                 vector.push(data_fbin.read_f32_le().await.unwrap());
             }
-            Some(((id as i64, vector), (id + 1, header, data_fbin)))
-        },
-    )
-    .boxed()
+            if tx.send((id, vector.into_boxed_slice())).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 pub(crate) async fn queries(
