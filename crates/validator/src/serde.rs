@@ -8,6 +8,7 @@ use crate::common;
 use crate::common::*;
 use async_backtrace::framed;
 use e2etest::TestCase;
+use scylla::statement::{Consistency, Statement};
 use scylla::value::CqlValue;
 use std::time::Duration;
 
@@ -220,14 +221,13 @@ async fn test_decimal_key(actors: TestActors) {
         let table = table.clone();
         let session = session.clone();
         async move {
+            let mut query = Statement::new(format!(
+                "INSERT INTO {table} (pk, ck, vec) VALUES ({pk}, {ck}, [{}, {}, {}])",
+                v[0], v[1], v[2]
+            ));
+            query.set_consistency(Consistency::All);
             session
-                .query_unpaged(
-                    format!(
-                        "INSERT INTO {table} (pk, ck, vec) VALUES ({pk}, {ck}, [{}, {}, {}])",
-                        v[0], v[1], v[2]
-                    ),
-                    (),
-                )
+                .query_unpaged(query, ())
                 .await
                 .unwrap_or_else(|e| panic!("insert pk={pk}, ck={ck}: {e}"));
         }
