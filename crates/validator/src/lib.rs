@@ -32,6 +32,7 @@ use e2etest_scylla_proxy_cluster::ScyllaProxyCluster;
 use e2etest_tls::Tls;
 use e2etest_vector_store_cluster::VectorStoreCluster;
 use e2etest_vector_store_cluster::VectorStoreClusterExt;
+use std::env;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -180,7 +181,7 @@ async fn fixture(args: &Args) -> TestActors {
 }
 
 pub fn run() -> Result<(), &'static str> {
-    e2etest::run(init, register, fixture)
+    e2etest::run(env::args_os(), init, register, fixture)
 }
 
 /// Represents a subnet for services, derived from a base IP address.

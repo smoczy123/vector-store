@@ -1349,7 +1349,8 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "e2etest"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62d8953946c126952b7f490151686121d00327b3aa552e4ba3f7dde03da0ac31"
 dependencies = [
  "async-backtrace",
  "clap",
@@ -1361,7 +1362,8 @@ dependencies = [
 [[package]]
 name = "e2etest-dns"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ccd0ca094d9232dd757981985ce54f0a2c89bb3fa1141fbae8bee9df31551ec"
 dependencies = [
  "async-backtrace",
  "hickory-server",
@@ -1372,7 +1374,8 @@ dependencies = [
 [[package]]
 name = "e2etest-firewall"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40cadae13aae75b20c35a6400b5003abf2ece1d198fa6ff993b77191f1afde52"
 dependencies = [
  "anyhow",
  "async-backtrace",
@@ -1384,7 +1387,8 @@ dependencies = [
 [[package]]
 name = "e2etest-scylla-cluster"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a145fd9bc023ed3596c4991329ccd46b29e6efde2ae267f8817fcd345e6ff60"
 dependencies = [
  "async-backtrace",
  "e2etest",
@@ -1398,7 +1402,8 @@ dependencies = [
 [[package]]
 name = "e2etest-scylla-proxy-cluster"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95210ebe73e21ee08f2045f8c441a2d3d46620a0bf09f6adf7ad7971106b231d"
 dependencies = [
  "async-backtrace",
  "scylla-proxy",
@@ -1409,7 +1414,8 @@ dependencies = [
 [[package]]
 name = "e2etest-tls"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3307fdcc13103983da71c63e69bb114529a6c5721c24fd93b099b3cf7fdb43cb"
 dependencies = [
  "async-backtrace",
  "rcgen",
@@ -1423,7 +1429,8 @@ dependencies = [
 [[package]]
 name = "e2etest-vector-store-cluster"
 version = "0.1.0"
-source = "git+https://github.com/scylladb/e2etest-rs?rev=f9c261c#f9c261c3836cf075ea064e7c5cf3290362bdfbf4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5060f9d070e4d422115f7981ef07606f815008f78bc257acbd9aa3d7c74b422"
 dependencies = [
  "anyhow",
  "async-backtrace",
