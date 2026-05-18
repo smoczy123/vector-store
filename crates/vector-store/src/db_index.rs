@@ -236,8 +236,16 @@ pub(crate) async fn new(
                         break;
                     }
 
-                    Some(msg) = rx_index.recv() => {
-                        tokio::spawn(process(Arc::clone(&statements), msg, completed_scan_length.clone()));
+                    msg = rx_index.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                tokio::spawn(process(Arc::clone(&statements), msg, completed_scan_length.clone()));
+                            }
+                            None => {
+                                // Index was dropped, stop fullscan.
+                                break;
+                            }
+                        }
                     }
 
                     else => {
