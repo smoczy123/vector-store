@@ -49,12 +49,19 @@ pub(crate) async fn new(
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
     tokio::spawn(
         async move {
-            const INTERVAL: Duration = Duration::from_secs(1);
-            let mut interval = time::interval(INTERVAL);
+            let (interval_duration, mut alter_index_simulator) = {
+                let config = config_rx.borrow_and_update();
+                (
+                    config
+                        .monitor_indexes_interval
+                        .unwrap_or(Duration::from_secs(1)),
+                    config.alter_index_simulator,
+                )
+            };
+            let mut interval = time::interval(interval_duration);
 
             let mut schema_version = SchemaVersion::new();
             let mut indexes = HashSet::new();
-            let mut alter_index_simulator = config_rx.borrow_and_update().alter_index_simulator;
             if alter_index_simulator {
                 info!("monitor_indexes: alter index simulator is enabled");
             }
