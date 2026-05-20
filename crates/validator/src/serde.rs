@@ -25,11 +25,9 @@ pub(crate) async fn new() -> TestCase<TestActors> {
             timeout,
             test_serialization_deserialization_all_types,
         )
-        // Enable when merged https://github.com/scylladb/scylladb/pull/29505
-        //.with_test("test_varint_filter", timeout, test_varint_filter)
+        .with_test("test_varint_filter", timeout, test_varint_filter)
         .with_test("test_decimal_key", timeout, test_decimal_key)
-    // Enable when merged https://github.com/scylladb/scylladb/pull/29505
-    //.with_test("test_decimal_filter", timeout, test_decimal_filter)
+        .with_test("test_decimal_filter", timeout, test_decimal_filter)
 }
 
 #[framed]
@@ -153,7 +151,8 @@ async fn test_varint_filter(actors: TestActors) {
             let rows = session
                 .query_unpaged(
                     format!(
-                        "SELECT ck FROM {table} WHERE pk = 1 AND {restriction} ORDER BY vec ANN OF [1.0, 2.0, 3.0] LIMIT 10"
+                        "SELECT ck FROM {table} WHERE pk = 1 AND {restriction} \
+                        ORDER BY vec ANN OF [1.0, 2.0, 3.0] LIMIT 10 ALLOW FILTERING"
                     ),
                     (),
                 )
@@ -383,7 +382,7 @@ async fn test_decimal_filter(actors: TestActors) {
                 .query_unpaged(
                     format!(
                         "SELECT ck FROM {table} WHERE pk = {pk} AND {restriction} \
-                         ORDER BY vec ANN OF [1.0, 2.0, 3.0] LIMIT 10"
+                         ORDER BY vec ANN OF [1.0, 2.0, 3.0] LIMIT 10 ALLOW FILTERING"
                     ),
                     (),
                 )
