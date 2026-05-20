@@ -1,0 +1,499 @@
+/*
+ * Copyright 2026-present ScyllaDB
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+ */
+
+mod create_table;
+
+use crate::TestActors;
+use crate::common;
+use async_backtrace::framed;
+use aws_config::BehaviorVersion;
+use aws_credential_types::Credentials;
+use aws_sdk_dynamodb::Client;
+use aws_sdk_dynamodb::config::Region;
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::create_table::CreateTableError;
+use aws_sdk_dynamodb::operation::create_table::CreateTableOutput;
+use aws_sdk_dynamodb::types::AttributeDefinition;
+use aws_sdk_dynamodb::types::BillingMode;
+use aws_sdk_dynamodb::types::KeySchemaElement;
+use aws_sdk_dynamodb::types::KeyType;
+use aws_sdk_dynamodb::types::ScalarAttributeType;
+use aws_smithy_runtime_api::box_error::BoxError;
+use aws_smithy_runtime_api::client::interceptors::Intercept;
+use aws_smithy_runtime_api::client::interceptors::context::BeforeTransmitInterceptorContextMut;
+use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
+use aws_smithy_types::body::SdkBody;
+use aws_smithy_types::config_bag::ConfigBag;
+use e2etest::TestCase;
+use http::HeaderValue;
+use http::header::CONTENT_LENGTH;
+use httpapi::IndexInfo;
+use httpapi::IndexName;
+use httpapi::KeyspaceName;
+use httpclient::HttpClient;
+use serde_json::Map;
+use serde_json::Value;
+use std::net::Ipv4Addr;
+use std::sync::atomic::AtomicUsize;
+use tracing::info;
+
+static TABLE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static INDEX_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn unique_table_name() -> String {
+    common::unique_name("Alt-Tbl", &TABLE_COUNTER)
+}
+
+fn unique_index_name() -> IndexName {
+    common::unique_name("Alt-Idx", &INDEX_COUNTER).into()
+}
+
+/// Maximum DynamoDB table name length accepted by ScyllaDB Alternator.
+///
+/// DynamoDB allows up to 255 characters, but ScyllaDB lowers this:
+/// Scylla stores each table in a directory named `<table>-<UUID>` (33 extra
+/// bytes), and Linux limits directory names to 255 bytes, capping CQL names
+/// at 222. Alternator then lowers it further to 192 to leave room for the
+/// `_scylla_cdc_log` suffix (15 chars) added when CDC/streams are enabled.
+/// See ScyllaDB `alternator/executor_util.hh`: `max_table_name_length = 192`.
+const MAX_ALTERNATOR_TABLE_NAME_LEN: usize = 192;
+
+/// Maximum DynamoDB vector index name length accepted by ScyllaDB Alternator.
+///
+/// Alternator validates index names with the same function and limit as table
+/// names. Documented in ScyllaDB `docs/alternator/vector-search.md`:
+/// "`IndexName`: 3–192 characters, matching the regex `[a-zA-Z0-9._-]+`".
+const MAX_ALTERNATOR_INDEX_NAME_LEN: usize = MAX_ALTERNATOR_TABLE_NAME_LEN;
+
+/// Maximum DynamoDB attribute name length in bytes.
+///
+/// Per AWS DynamoDB naming rules: attribute names must be between 1 and 255
+/// bytes long (UTF-8 encoded).
+/// See <https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.NamingRulesDataTypes.html>.
+const MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN: usize = 255;
+
+#[framed]
+pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
+    vec![("alternator_create_table".into(), create_table::new().await)]
+}
+
+const ALTERNATOR_PORT: u16 = 8000;
+
+/// In ScyllaDB Alternator, a DynamoDB table named `T` is stored under the CQL
+/// keyspace `alternator_T`. Vector Store discovers indexes by scanning
+/// `system_schema.indexes`, so the keyspace name is what VS uses to identify
+/// an Alternator-backed index.
+fn keyspace(table_name: &str) -> KeyspaceName {
+    format!("alternator_{table_name}").into()
+}
+
+/// A DynamoDB SDK interceptor that injects arbitrary key/value pairs into the
+/// JSON request body before SigV4 signing.
+///
+/// The standard `aws-sdk-dynamodb` crate serialises requests without knowledge
+/// of ScyllaDB Alternator extension fields such as `VectorIndexes`.  This
+/// interceptor fires in [`modify_before_signing`], reads the already-serialised
+/// JSON body, merges the provided fields, re-serialises, replaces the body, and
+/// updates the `Content-Length` header so the SigV4 signature and HTTP transport
+/// both operate on the correct byte count.
+///
+/// # Example
+/// ```ignore
+/// client
+///     .create_table()
+///     // ...
+///     .customize()
+///     .interceptor(JsonBodyInjectInterceptor::new([
+///         ("VectorIndexes", vector_indexes_json),
+///     ]))
+///     .send()
+///     .await?;
+/// ```
+///
+/// [`modify_before_signing`]: Intercept::modify_before_signing
+#[derive(Debug, Clone)]
+struct JsonBodyInjectInterceptor {
+    fields: Map<String, Value>,
+}
+
+impl JsonBodyInjectInterceptor {
+    /// Creates a new interceptor that will inject the given `fields` into every
+    /// outgoing request body.
+    fn new(fields: impl IntoIterator<Item = (impl Into<String>, Value)>) -> Self {
+        Self {
+            fields: fields.into_iter().map(|(k, v)| (k.into(), v)).collect(),
+        }
+    }
+}
+
+impl Intercept for JsonBodyInjectInterceptor {
+    fn name(&self) -> &'static str {
+        "JsonBodyInjectInterceptor"
+    }
+
+    fn modify_before_signing(
+        &self,
+        context: &mut BeforeTransmitInterceptorContextMut<'_>,
+        _runtime_components: &RuntimeComponents,
+        _cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        let new_bytes = {
+            let original = context
+                .request()
+                .body()
+                .bytes()
+                .ok_or("expected in-memory body for Alternator request")?
+                .to_vec();
+
+            let mut json: Value = serde_json::from_slice(&original)?;
+            let obj = json
+                .as_object_mut()
+                .ok_or("expected JSON object body for Alternator request")?;
+            for (key, value) in &self.fields {
+                obj.insert(key.clone(), value.clone());
+            }
+            serde_json::to_vec(&json)?
+        };
+
+        let new_len = new_bytes.len();
+
+        let request = context.request_mut();
+        *request.body_mut() = SdkBody::from(new_bytes);
+        request.headers_mut().insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&new_len.to_string()).expect("content-length value is valid"),
+        );
+
+        Ok(())
+    }
+}
+
+/// Builds a DynamoDB client pointing at the ScyllaDB Alternator endpoint on
+/// `db_ip`.
+///
+/// Dummy AWS credentials are used because authorization is disabled in tests
+/// via `--alternator-enforce-authorization=false`.
+async fn make_dynamodb_client(db_ip: Ipv4Addr) -> Client {
+    let creds = Credentials::new("any", "any", None, None, "test");
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .credentials_provider(creds)
+        .endpoint_url(format!("http://{db_ip}:{ALTERNATOR_PORT}"))
+        .region(Region::new("us-east-1"))
+        .load()
+        .await;
+    Client::new(&config)
+}
+
+/// Polls the Alternator HTTP endpoint on `db_ip` until it responds successfully.
+///
+/// The Alternator port may become available slightly after the CQL port (which
+/// is what `db.wait_for_ready()` checks), so `init` should call this once after
+/// the cluster has started before any tests run.
+async fn wait_for_alternator(db_ip: Ipv4Addr) {
+    let client = make_dynamodb_client(db_ip).await;
+    common::wait_for(
+        || {
+            let c = client.clone();
+            async move { c.list_tables().limit(1).send().await.is_ok() }
+        },
+        format!("Alternator endpoint at http://{db_ip}:{ALTERNATOR_PORT} to be ready"),
+        common::DEFAULT_TEST_TIMEOUT,
+    )
+    .await;
+}
+
+async fn make_clients(actors: &TestActors) -> (Client, Vec<HttpClient>) {
+    let db_ip = actors.services_subnet.ip(common::DB_OCTET_1);
+    let dynamodb_client = make_dynamodb_client(db_ip).await;
+    let vs_clients = common::get_default_vs_ips(actors)
+        .into_iter()
+        .map(|ip| HttpClient::new((ip, common::VS_PORT).into()))
+        .collect();
+    (dynamodb_client, vs_clients)
+}
+
+async fn wait_for_index(clients: &[HttpClient], index: &IndexInfo) {
+    for client in clients {
+        common::wait_for_index(client, index).await;
+    }
+}
+
+async fn wait_for_no_index(clients: &[HttpClient], index: &IndexInfo) {
+    for client in clients {
+        common::wait_for_no_index(client, index).await;
+    }
+}
+
+/// Creates an Alternator table with the given key schema and optional vector
+/// indexes. Pass `&[]` for `vector_indexes` to create a plain table.
+async fn create_table(
+    client: &Client,
+    table_name: &str,
+    partition_key_name: &str,
+    pk_type: ScalarAttributeType,
+    sort_key_name: Option<&str>,
+    vector_indexes: &[(&str, &str, usize)],
+) -> Result<CreateTableOutput, SdkError<CreateTableError>> {
+    let mut builder = client
+        .create_table()
+        .table_name(table_name)
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name(partition_key_name)
+                .attribute_type(pk_type)
+                .build()
+                .expect("failed to build AttributeDefinition"),
+        )
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name(partition_key_name)
+                .key_type(KeyType::Hash)
+                .build()
+                .expect("failed to build KeySchemaElement"),
+        )
+        .billing_mode(BillingMode::PayPerRequest);
+
+    if let Some(sk) = sort_key_name {
+        builder = builder
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name(sk)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("failed to build AttributeDefinition"),
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name(sk)
+                    .key_type(KeyType::Range)
+                    .build()
+                    .expect("failed to build KeySchemaElement"),
+            );
+    }
+
+    if vector_indexes.is_empty() {
+        builder.send().await
+    } else {
+        let indexes_json = serde_json::json!(
+            vector_indexes
+                .iter()
+                .map(|(index_name, vec_attr, dims)| {
+                    serde_json::json!({
+                        "IndexName": index_name,
+                        "VectorAttribute": {
+                            "AttributeName": vec_attr,
+                            "Dimensions": dims
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+        );
+        builder
+            .customize()
+            .interceptor(JsonBodyInjectInterceptor::new([(
+                "VectorIndexes",
+                indexes_json,
+            )]))
+            .send()
+            .await
+    }
+}
+
+async fn delete_table(client: &Client, table_name: &str) {
+    client
+        .delete_table()
+        .table_name(table_name)
+        .send()
+        .await
+        .expect("DeleteTable should succeed");
+}
+
+/// Standard test init: starts ScyllaDB with the Alternator endpoint enabled on
+/// each node's own IP, alongside the Vector Store.
+#[framed]
+pub async fn init(actors: TestActors) {
+    info!("started");
+
+    let mut scylla_configs = common::get_default_scylla_node_configs(&actors).await;
+
+    for config in &mut scylla_configs {
+        let node_ip = config.db_ip;
+        config.args.extend([
+            format!("--alternator-port={ALTERNATOR_PORT}"),
+            format!("--alternator-address={node_ip}"),
+            "--alternator-write-isolation=only_rmw_uses_lwt".to_string(),
+            "--alternator-enforce-authorization=false".to_string(),
+            // NOTE: --alternator-ttl-period-in-seconds is already set in
+            // DEFAULT_SCYLLA_ARGS (0.5s). ScyllaDB rejects duplicate flags.
+        ]);
+    }
+
+    // Capture db_ip before actors is moved into init_with_config.
+    let db_ip = actors.services_subnet.ip(common::DB_OCTET_1);
+    let vs_configs = common::get_default_vs_node_configs(&actors).await;
+    common::init_with_config(actors, scylla_configs, vs_configs).await;
+
+    wait_for_alternator(db_ip).await;
+    info!("finished");
+}
+
+/// Describes the key schema, attribute names, and name prefixes for a test
+/// table. Controls what [`TableContext::create`] builds. See
+/// [`name_patterns`] for the standard 2x2 test matrix.
+#[derive(Debug, Clone)]
+struct TableShape {
+    /// When `Some`, the table name base is padded and composed with a unique
+    /// suffix so that the total equals [`MAX_ALTERNATOR_TABLE_NAME_LEN`].
+    /// When `None`, a plain unique name is used.
+    pub table_prefix: Option<&'static str>,
+    /// Same as `table_prefix`, but for the index name.
+    pub index_prefix: Option<&'static str>,
+    pub pk_name: String,
+    pub sk_name: Option<String>,
+    pub vec_name: Option<String>,
+    /// Scalar type of the partition key attribute.  Use `ScalarAttributeType::S`
+    /// for the default string key; `N` or `B` for numeric / binary key tests.
+    pub pk_type: ScalarAttributeType,
+}
+
+impl TableShape {
+    pub fn pk(&self) -> &str {
+        &self.pk_name
+    }
+    pub fn sk(&self) -> Option<&str> {
+        self.sk_name.as_deref()
+    }
+    pub fn vec(&self) -> Option<&str> {
+        self.vec_name.as_deref()
+    }
+}
+
+//
+// Base strings contain the "interesting" characters we want to test:
+// ASCII special chars, mixed case, hyphens, dots, and multi-byte UTF-8
+// (Cyrillic 2-byte, CJK 3-byte, emoji 4-byte).  The `pad_to_len` helper
+// extends them to the exact maximum length with ASCII 'X' padding.
+
+/// Pads `base` with `pad` bytes to exactly `len` bytes.
+///
+/// # Panics
+/// Panics if `base` is already longer than `len`.
+fn pad_to_len(base: &str, len: usize, pad: char) -> String {
+    assert!(
+        base.len() <= len,
+        "base ({} bytes) exceeds target length ({len})",
+        base.len()
+    );
+    let mut s = String::with_capacity(len);
+    s.push_str(base);
+    for _ in 0..(len - base.len()) {
+        s.push(pad);
+    }
+    debug_assert_eq!(s.len(), len);
+    s
+}
+
+/// Base for special table-name prefixes - tests hyphens, dots, mixed case.
+const SPECIAL_TABLE_BASE: &str = "123-With.Hyphens_UPPER.MixedCase-";
+
+/// Base for special index-name prefixes - tests hyphens, dots, mixed case.
+const SPECIAL_INDEX_BASE: &str = "123-idx.With.Hyphens_UPPER-MixedCase-";
+
+/// Base for special attribute names - tests ASCII punctuation, Cyrillic
+/// (2-byte UTF-8), CJK (3-byte UTF-8), and emoji (4-byte UTF-8).
+const SPECIAL_ATTR_BASE_PK: &str = "1:pk'.\".\\@#$ кириллица 中文 αβ 🦀 ";
+const SPECIAL_ATTR_BASE_SK: &str = "1:sk'.\".\\@#$ кириллица 中文 αβ 🦀 ";
+const SPECIAL_ATTR_BASE_VEC: &str = "1:vec'.\".\\@#$ кириллица 中文 αβ 🦀 ";
+
+/// The 2x2 matrix of table shapes exercised by every `_with_names` test.
+///
+/// Each basic-operation test (`put_item`, `delete_item`, `update_item`,
+/// `batch_write_item`, etc.) loops over this slice so that every operation
+/// is verified against all four combinations:
+///
+/// | Entry | Names | Key schema |
+/// |-------|-------|------------|
+/// | 0 | plain | HASH-only |
+/// | 1 | plain | HASH+RANGE |
+/// | 2 | special (max-length + special chars) | HASH-only |
+/// | 3 | special (max-length + special chars) | HASH+RANGE |
+fn name_patterns() -> Vec<TableShape> {
+    vec![
+        // 0: plain, HASH-only
+        TableShape {
+            table_prefix: None,
+            index_prefix: None,
+            pk_name: "pk".into(),
+            sk_name: None,
+            vec_name: Some("vec".into()),
+            pk_type: ScalarAttributeType::S,
+        },
+        // 1: plain, HASH+RANGE
+        TableShape {
+            table_prefix: None,
+            index_prefix: None,
+            pk_name: "pk".into(),
+            sk_name: Some("sk".into()),
+            vec_name: Some("vec".into()),
+            pk_type: ScalarAttributeType::S,
+        },
+        // 2: special, HASH-only
+        TableShape {
+            table_prefix: Some(SPECIAL_TABLE_BASE),
+            index_prefix: Some(SPECIAL_INDEX_BASE),
+            pk_name: pad_to_len(SPECIAL_ATTR_BASE_PK, MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN, 'X'),
+            sk_name: None,
+            vec_name: Some(pad_to_len(
+                SPECIAL_ATTR_BASE_VEC,
+                MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN,
+                'X',
+            )),
+            pk_type: ScalarAttributeType::S,
+        },
+        // 3: special, HASH+RANGE
+        TableShape {
+            table_prefix: Some(SPECIAL_TABLE_BASE),
+            index_prefix: Some(SPECIAL_INDEX_BASE),
+            pk_name: pad_to_len(SPECIAL_ATTR_BASE_PK, MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN, 'X'),
+            sk_name: Some(pad_to_len(
+                SPECIAL_ATTR_BASE_SK,
+                MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN,
+                'X',
+            )),
+            vec_name: Some(pad_to_len(
+                SPECIAL_ATTR_BASE_VEC,
+                MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN,
+                'X',
+            )),
+            pk_type: ScalarAttributeType::S,
+        },
+    ]
+}
+
+/// Resolves the final table name, index name, and [`IndexInfo`] from a
+/// [`TableShape`].  When a prefix is `Some`, the unique name is appended
+/// with a `"_"` separator and the prefix is padded so the total hits the
+/// maximum length. When `None`, a plain unique name is used.
+///
+/// This is the single source of truth for name construction - used by both
+/// [`TableContext::create`] and tests that manage the table lifecycle directly.
+fn resolve_table_names(shape: &TableShape) -> (String, IndexInfo) {
+    let table_name = match shape.table_prefix {
+        None => unique_table_name(),
+        Some(base) => {
+            let raw = format!("{base}_{}", unique_table_name());
+            pad_to_len(&raw, MAX_ALTERNATOR_TABLE_NAME_LEN, 'X')
+        }
+    };
+    let index_name = match shape.index_prefix {
+        None => unique_index_name().to_string(),
+        Some(base) => {
+            let raw = format!("{base}_{}", unique_index_name());
+            pad_to_len(&raw, MAX_ALTERNATOR_INDEX_NAME_LEN, 'X')
+        }
+    };
+    let index = IndexInfo::new(keyspace(&table_name).as_ref(), &index_name);
+    (table_name, index)
+}
