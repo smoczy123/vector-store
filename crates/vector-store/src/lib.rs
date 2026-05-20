@@ -173,6 +173,7 @@ pub struct Config {
     pub cdc_fine_safety_interval: Option<Duration>,
     pub cdc_fine_sleep_interval: Option<Duration>,
     pub monitor_indexes_interval: Option<Duration>,
+    pub engine_status_update_interval: Option<Duration>,
     pub disable_colors: bool,
     pub tls_cert_path: Option<std::path::PathBuf>,
     pub tls_key_path: Option<std::path::PathBuf>,
@@ -207,6 +208,7 @@ impl Default for Config {
             cdc_fine_safety_interval: None,
             cdc_fine_sleep_interval: None,
             monitor_indexes_interval: None,
+            engine_status_update_interval: None,
         }
     }
 }
