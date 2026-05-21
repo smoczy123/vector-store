@@ -93,7 +93,7 @@ fn keyspace(table_name: &str) -> KeyspaceName {
 /// JSON request body before SigV4 signing.
 ///
 /// The standard `aws-sdk-dynamodb` crate serialises requests without knowledge
-/// of ScyllaDB Alternator extension fields such as `VectorIndexes`.  This
+/// of ScyllaDB Alternator extension fields such as `VectorIndexes`. This
 /// interceptor fires in [`modify_before_signing`], reads the already-serialised
 /// JSON body, merges the provided fields, re-serialises, replaces the body, and
 /// updates the `Content-Length` header so the SigV4 signature and HTTP transport
@@ -353,7 +353,7 @@ struct TableShape {
     pub pk_name: String,
     pub sk_name: Option<String>,
     pub vec_name: Option<String>,
-    /// Scalar type of the partition key attribute.  Use `ScalarAttributeType::S`
+    /// Scalar type of the partition key attribute. Use `ScalarAttributeType::S`
     /// for the default string key; `N` or `B` for numeric / binary key tests.
     pub pk_type: ScalarAttributeType,
 }
@@ -373,7 +373,7 @@ impl TableShape {
 //
 // Base strings contain the "interesting" characters we want to test:
 // ASCII special chars, mixed case, hyphens, dots, and multi-byte UTF-8
-// (Cyrillic 2-byte, CJK 3-byte, emoji 4-byte).  The `pad_to_len` helper
+// (Cyrillic 2-byte, CJK 3-byte, emoji 4-byte). The `pad_to_len` helper
 // extends them to the exact maximum length with ASCII 'X' padding.
 
 /// Pads `base` with `pad` bytes to exactly `len` bytes.
@@ -473,7 +473,7 @@ fn name_patterns() -> Vec<TableShape> {
 }
 
 /// Resolves the final table name, index name, and [`IndexInfo`] from a
-/// [`TableShape`].  When a prefix is `Some`, the unique name is appended
+/// [`TableShape`]. When a prefix is `Some`, the unique name is appended
 /// with a `"_"` separator and the prefix is padded so the total hits the
 /// maximum length. When `None`, a plain unique name is used.
 ///
