@@ -5,6 +5,7 @@
 
 use crate::Config;
 use crate::Credentials;
+use crate::file_monitor::TlsFilesMonitor;
 use crate::tls;
 use crate::tls::TlsServerConfig;
 use anyhow::anyhow;
@@ -16,6 +17,25 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+
+const DEFAULT_TLS_FILE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+const TLS_FILE_CHECK_INTERVAL_ENV: &str = "VECTOR_STORE_TLS_FILE_CHECK_INTERVAL";
+
+fn tls_file_check_interval(env: &impl Fn(&str) -> anyhow::Result<String>) -> Duration {
+    match env(TLS_FILE_CHECK_INTERVAL_ENV) {
+        Ok(interval_str) => match interval_str.parse::<humantime::Duration>() {
+            Ok(interval) => interval.into(),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to parse {TLS_FILE_CHECK_INTERVAL_ENV}={interval_str:?}: {err}. Using default {:?}",
+                    DEFAULT_TLS_FILE_CHECK_INTERVAL
+                );
+                DEFAULT_TLS_FILE_CHECK_INTERVAL
+            }
+        },
+        Err(_) => DEFAULT_TLS_FILE_CHECK_INTERVAL,
+    }
+}
 
 #[derive(Clone, PartialEq)]
 pub struct HttpServerConfig {
@@ -239,6 +259,11 @@ impl ConfigManager {
         let mut check_interval = tokio::time::interval(Duration::from_secs(1));
         check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // Monitor TLS certificate files for in-place content changes.
+        let initial_config = self.config_tx.borrow().as_ref().clone();
+        let mut tls_monitor =
+            TlsFilesMonitor::new(&initial_config, tls_file_check_interval(&env)).await;
+
         loop {
             tokio::select! {
                 _ = sighup.recv() => {
@@ -256,6 +281,16 @@ impl ConfigManager {
                         Err(e) => {
                             tracing::error!("Failed to reload configuration: {}", e);
                         }
+                    }
+                    let updated_config = self.config_tx.borrow().as_ref().clone();
+                    tls_monitor.update(&updated_config).await;
+                }
+                _ = tls_monitor.tick() => {
+                    if tls_monitor.has_changes().await {
+                        tracing::info!("TLS certificate file change detected, reloading...");
+                        let config = self.config_tx.borrow().as_ref().clone();
+                        self.send_config(config.clone()).await;
+                        tls_monitor.update(&config).await;
                     }
                 }
                 _ = check_interval.tick() => {
@@ -799,5 +834,26 @@ mod tests {
         )]));
         let config = load_config(env).await.unwrap();
         assert_eq!(config.cql_connection_timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn tls_file_check_interval_default_when_missing() {
+        let env = mock_env(HashMap::new());
+        assert_eq!(
+            tls_file_check_interval(&env),
+            DEFAULT_TLS_FILE_CHECK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn tls_file_check_interval_default_when_invalid() {
+        let env = mock_env(HashMap::from([(
+            TLS_FILE_CHECK_INTERVAL_ENV,
+            "not-a-duration".into(),
+        )]));
+        assert_eq!(
+            tls_file_check_interval(&env),
+            DEFAULT_TLS_FILE_CHECK_INTERVAL
+        );
     }
 }
