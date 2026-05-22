@@ -268,7 +268,7 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                                 index: index_name.clone(),
                                 table: index.metadata.table_name.clone(),
                                 target_column: index.metadata.target_column.clone(),
-                                index_type: index.metadata.index_type.clone(),
+                                partitioning: index.metadata.partitioning.clone(),
                                 filtering_columns: index.metadata.filtering_columns.clone(),
                             })
                     })
@@ -327,12 +327,13 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                 .get(&keyspace)
                 .and_then(|keyspace| keyspace.indexes.get(&index))
                 .map(|index| {
+                    let vs = index.metadata.vs().unwrap();
                     (
-                        index.metadata.connectivity,
-                        index.metadata.expansion_add,
-                        index.metadata.expansion_search,
-                        index.metadata.space_type,
-                        index.metadata.quantization,
+                        vs.connectivity,
+                        vs.expansion_add,
+                        vs.expansion_search,
+                        vs.space_type,
+                        vs.quantization,
                     )
                 })))
             .map_err(|_| anyhow!("Db::GetIndexParams: unable to send response"))

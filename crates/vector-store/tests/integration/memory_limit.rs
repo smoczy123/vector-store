@@ -19,11 +19,13 @@ use tracing::info;
 use uuid::Uuid;
 use vector_store::Config;
 use vector_store::Connectivity;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::HttpServerExt;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
+use vector_store::IndexOptionsVs;
 use vector_store::Quantization;
 use vector_store::SpaceType;
 use vector_store::Timestamp;
@@ -50,15 +52,17 @@ async fn memory_limit_during_index_build() {
         table_name: "tbl".into(),
         index_name: "idx".into(),
         target_column: "v".into(),
-        index_type: DbIndexType::Global,
+        partitioning: DbIndexPartitioning::Global,
         filtering_columns: Arc::new(Vec::new()),
-        dimensions: NonZeroUsize::new(3).unwrap().into(),
-        connectivity: Connectivity::default(),
-        expansion_add: ExpansionAdd::default(),
-        expansion_search: ExpansionSearch::default(),
-        space_type: SpaceType::default(),
         version: Uuid::new_v4().into(),
-        quantization: Quantization::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(3).unwrap().into(),
+            connectivity: Connectivity::default(),
+            expansion_add: ExpansionAdd::default(),
+            expansion_search: ExpansionSearch::default(),
+            space_type: SpaceType::default(),
+            quantization: Quantization::default(),
+        }),
     };
 
     db.add_table(
@@ -68,7 +72,7 @@ async fn memory_limit_during_index_build() {
             primary_keys: Arc::new(vec!["pk".into()]),
             partition_key_count: 1,
             columns: Arc::new([("pk".into(), NativeType::Int)].into_iter().collect()),
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },

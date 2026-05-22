@@ -15,7 +15,7 @@ use httpapi::PostIndexAnnRestriction;
 use scylla::value::CqlValue;
 use std::num::NonZeroUsize;
 use vector_store::ColumnName;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 use vector_store::Distance;
 use vector_store::Quantization;
 use vector_store::Timestamp;
@@ -52,7 +52,7 @@ async fn quantization_is_effectively_applied() {
         let values_len = values.len();
         let (run, index, _db, _node_state) = setup_store_with_quantization(
             test_config(),
-            DbIndexType::Global,
+            DbIndexPartitioning::Global,
             ["pk".into()],
             1,
             [(
@@ -136,7 +136,7 @@ async fn quantization_is_returned_as_index_data_type() {
     ] {
         let (run, index, _db, _node_state) = setup_store_with_quantization(
             test_config(),
-            DbIndexType::Global,
+            DbIndexPartitioning::Global,
             [],
             0,
             [],
@@ -179,7 +179,7 @@ async fn search_with_quantization(quantization: Quantization, filter: Option<Pos
 
     let (run, index, _db, _node_state) = setup_store_with_quantization(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         [pk_column.clone()],
         1,
         [(
@@ -298,7 +298,7 @@ async fn binary_quantization_with_non_divisible_by_8_dimensions() {
 
     let (run, index, _db, _node_state) = setup_store_with_quantization(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         [pk_column.clone()],
         1,
         [(

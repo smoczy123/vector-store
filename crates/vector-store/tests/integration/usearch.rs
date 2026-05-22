@@ -30,12 +30,14 @@ use uuid::Uuid;
 use vector_store::ColumnName;
 use vector_store::Config;
 use vector_store::Connectivity;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 use vector_store::Dimensions;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::HttpServerExt;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
+use vector_store::IndexOptionsVs;
 use vector_store::Percentage;
 use vector_store::Quantization;
 use vector_store::SpaceType;
@@ -51,7 +53,7 @@ pub(crate) fn test_config() -> Config {
 
 pub(crate) async fn setup_store(
     config: Config,
-    index_type: DbIndexType,
+    partitioning: DbIndexPartitioning,
     primary_keys: impl IntoIterator<Item = ColumnName>,
     partition_key_count: usize,
     columns: impl IntoIterator<Item = (ColumnName, NativeType)>,
@@ -65,7 +67,7 @@ pub(crate) async fn setup_store(
 ) {
     setup_store_with_quantization(
         config,
-        index_type,
+        partitioning,
         primary_keys,
         partition_key_count,
         columns,
@@ -80,7 +82,7 @@ pub(crate) async fn setup_store(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn setup_store_with_quantization(
     config: Config,
-    index_type: DbIndexType,
+    partitioning: DbIndexPartitioning,
     primary_keys: impl IntoIterator<Item = ColumnName>,
     partition_key_count: usize,
     columns: impl IntoIterator<Item = (ColumnName, NativeType)>,
@@ -105,15 +107,17 @@ pub(crate) async fn setup_store_with_quantization(
         table_name: "items".into(),
         index_name: "ann".into(),
         target_column: "embedding".into(),
-        index_type,
+        partitioning,
         filtering_columns: Arc::new(columns.keys().cloned().collect()),
-        dimensions: dimension,
-        connectivity: Connectivity::default(),
-        expansion_add: ExpansionAdd::default(),
-        expansion_search: ExpansionSearch::default(),
-        space_type: SpaceType::Euclidean,
         version: Uuid::new_v4().into(),
-        quantization,
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: dimension,
+            connectivity: Connectivity::default(),
+            expansion_add: ExpansionAdd::default(),
+            expansion_search: ExpansionSearch::default(),
+            space_type: SpaceType::Euclidean,
+            quantization,
+        }),
     };
 
     db.add_table(
@@ -123,7 +127,7 @@ pub(crate) async fn setup_store_with_quantization(
             primary_keys: Arc::new(primary_keys.into_iter().collect()),
             partition_key_count,
             columns,
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },
@@ -152,7 +156,7 @@ pub(crate) async fn setup_store_with_quantization(
 }
 
 pub(crate) async fn setup_store_and_wait_for_index(
-    index_type: DbIndexType,
+    partitioning: DbIndexPartitioning,
     primary_keys: impl IntoIterator<Item = ColumnName>,
     partition_key_count: usize,
     columns: impl IntoIterator<Item = (ColumnName, NativeType)>,
@@ -168,7 +172,7 @@ pub(crate) async fn setup_store_and_wait_for_index(
 ) {
     let (run, index, db, node_state) = setup_store(
         test_config(),
-        index_type,
+        partitioning,
         primary_keys,
         partition_key_count,
         columns,
@@ -204,7 +208,7 @@ async fn simple_create_search_delete_index() {
 
     let (run, index, db, _node_state) = setup_store(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [
@@ -292,15 +296,17 @@ async fn failed_db_index_create() {
         table_name: "items".into(),
         index_name: "ann".into(),
         target_column: "embedding".into(),
-        index_type: DbIndexType::Global,
+        partitioning: DbIndexPartitioning::Global,
         filtering_columns: Arc::new(Vec::new()),
-        dimensions: NonZeroUsize::new(3).unwrap().into(),
-        connectivity: Default::default(),
-        expansion_add: Default::default(),
-        expansion_search: Default::default(),
-        space_type: Default::default(),
         version: Uuid::new_v4().into(),
-        quantization: Default::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(3).unwrap().into(),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            quantization: Default::default(),
+        }),
     };
 
     let (_, rx) = watch::channel(Arc::new(Config::default()));
@@ -331,7 +337,7 @@ async fn failed_db_index_create() {
                 .into_iter()
                 .collect(),
             ),
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },
@@ -406,7 +412,7 @@ async fn failed_db_index_create() {
 async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimensions() {
     crate::enable_tracing();
     let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [
@@ -427,7 +433,7 @@ async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimen
         .post_ann(
             &index.keyspace_name.into(),
             &index.index_name.into(),
-            vec![1.0, 2.0].into(), // Only 2 dimensions, should be 3 (index.dimensions)
+            vec![1.0, 2.0].into(), // Only 2 dimensions, should be 3 (index.vs().unwrap().dimensions)
             None,
             NonZeroUsize::new(1).unwrap().into(),
         )
@@ -444,7 +450,7 @@ async fn ann_returns_bad_request_when_filtering_required_but_not_allowed() {
     let pk_column: ColumnName = "pk".into();
     let ck_column: ColumnName = "ck".into();
     let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         [pk_column.clone(), ck_column.clone()],
         1,
         [
@@ -485,7 +491,7 @@ async fn ann_fail_while_building() {
     crate::enable_tracing();
     let (run, index, db, _node_state) = setup_store(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [
@@ -538,7 +544,7 @@ async fn ann_fail_while_building() {
 async fn ann_failed_when_wrong_number_of_primary_keys() {
     crate::enable_tracing();
     let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         vec!["pk".into()],
         1,
         [("pk".into(), NativeType::Int)],
@@ -885,7 +891,7 @@ async fn setup_int_int_store() -> (
     let pk_column: ColumnName = "pk".into();
     let ck_column: ColumnName = "ck".into();
     let (index, client, db, server, node_state) = setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         [pk_column.clone(), ck_column.clone()],
         1,
         [
@@ -1375,7 +1381,7 @@ async fn ann_filter_partition_key_text_gt() {
     let pk_column_http: httpapi::ColumnName = pk_column.clone().into();
     let ck_column_http: httpapi::ColumnName = ck_column.clone().into();
     let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         [pk_column.clone(), ck_column.clone()],
         1,
         [
@@ -1463,7 +1469,7 @@ async fn http_server_is_responsive_when_index_add_hangs() {
     };
     let (run, _index, _db, _node_state) = setup_store(
         config,
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [
@@ -1494,7 +1500,7 @@ async fn null_vector_is_not_indexed() {
 
     let (run, index, _db, _node_state) = setup_store(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into()],
         1,
         [("pk".to_string().into(), NativeType::Int)],
@@ -1553,15 +1559,17 @@ async fn similarity_scores_are_decreasing_and_correctly_converted() {
         table_name: "items".into(),
         index_name: "ann".into(),
         target_column: "embedding".into(),
-        index_type: DbIndexType::Global,
+        partitioning: DbIndexPartitioning::Global,
         filtering_columns: Arc::new(Vec::new()),
-        dimensions: NonZeroUsize::new(1).unwrap().into(),
-        connectivity: Connectivity::default(),
-        expansion_add: ExpansionAdd::default(),
-        expansion_search: ExpansionSearch::default(),
-        space_type: SpaceType::Euclidean,
         version: Uuid::new_v4().into(),
-        quantization: Quantization::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(1).unwrap().into(),
+            connectivity: Connectivity::default(),
+            expansion_add: ExpansionAdd::default(),
+            expansion_search: ExpansionSearch::default(),
+            space_type: SpaceType::Euclidean,
+            quantization: Quantization::default(),
+        }),
     };
 
     db.add_table(
@@ -1571,7 +1579,7 @@ async fn similarity_scores_are_decreasing_and_correctly_converted() {
             primary_keys: Arc::new(vec!["pk".into()]),
             partition_key_count: 1,
             columns: Arc::new([("pk".into(), NativeType::Int)].into_iter().collect()),
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },

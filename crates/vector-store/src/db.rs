@@ -10,7 +10,7 @@ use crate::Connectivity;
 use crate::Credentials;
 use crate::DbCustomIndex;
 use crate::DbEmbedding;
-use crate::DbIndexType;
+use crate::DbIndexPartitioning;
 use crate::Dimensions;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
@@ -753,12 +753,12 @@ impl Statements {
                     Ok(options.remove("target").and_then(|target| {
                         from_target_option(table, target)
                             .map(
-                                |(index_type, target_column, filtering_columns)| DbCustomIndex {
+                                |(partitioning, target_column, filtering_columns)| DbCustomIndex {
                                     keyspace: keyspace_name.into(),
                                     index: index_name.clone().into(),
                                     table: table_name.into(),
                                     target_column,
-                                    index_type,
+                                    partitioning,
                                     filtering_columns: Arc::new(filtering_columns),
                                 },
                             )
@@ -1016,10 +1016,10 @@ fn convert_legacy_target_option(
 fn from_target_option(
     table: &Table,
     value: String,
-) -> anyhow::Result<(DbIndexType, ColumnName, Vec<ColumnName>)> {
+) -> anyhow::Result<(DbIndexPartitioning, ColumnName, Vec<ColumnName>)> {
     let Some(target) = parse_target_option(table, &value)? else {
         // Global index with a single target column
-        return Ok((DbIndexType::Global, value.into(), vec![]));
+        return Ok((DbIndexPartitioning::Global, value.into(), vec![]));
     };
 
     let validate_target_type = |target_name: &str| -> anyhow::Result<()> {
@@ -1034,8 +1034,8 @@ fn from_target_option(
 
     validate_target_type(&target.target_column)?;
 
-    let index_type = if target.partition_key_columns.is_empty() {
-        DbIndexType::Global
+    let partitioning = if target.partition_key_columns.is_empty() {
+        DbIndexPartitioning::Global
     } else {
         if let Some(invalid) = target
             .partition_key_columns
@@ -1044,7 +1044,7 @@ fn from_target_option(
         {
             bail!("invalid target option: pk column {invalid} is not in the table's partition key");
         }
-        DbIndexType::Local(Arc::new(
+        DbIndexPartitioning::Local(Arc::new(
             target
                 .partition_key_columns
                 .into_iter()
@@ -1054,7 +1054,7 @@ fn from_target_option(
     };
 
     Ok((
-        index_type,
+        partitioning,
         target.target_column.into(),
         target
             .filter_columns

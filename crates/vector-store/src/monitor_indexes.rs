@@ -7,7 +7,9 @@ use crate::Config;
 use crate::Connectivity;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
+use crate::IndexKind;
 use crate::IndexMetadata;
+use crate::IndexOptionsVs;
 use crate::Quantization;
 use crate::SpaceType;
 use crate::db::Db;
@@ -218,15 +220,17 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
             index_name: idx.index,
             table_name: idx.table,
             target_column: idx.target_column,
-            index_type: idx.index_type,
+            partitioning: idx.partitioning,
             filtering_columns: idx.filtering_columns,
-            dimensions,
-            connectivity,
-            expansion_add,
-            expansion_search,
-            space_type,
             version,
-            quantization,
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions,
+                connectivity,
+                expansion_add,
+                expansion_search,
+                space_type,
+                quantization,
+            }),
         };
 
         if !db.is_valid_index(metadata.clone()).await {
@@ -323,7 +327,7 @@ fn discovered_indexes_simulator(
 mod tests {
     use super::*;
     use crate::DbCustomIndex;
-    use crate::DbIndexType;
+    use crate::DbIndexPartitioning;
     use crate::IndexKey;
     use crate::IndexName;
     use crate::db;
@@ -422,7 +426,7 @@ mod tests {
                 index: name.to_string().into(),
                 table: "tbl".to_string().into(),
                 target_column: "embedding".to_string().into(),
-                index_type: DbIndexType::Global,
+                partitioning: DbIndexPartitioning::Global,
                 filtering_columns: Arc::new(Vec::new()),
             }
         }
@@ -480,7 +484,7 @@ mod tests {
                         index: idx.index.clone(),
                         table: idx.table.clone(),
                         target_column: idx.target_column.clone(),
-                        index_type: DbIndexType::Global,
+                        partitioning: DbIndexPartitioning::Global,
                         filtering_columns: Arc::new(Vec::new()),
                     })
                     .collect()
@@ -674,7 +678,7 @@ mod tests {
                         index: "idx".to_string().into(),
                         table: "tbl".to_string().into(),
                         target_column: "embedding".to_string().into(),
-                        index_type: DbIndexType::Global,
+                        partitioning: DbIndexPartitioning::Global,
                         filtering_columns: Arc::new(Vec::new()),
                     };
                     tx.send(Ok(vec![index(), index(), index()])).unwrap();
@@ -747,15 +751,17 @@ mod tests {
             index_name: "idx".into(),
             table_name: "tbl".into(),
             target_column: "embedding".into(),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         assert!(should_delete(
             &IndexMetadata { ..idx.clone() },
@@ -774,7 +780,10 @@ mod tests {
         ));
         assert!(should_delete(
             &IndexMetadata {
-                expansion_add: 1.into(),
+                kind: IndexKind::Vs(IndexOptionsVs {
+                    expansion_add: 1.into(),
+                    ..idx.vs().unwrap().clone()
+                }),
                 ..idx.clone()
             },
             &[idx.clone()].into_iter().collect()
@@ -788,15 +797,17 @@ mod tests {
             index_name: "idx".into(),
             table_name: "tbl".into(),
             target_column: "embedding".into(),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         assert!(!should_delete_simulator(
             &IndexMetadata { ..idx.clone() },
@@ -815,14 +826,20 @@ mod tests {
         ));
         assert!(should_delete_simulator(
             &IndexMetadata {
-                expansion_add: 1.into(),
+                kind: IndexKind::Vs(IndexOptionsVs {
+                    expansion_add: 1.into(),
+                    ..idx.vs().unwrap().clone()
+                }),
                 ..idx.clone()
             },
             &[idx.clone()].into_iter().collect()
         ));
         assert!(should_delete_simulator(
             &IndexMetadata {
-                expansion_add: 1.into(),
+                kind: IndexKind::Vs(IndexOptionsVs {
+                    expansion_add: 1.into(),
+                    ..idx.vs().unwrap().clone()
+                }),
                 version: Uuid::new_v4().into(),
                 ..idx.clone()
             },
@@ -830,7 +847,10 @@ mod tests {
         ));
         assert!(should_delete_simulator(
             &IndexMetadata {
-                quantization: Quantization::I8,
+                kind: IndexKind::Vs(IndexOptionsVs {
+                    quantization: Quantization::I8,
+                    ..idx.vs().unwrap().clone()
+                }),
                 version: Uuid::new_v4().into(),
                 ..idx.clone()
             },
@@ -845,15 +865,17 @@ mod tests {
             index_name: "idx".into(),
             table_name: "tbl".into(),
             target_column: "embedding".into(),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         assert!(should_add(
             &IndexMetadata { ..idx.clone() },
@@ -872,15 +894,17 @@ mod tests {
             index_name: "idx".into(),
             table_name: "tbl".into(),
             target_column: "embedding".into(),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         assert!(should_add_simulator(
             &IndexMetadata { ..idx.clone() },
@@ -899,7 +923,10 @@ mod tests {
         ));
         assert!(should_add_simulator(
             &IndexMetadata {
-                quantization: Quantization::I8,
+                kind: IndexKind::Vs(IndexOptionsVs {
+                    quantization: Quantization::I8,
+                    ..idx.vs().unwrap().clone()
+                }),
                 version: Uuid::new_v4().into(),
                 ..idx.clone()
             },
@@ -917,15 +944,17 @@ mod tests {
             index_name: "idx".into(),
             table_name: "tbl".into(),
             target_column: "embedding".into(),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: NonZeroUsize::new(3).unwrap().into(),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
 
         let discovered =
@@ -946,7 +975,10 @@ mod tests {
         assert!(discovered.contains(&idx1));
 
         let idx2 = IndexMetadata {
-            quantization: Quantization::I8,
+            kind: IndexKind::Vs(IndexOptionsVs {
+                quantization: Quantization::I8,
+                ..idx1.vs().unwrap().clone()
+            }),
             version: Uuid::new_v4().into(),
             ..idx1.clone()
         };
