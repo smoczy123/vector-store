@@ -1532,7 +1532,7 @@ mod tests {
                     assert_eq!(value, &DbIndexedValue::Vector(vec![0.1, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
 
             // insert second vector
@@ -1557,7 +1557,7 @@ mod tests {
                     assert_eq!(value, &DbIndexedValue::Vector(vec![0.2, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id11, primary_id21);
             assert_eq!(partition_id11, partition_id21);
@@ -1584,7 +1584,7 @@ mod tests {
                     assert_eq!(value, &DbIndexedValue::Vector(vec![0.3, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id11, primary_id31);
             assert_ne!(primary_id21, primary_id31);
@@ -1659,7 +1659,7 @@ mod tests {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveBeforeAddVector operation"),
+                _ => panic!("Expected RemoveBeforeAddValue operation"),
             };
             assert_eq!(primary_id22, primary_id21);
             assert_eq!(partition_id22, partition_id21);
@@ -1673,7 +1673,7 @@ mod tests {
                     assert_eq!(value, &DbIndexedValue::Vector(vec![0.5, 0.5, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id22, primary_id21);
             assert_eq!(partition_id22, partition_id21);
@@ -1701,7 +1701,7 @@ mod tests {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id13, primary_id11);
             assert_eq!(partition_id13, partition_id11);
@@ -1724,7 +1724,7 @@ mod tests {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id23, primary_id22);
             assert_eq!(partition_id23, partition_id22);
@@ -1751,7 +1751,7 @@ mod tests {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id33, primary_id31);
             assert_eq!(partition_id33, partition_id31);

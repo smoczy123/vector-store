@@ -8,6 +8,7 @@ use crate::ColumnName;
 use crate::Config;
 use crate::DbIndexedRow;
 use crate::DbIndexedValue;
+use crate::IndexKind;
 use crate::IndexMetadata;
 use crate::db_index_backend::DbIndexBackend;
 use crate::internals::Internals;
@@ -24,6 +25,7 @@ use anyhow::bail;
 use async_trait::async_trait;
 use futures::FutureExt;
 use scylla::client::session::Session;
+use scylla::value::CqlValue;
 use scylla_cdc::consumer::CDCRow;
 use scylla_cdc::consumer::Consumer;
 use scylla_cdc::consumer::ConsumerFactory;
@@ -490,9 +492,25 @@ fn spawn_handler_task(
     )
 }
 
+fn extract_indexed_value(
+    backend: &DbIndexBackend,
+    value: CqlValue,
+    kind: &IndexKind,
+) -> anyhow::Result<Option<DbIndexedValue>> {
+    match kind {
+        IndexKind::Vs(_) => backend
+            .extract_vector(value)
+            .map(|opt| opt.map(DbIndexedValue::Vector)),
+        IndexKind::Fts(_) => backend
+            .extract_document(value)
+            .map(|opt| opt.map(DbIndexedValue::Document)),
+    }
+}
+
 struct CdcConsumerData {
     primary_key_columns: Vec<ColumnName>,
     backend: DbIndexBackend,
+    kind: IndexKind,
     tx: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
     gregorian_epoch: PrimitiveDateTime,
 }
@@ -508,13 +526,13 @@ impl Consumer for CdcConsumer {
         }
 
         let source = &self.0.backend;
-        let column = source.vector_column_name();
+        let column = source.target_column_name();
         if !row.column_deletable(column) {
             bail!("CDC error: column {column} should be deletable");
         }
-        let embedding = row
+        let value = row
             .take_value(column)
-            .map(|v| source.extract_vector(v))
+            .map(|v| extract_indexed_value(source, v, &self.0.kind))
             .transpose()?
             .flatten();
 
@@ -553,7 +571,7 @@ impl Consumer for CdcConsumer {
             .send((
                 DbIndexedRow {
                     primary_key,
-                    value: embedding.map(DbIndexedValue::Vector),
+                    value,
                     timestamp,
                 },
                 None,
@@ -604,6 +622,7 @@ impl CdcConsumerFactory {
         Ok(Self(Arc::new(CdcConsumerData {
             primary_key_columns,
             backend,
+            kind: metadata.kind.clone(),
             tx,
             gregorian_epoch,
         })))
