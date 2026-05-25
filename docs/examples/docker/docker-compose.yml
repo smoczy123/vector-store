@@ -1,0 +1,40 @@
+# Minimal single-node ScyllaDB + Vector Store setup (RF=1).
+# Suitable for local development, testing, and quick-start examples.
+# Not intended for production use — use replication_factor >= 3 in production.
+
+services:
+  scylla:
+    image: scylladb/scylla:2026.1.4
+    container_name: scylla
+    command: >
+      --smp 2
+      --memory 1G
+      --overprovisioned 1
+      --vector-store-primary-uri http://vector-store:6080
+    ports:
+      - "9042:9042"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local'"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    networks:
+      - vector-net
+
+  vector-store:
+    image: scylladb/vector-store:1.6.0
+    container_name: vector-store
+    environment:
+      VECTOR_STORE_URI: "0.0.0.0:6080"
+      VECTOR_STORE_SCYLLADB_URI: "scylla:9042"
+    ports:
+      - "6080:6080"
+    depends_on:
+      scylla:
+        condition: service_healthy
+    networks:
+      - vector-net
+
+networks:
+  vector-net:
+    driver: bridge
