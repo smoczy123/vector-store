@@ -45,7 +45,7 @@ fn blocking_scan_fn() -> ScanFn {
 }
 
 fn single_row_scan(pks: impl IntoIterator<Item = CqlValue> + Send + Sync + 'static) -> ScanFn {
-    db_basic::scan_fn([(
+    db_basic::scan_fn_vectors([(
         pks.into_iter().collect::<Vec<_>>().into(),
         Some(vec![1.0, 2.0, 3.0].into()),
         Timestamp::from_unix_timestamp(10),

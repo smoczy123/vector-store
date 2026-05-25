@@ -85,7 +85,7 @@ async fn simple_create_search_delete_index() {
     .unwrap();
     db.add_index(
         index.clone(),
-        Some(db_basic::scan_fn([
+        Some(db_basic::scan_fn_vectors([
             (
                 [CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
                 Some(vec![1., 1., 1.].into()),

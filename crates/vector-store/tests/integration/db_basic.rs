@@ -7,7 +7,6 @@ use anyhow::anyhow;
 use anyhow::bail;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use itertools::Itertools;
 use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlTimeuuid;
 use std::collections::HashMap;
@@ -25,6 +24,7 @@ use vector_store::DbIndexKind;
 use vector_store::DbIndexedRow;
 use vector_store::DbIndexedValue;
 use vector_store::Dimensions;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
 use vector_store::IndexName;
 use vector_store::IndexVersion;
@@ -40,38 +40,56 @@ use vector_store::db_index::DbIndex;
 use vector_store::node_state::Event;
 use vector_store::node_state::NodeState;
 
-pub(crate) type RxEmbeddings = mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>;
-pub(crate) type TxEmbeddings = mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>;
-pub(crate) type ScanFn = Box<dyn FnOnce(TxEmbeddings) -> BoxFuture<'static, ()> + Send + Sync>;
+pub(crate) type RxIndexedRow = mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>;
+pub(crate) type TxIndexedRow = mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>;
+pub(crate) type ScanFn = Box<dyn FnOnce(TxIndexedRow) -> BoxFuture<'static, ()> + Send + Sync>;
 
-pub(crate) fn scan_fn(
-    items: impl IntoIterator<Item = (PrimaryKey, Option<Vector>, Timestamp)>,
-) -> ScanFn {
-    let items = Arc::new(items.into_iter().collect_vec());
+fn make_scan_fn(rows: impl Iterator<Item = DbIndexedRow> + Send + Sync + 'static) -> ScanFn {
     Box::new(move |tx| {
-        let items = items.clone();
         async move {
             let (tx_in_progress, mut rx_in_progress) = mpsc::channel(1);
 
-            for (primary_key, embedding, timestamp) in items.iter().cloned() {
-                let _ = tx
-                    .send((
-                        DbIndexedRow {
-                            primary_key,
-                            value: embedding.map(DbIndexedValue::Vector),
-                            timestamp,
-                        },
-                        Some(tx_in_progress.clone().into()),
-                    ))
-                    .await;
+            for row in rows {
+                let _ = tx.send((row, Some(tx_in_progress.clone().into()))).await;
             }
 
-            // wait until all in-progress markers are dropped
             drop(tx_in_progress);
             while rx_in_progress.recv().await.is_some() {}
         }
         .boxed()
     })
+}
+
+pub(crate) fn scan_fn_vectors<I>(items: I) -> ScanFn
+where
+    I: IntoIterator<Item = (PrimaryKey, Option<Vector>, Timestamp)>,
+    I::IntoIter: Send + Sync + 'static,
+{
+    make_scan_fn(
+        items
+            .into_iter()
+            .map(|(primary_key, embedding, timestamp)| DbIndexedRow {
+                primary_key,
+                value: embedding.map(DbIndexedValue::Vector),
+                timestamp,
+            }),
+    )
+}
+
+pub(crate) fn scan_fn_documents<I>(items: I) -> ScanFn
+where
+    I: IntoIterator<Item = (PrimaryKey, Option<String>, Timestamp)>,
+    I::IntoIter: Send + Sync + 'static,
+{
+    make_scan_fn(
+        items
+            .into_iter()
+            .map(|(primary_key, document, timestamp)| DbIndexedRow {
+                primary_key,
+                value: document.map(DbIndexedValue::Document),
+                timestamp,
+            }),
+    )
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -272,7 +290,10 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                                 target_column: index.metadata.target_column.clone(),
                                 partitioning: index.metadata.partitioning.clone(),
                                 filtering_columns: index.metadata.filtering_columns.clone(),
-                                kind: DbIndexKind::VectorSearch,
+                                kind: match index.metadata.kind {
+                                    IndexKind::Vs(_) => DbIndexKind::VectorSearch,
+                                    IndexKind::Fts(_) => DbIndexKind::FullTextSearch,
+                                },
                             })
                     })
                     .collect()))
@@ -329,15 +350,16 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                 .keyspaces
                 .get(&keyspace)
                 .and_then(|keyspace| keyspace.indexes.get(&index))
-                .map(|index| {
-                    let vs = index.metadata.vs().unwrap();
-                    (
-                        vs.connectivity,
-                        vs.expansion_add,
-                        vs.expansion_search,
-                        vs.space_type,
-                        vs.quantization,
-                    )
+                .and_then(|index| {
+                    index.metadata.vs().map(|vs| {
+                        (
+                            vs.connectivity,
+                            vs.expansion_add,
+                            vs.expansion_search,
+                            vs.space_type,
+                            vs.quantization,
+                        )
+                    })
                 })))
             .map_err(|_| anyhow!("Db::GetIndexParams: unable to send response"))
             .unwrap(),
@@ -353,7 +375,7 @@ pub(crate) fn new_db_index(
     mut db: DbBasic,
     metadata: IndexMetadata,
     node_state: Sender<NodeState>,
-) -> anyhow::Result<(mpsc::Sender<DbIndex>, RxEmbeddings)> {
+) -> anyhow::Result<(mpsc::Sender<DbIndex>, RxIndexedRow)> {
     if db.0.read().unwrap().next_get_db_index_failed {
         db.0.write().unwrap().next_get_db_index_failed = false;
         bail!("get_db_index failed");
