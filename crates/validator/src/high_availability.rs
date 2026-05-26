@@ -7,27 +7,38 @@ use std::collections::HashMap;
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_scylla_cluster::ScyllaClusterExt;
 use e2etest_scylla_cluster::ScyllaNodeConfig;
 use e2etest_tls::TlsExt;
 use e2etest_vector_store_cluster::VectorStoreNodeConfig;
 use scylla::statement::Statement;
+use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty().with_cleanup(timeout, cleanup).with_test(
-        "secondary_uri_works_correctly",
-        timeout,
-        test_secondary_uri_works_correctly,
-    )
+e2etest::group!(
+    name = high_availability,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn test_secondary_uri_works_correctly(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = high_availability)]
+async fn test_secondary_uri_works_correctly(actors: Arc<TestActors>) {
     info!("started");
 
     let vs_urls = get_default_vs_urls(&actors).await;
@@ -81,7 +92,7 @@ async fn test_secondary_uri_works_correctly(actors: TestActors) {
         user: None,
         password: None,
     }];
-    init_with_config(actors.clone(), scylla_configs, vs_configs).await;
+    init_with_config(&actors, scylla_configs, vs_configs).await;
 
     let vs_ips = vec![actors.services_subnet.ip(VS_OCTET_1)];
     let (session, clients) = prepare_connection_with_custom_vs_ips(&actors, vs_ips).await;

@@ -5,13 +5,12 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use rcgen::CertificateParams;
 use rcgen::KeyPair;
 use reqwest::Certificate;
 use reqwest::Client;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use tracing::info;
@@ -19,16 +18,26 @@ use tracing::info;
 const TLS_FILE_CHECK_INTERVAL: &str = "100ms";
 const TLS_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_test(
-            "reloads_tls_identity_after_cert_file_rotation",
-            timeout,
-            reloads_tls_identity_after_cert_file_rotation,
-        )
-        .with_cleanup(timeout, cleanup)
+e2etest::group!(
+    name = tls_reload,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
 }
 
 fn write_server_identity_pem(
@@ -71,8 +80,8 @@ async fn https_status_ok(vs_ips: &[Ipv4Addr], cert_pem: &[u8]) -> bool {
     true
 }
 
-#[framed]
-async fn reloads_tls_identity_after_cert_file_rotation(actors: TestActors) {
+#[e2etest::test(group = tls_reload)]
+async fn reloads_tls_identity_after_cert_file_rotation(actors: Arc<TestActors>) {
     info!("started");
 
     let cert_file = NamedTempFile::new().unwrap();
@@ -99,7 +108,7 @@ async fn reloads_tls_identity_after_cert_file_rotation(actors: TestActors) {
         );
     }
 
-    init_with_config(actors.clone(), scylla_configs, vs_configs).await;
+    init_with_config(&actors, scylla_configs, vs_configs).await;
 
     wait_for(
         || async { https_status_ok(&vs_ips, &cert_v1).await },

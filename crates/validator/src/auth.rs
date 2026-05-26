@@ -4,14 +4,12 @@
  */
 
 use crate::TestActors;
-use crate::common;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_scylla_cluster::ScyllaClusterExt;
 use e2etest_vector_store_cluster::VectorStoreClusterExt;
 use httpapi::IndexStatus;
 use httpapi::NodeStatus;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -40,26 +38,26 @@ fn scylla_auth_config() -> Vec<u8> {
     .into_bytes()
 }
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_test(
-            "vs_doesnt_work_without_permission",
-            timeout,
-            vs_doesnt_work_without_permission,
-        )
-        .with_test(
-            "vs_works_when_permission_granted",
-            timeout,
-            vs_works_when_permission_granted,
-        )
-        .with_test("cdc_works_with_auth", timeout, cdc_works_with_auth)
-        .with_cleanup(timeout, common::cleanup)
+e2etest::group!(name = auth, fixtures = (Fixture), parent = crate::validator);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn vs_doesnt_work_without_permission(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = auth)]
+async fn vs_doesnt_work_without_permission(actors: Arc<TestActors>) {
     info!("started");
 
     let mut scylla_configs = get_default_scylla_node_configs(&actors).await;
@@ -111,13 +109,13 @@ async fn vs_doesnt_work_without_permission(actors: TestActors) {
     }
 
     info!("Cleaning up");
-    cleanup(actors).await;
+    cleanup(&actors).await;
 
     info!("finished");
 }
 
-#[framed]
-async fn vs_works_when_permission_granted(actors: TestActors) {
+#[e2etest::test(group = auth)]
+async fn vs_works_when_permission_granted(actors: Arc<TestActors>) {
     info!("started");
 
     let mut scylla_configs = get_default_scylla_node_configs(&actors).await;
@@ -180,13 +178,13 @@ async fn vs_works_when_permission_granted(actors: TestActors) {
     }
 
     info!("Cleaning up");
-    cleanup(actors).await;
+    cleanup(&actors).await;
 
     info!("finished");
 }
 
-#[framed]
-async fn cdc_works_with_auth(actors: TestActors) {
+#[e2etest::test(group = auth)]
+async fn cdc_works_with_auth(actors: Arc<TestActors>) {
     info!("started");
 
     let mut scylla_configs = get_default_scylla_node_configs(&actors).await;
@@ -281,7 +279,7 @@ async fn cdc_works_with_auth(actors: TestActors) {
         .expect("failed to drop keyspace");
 
     info!("Cleaning up");
-    cleanup(actors).await;
+    cleanup(&actors).await;
 
     info!("finished");
 }

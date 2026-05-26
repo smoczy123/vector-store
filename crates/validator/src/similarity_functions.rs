@@ -6,42 +6,31 @@
 use crate::TestActors;
 use crate::common;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::IndexInfo;
+use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, common::init)
-        .with_cleanup(timeout, common::cleanup)
-        .with_test(
-            "test_similarity_function_euclidean",
-            timeout,
-            test_similarity_function_euclidean,
-        )
-        .with_test(
-            "test_similarity_function_cosine",
-            timeout,
-            test_similarity_function_cosine,
-        )
-        .with_test(
-            "test_similarity_function_dot_product",
-            timeout,
-            test_similarity_function_dot_product,
-        )
-        .with_test(
-            "test_similarity_function_default_is_cosine",
-            timeout,
-            test_similarity_function_default_is_cosine,
-        )
-        .with_test(
-            "test_similarity_function_lowercase",
-            timeout,
-            test_similarity_function_lowercase,
-        )
+e2etest::group!(
+    name = similarity_function,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        common::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }
 
 async fn run_similarity_function_test(
@@ -121,8 +110,8 @@ async fn run_similarity_function_test(
         .expect("failed to drop a keyspace");
 }
 
-#[framed]
-async fn test_similarity_function_euclidean(actors: TestActors) {
+#[e2etest::test(group = similarity_function)]
+async fn test_similarity_function_euclidean(actors: Arc<TestActors>) {
     info!("started");
 
     let vectors = vec![
@@ -137,8 +126,8 @@ async fn test_similarity_function_euclidean(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn test_similarity_function_cosine(actors: TestActors) {
+#[e2etest::test(group = similarity_function)]
+async fn test_similarity_function_cosine(actors: Arc<TestActors>) {
     info!("started");
 
     // With cosine similarity, both pk=1 and pk=4 should have the same similarity (same direction)
@@ -154,8 +143,8 @@ async fn test_similarity_function_cosine(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn test_similarity_function_dot_product(actors: TestActors) {
+#[e2etest::test(group = similarity_function)]
+async fn test_similarity_function_dot_product(actors: Arc<TestActors>) {
     info!("started");
 
     // With dot product, pk=4 should have highest similarity (2.0 * 1.0 = 2.0)
@@ -171,8 +160,8 @@ async fn test_similarity_function_dot_product(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn test_similarity_function_default_is_cosine(actors: TestActors) {
+#[e2etest::test(group = similarity_function)]
+async fn test_similarity_function_default_is_cosine(actors: Arc<TestActors>) {
     info!("started");
 
     // Default is COSINE, so both pk=1 and pk=4 should have the same similarity (same direction)
@@ -188,8 +177,8 @@ async fn test_similarity_function_default_is_cosine(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn test_similarity_function_lowercase(actors: TestActors) {
+#[e2etest::test(group = similarity_function)]
+async fn test_similarity_function_lowercase(actors: Arc<TestActors>) {
     info!("started");
 
     let vectors = vec![

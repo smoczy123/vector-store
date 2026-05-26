@@ -5,8 +5,6 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_firewall::FirewallExt;
 use e2etest_scylla_cluster::ScyllaClusterExt;
 use e2etest_scylla_proxy_cluster::ScyllaProxyClusterExt;
@@ -16,6 +14,7 @@ use scylla_proxy::Condition;
 use scylla_proxy::Reaction;
 use scylla_proxy::RequestReaction;
 use scylla_proxy::RequestRule;
+use std::sync::Arc;
 use std::time::Duration;
 use tap::Pipe;
 use tracing::info;
@@ -24,36 +23,31 @@ const FRAME_DELAY: Duration = Duration::from_millis(100);
 const DATASET_SIZE: i32 = 100;
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(12); // slightly more than default 10s
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init_with_proxy_single_vs)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "reconnect_doesnt_break_fullscan",
-            timeout,
-            reconnect_doesnt_break_fullscan,
-        )
-        .with_test(
-            "restarting_one_node_doesnt_break_fullscan",
-            timeout,
-            restarting_one_node_doesnt_break_fullscan,
-        )
-        .with_test(
-            "restarting_all_nodes_doesnt_break_fullscan",
-            timeout,
-            restarting_all_nodes_doesnt_break_fullscan,
-        )
-        .with_test(
-            "restarting_vs_cluster_does_not_break_setup",
-            timeout,
-            test_restarting_vs_cluster_does_not_break_setup,
-        )
+e2etest::group!(
+    name = reconnect,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn reconnect_doesnt_break_fullscan(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init_with_proxy_single_vs(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = reconnect)]
+async fn reconnect_doesnt_break_fullscan(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -214,8 +208,8 @@ async fn reconnect_doesnt_break_fullscan(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn restarting_one_node_doesnt_break_fullscan(actors: TestActors) {
+#[e2etest::test(group = reconnect)]
+async fn restarting_one_node_doesnt_break_fullscan(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -342,8 +336,8 @@ async fn restarting_one_node_doesnt_break_fullscan(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn restarting_all_nodes_doesnt_break_fullscan(actors: TestActors) {
+#[e2etest::test(group = reconnect)]
+async fn restarting_all_nodes_doesnt_break_fullscan(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -489,8 +483,8 @@ async fn restarting_all_nodes_doesnt_break_fullscan(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn test_restarting_vs_cluster_does_not_break_setup(actors: TestActors) {
+#[e2etest::test(group = reconnect)]
+async fn test_restarting_vs_cluster_does_not_break_setup(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;

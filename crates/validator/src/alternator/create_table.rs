@@ -6,13 +6,11 @@
 use crate::TestActors;
 use crate::alternator;
 use crate::common;
-use async_backtrace::framed;
 use aws_smithy_runtime_api::box_error::BoxError;
 use aws_smithy_runtime_api::client::interceptors::Intercept;
 use aws_smithy_runtime_api::client::interceptors::context::AfterDeserializationInterceptorContextRef;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::config_bag::ConfigBag;
-use e2etest::TestCase;
 use httpapi::IndexInfo;
 use httpapi::IndexName;
 use std::sync::Arc;
@@ -119,8 +117,8 @@ fn assert_json_includes(actual: &serde_json::Value, expected: &serde_json::Value
 /// 2. Waits for Vector Store to discover the index.
 /// 3. Calls `DescribeTable` and verifies the `VectorIndexes` extension field.
 /// 4. Calls `DeleteTable` and waits for Vector Store to drop the index.
-#[framed]
-async fn create_describe_and_delete_table_with_vector_index(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_describe_and_delete_table_with_vector_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -194,8 +192,8 @@ async fn create_describe_and_delete_table_with_vector_index(actors: TestActors) 
     info!("finished");
 }
 
-#[framed]
-async fn create_table_with_two_case_distinct_vector_indexes(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_table_with_two_case_distinct_vector_indexes(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -251,8 +249,8 @@ async fn create_table_with_two_case_distinct_vector_indexes(actors: TestActors) 
 
 /// Index names are scoped to a CQL keyspace (`alternator_<table>`), so the
 /// same index name on case-distinct tables should be independent.
-#[framed]
-async fn create_table_with_same_index_name_on_case_distinct_tables(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_table_with_same_index_name_on_case_distinct_tables(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -315,8 +313,8 @@ async fn create_table_with_same_index_name_on_case_distinct_tables(actors: TestA
 }
 
 /// Alternator currently forbids two vector indexes on the same column.
-#[framed]
-async fn create_table_with_two_indexes_on_same_vector_column(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_table_with_two_indexes_on_same_vector_column(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, _vs_clients) = alternator::make_clients(&actors).await;
@@ -361,8 +359,8 @@ async fn create_table_with_two_indexes_on_same_vector_column(actors: TestActors)
 }
 
 /// Positive case (192-char name) is covered by `alternator::name_patterns`.
-#[framed]
-async fn create_table_with_over_max_length_index_name(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_table_with_over_max_length_index_name(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, _vs_clients) = alternator::make_clients(&actors).await;
@@ -401,8 +399,8 @@ async fn create_table_with_over_max_length_index_name(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn create_table_with_boundary_dimensions(actors: TestActors) {
+#[e2etest::test(group = create_table)]
+async fn create_table_with_boundary_dimensions(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -466,38 +464,25 @@ async fn create_table_with_boundary_dimensions(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "create_describe_and_delete_table_with_vector_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_describe_and_delete_table_with_vector_index,
-        )
-        .with_test(
-            "create_table_with_two_case_distinct_vector_indexes",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_table_with_two_case_distinct_vector_indexes,
-        )
-        .with_test(
-            "create_table_with_same_index_name_on_case_distinct_tables",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_table_with_same_index_name_on_case_distinct_tables,
-        )
-        .with_test(
-            "create_table_with_two_indexes_on_same_vector_column",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_table_with_two_indexes_on_same_vector_column,
-        )
-        .with_test(
-            "create_table_with_boundary_dimensions",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_table_with_boundary_dimensions,
-        )
-        .with_test(
-            "create_table_with_over_max_length_index_name",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_table_with_over_max_length_index_name,
-        )
+e2etest::group!(
+    name = create_table,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

@@ -5,33 +5,37 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::IndexName;
 use httpapi::IndexStatus;
 use httpapi::KeyspaceName;
+use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "status_returned_correctly",
-            timeout,
-            status_returned_correctly,
-        )
-        .with_test(
-            "status_returns_404_for_non_existent_index",
-            timeout,
-            status_returns_404_for_non_existent_index,
-        )
+e2etest::group!(
+    name = index_status,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn status_returned_correctly(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = index_status)]
+async fn status_returned_correctly(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -75,8 +79,8 @@ async fn status_returned_correctly(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn status_returns_404_for_non_existent_index(actors: TestActors) {
+#[e2etest::test(group = index_status)]
+async fn status_returns_404_for_non_existent_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (_session, clients) = prepare_connection(&actors).await;

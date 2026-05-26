@@ -4,18 +4,16 @@
  */
 
 use crate::TestActors;
+use crate::alternator;
+use crate::alternator::Item;
+use crate::alternator::TableContext;
 use crate::common;
-use async_backtrace::framed;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemOutput;
 use aws_sdk_dynamodb::types::AttributeValue;
-use e2etest::TestCase;
+use std::sync::Arc;
 use tracing::info;
-
-use crate::alternator;
-use crate::alternator::Item;
-use crate::alternator::TableContext;
 
 /// Issues an `UpdateItem` on the vector column of `item`.
 ///
@@ -51,8 +49,8 @@ async fn update_item_expr(
 /// previously unindexed item, and conditional UpdateItem (LWT path).
 ///
 /// Starting state: `a` and `b` indexed, `c` has no vector (count=2).
-#[framed]
-async fn update_item_updates_index(actors: TestActors) {
+#[e2etest::test(group = update_item)]
+async fn update_item_updates_index(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -119,8 +117,8 @@ async fn update_item_updates_index(actors: TestActors) {
 /// `put_item_with_invalid_vector_is_not_indexed` where a PutItem without a
 /// vector column is accepted but not indexed), and wrong-type updates are
 /// rejected by Scylla with `ValidationException`.
-#[framed]
-async fn update_item_with_invalid_vector_is_not_indexed(actors: TestActors) {
+#[e2etest::test(group = update_item)]
+async fn update_item_with_invalid_vector_is_not_indexed(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = &alternator::name_patterns()[0]; // plain names, HASH-only
@@ -196,18 +194,25 @@ async fn update_item_with_invalid_vector_is_not_indexed(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "update_item_updates_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            update_item_updates_index,
-        )
-        .with_test(
-            "update_item_with_invalid_vector_is_not_indexed",
-            common::DEFAULT_TEST_TIMEOUT,
-            update_item_with_invalid_vector_is_not_indexed,
-        )
+e2etest::group!(
+    name = update_item,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

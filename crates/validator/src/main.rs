@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
-fn main() -> Result<(), &'static str> {
-    vector_search_validator::run()
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    vector_search_validator::run().await
 }

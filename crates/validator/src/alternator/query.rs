@@ -4,25 +4,23 @@
  */
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use aws_sdk_dynamodb::client::customize::CustomizableOperation;
-use aws_sdk_dynamodb::operation::query::QueryError;
-use aws_sdk_dynamodb::operation::query::QueryOutput;
-use aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder;
-use aws_sdk_dynamodb::types::AttributeValue;
-use aws_sdk_dynamodb::types::Select;
-use e2etest::TestCase;
-use httpapi::IndexName;
-use std::collections::HashMap;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::JsonBodyInjectInterceptor;
 use crate::alternator::TableContext;
 use crate::alternator::TableShape;
+use crate::common;
+use aws_sdk_dynamodb::client::customize::CustomizableOperation;
+use aws_sdk_dynamodb::operation::query::QueryError;
+use aws_sdk_dynamodb::operation::query::QueryOutput;
+use aws_sdk_dynamodb::operation::query::builders::QueryFluentBuilder;
+use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::types::ScalarAttributeType;
+use aws_sdk_dynamodb::types::Select;
+use httpapi::IndexName;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::info;
 
 /// Extension trait that adds Alternator `VectorSearch` to [`QueryFluentBuilder`].
 pub(super) trait QueryBuilderExt {
@@ -69,8 +67,8 @@ impl QueryBuilderExt for QueryFluentBuilder {
 }
 
 /// Verifies basic VectorSearch query: results returned, limit respected, nearest item first.
-#[framed]
-async fn query_with_vector_search(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_vector_search(actors: Arc<TestActors>) {
     info!("started");
 
     let shapes = [
@@ -155,8 +153,8 @@ async fn query_with_vector_search(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn query_uses_selected_vector_index(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_uses_selected_vector_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -281,8 +279,8 @@ async fn query_uses_selected_vector_index(actors: TestActors) {
 }
 
 /// Verifies ANN results are ordered by ascending cosine distance.
-#[framed]
-async fn query_with_vector_search_multiple_results_ordering(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_vector_search_multiple_results_ordering(actors: Arc<TestActors>) {
     info!("started");
 
     let dataset = [
@@ -346,8 +344,8 @@ async fn query_with_vector_search_multiple_results_ordering(actors: TestActors) 
 }
 
 /// Verifies ProjectionExpression returns only requested key attributes across name_patterns.
-#[framed]
-async fn query_with_projection_special_names(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_projection_special_names(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -415,8 +413,8 @@ async fn query_with_projection_special_names(actors: TestActors) {
 }
 
 /// Verifies Select::AllAttributes returns all item attributes.
-#[framed]
-async fn query_with_select_all_attributes(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_select_all_attributes(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = TableShape {
@@ -474,8 +472,8 @@ async fn query_with_select_all_attributes(actors: TestActors) {
 }
 
 /// Verifies Select::Count returns count > 0 with empty items list.
-#[framed]
-async fn query_with_select_count(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_select_count(actors: Arc<TestActors>) {
     info!("started");
 
     let dataset = [
@@ -527,8 +525,8 @@ async fn query_with_select_count(actors: TestActors) {
 }
 
 /// Verifies Limit larger than dataset returns all items without error.
-#[framed]
-async fn query_with_limit_larger_than_dataset(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_limit_larger_than_dataset(actors: Arc<TestActors>) {
     info!("started");
 
     let dataset = [
@@ -588,8 +586,8 @@ async fn query_with_limit_larger_than_dataset(actors: TestActors) {
 }
 
 /// Verifies VectorSearch works with 1536-dimensional vectors.
-#[framed]
-async fn query_with_large_dimensions(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_large_dimensions(actors: Arc<TestActors>) {
     info!("started");
 
     let (client, vs_clients) = alternator::make_clients(&actors).await;
@@ -667,8 +665,8 @@ async fn query_with_large_dimensions(actors: TestActors) {
 }
 
 /// Verifies FilterExpression excludes non-matching items while preserving ANN ordering.
-#[framed]
-async fn query_with_filter_expression(actors: TestActors) {
+#[e2etest::test(group = query)]
+async fn query_with_filter_expression(actors: Arc<TestActors>) {
     info!("started");
 
     let pk_name = "Pk-Flt";
@@ -751,53 +749,25 @@ async fn query_with_filter_expression(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "query_with_vector_search",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_vector_search,
-        )
-        .with_test(
-            "query_uses_selected_vector_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_uses_selected_vector_index,
-        )
-        .with_test(
-            "query_with_vector_search_multiple_results_ordering",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_vector_search_multiple_results_ordering,
-        )
-        .with_test(
-            "query_with_projection_special_names",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_projection_special_names,
-        )
-        .with_test(
-            "query_with_select_all_attributes",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_select_all_attributes,
-        )
-        .with_test(
-            "query_with_select_count",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_select_count,
-        )
-        .with_test(
-            "query_with_limit_larger_than_dataset",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_limit_larger_than_dataset,
-        )
-        .with_test(
-            "query_with_large_dimensions",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_large_dimensions,
-        )
-        .with_test(
-            "query_with_filter_expression",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_filter_expression,
-        )
+e2etest::group!(
+    name = query,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

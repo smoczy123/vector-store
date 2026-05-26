@@ -5,109 +5,41 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::KeyspaceName;
 use scylla::client::session::Session;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "ann_filter_by_partition_key_eq",
-            timeout,
-            ann_filter_by_partition_key_eq,
-        )
-        .with_test(
-            "ann_filter_by_partition_key_in",
-            timeout,
-            ann_filter_by_partition_key_in,
-        )
-        .with_test(
-            "ann_filter_by_clustering_key_lt",
-            timeout,
-            ann_filter_by_clustering_key_lt,
-        )
-        .with_test(
-            "ann_filter_by_clustering_key_gt",
-            timeout,
-            ann_filter_by_clustering_key_gt,
-        )
-        .with_test(
-            "ann_filter_by_clustering_key_range",
-            timeout,
-            ann_filter_by_clustering_key_range,
-        )
-        .with_test("ann_filter_by_pk_and_ck", timeout, ann_filter_by_pk_and_ck)
-        .with_test(
-            "ann_filter_returns_no_results_when_nothing_matches",
-            timeout,
-            ann_filter_returns_no_results_when_nothing_matches,
-        )
-        .with_test(
-            "ann_filter_by_vector_column_fails",
-            timeout,
-            ann_filter_by_vector_column_fails,
-        )
-        .with_test(
-            "ann_filter_by_non_indexed_column_fails",
-            timeout,
-            ann_filter_by_non_indexed_column_fails,
-        )
-        .with_test(
-            "ann_filter_by_clustering_key_only_requires_allow_filtering",
-            timeout,
-            ann_filter_by_clustering_key_only_requires_allow_filtering,
-        )
-        .with_test(
-            "ann_filter_by_non_pk_column_rejected_without_allow_filtering",
-            timeout,
-            ann_filter_by_non_pk_column_rejected_without_allow_filtering,
-        )
-        .with_test(
-            "ann_filter_by_non_pk_column_rejected_with_allow_filtering",
-            timeout,
-            ann_filter_by_non_pk_column_rejected_with_allow_filtering,
-        )
-        .with_test(
-            "local_index_filter_by_partition_key_eq",
-            timeout,
-            local_index_filter_by_partition_key_eq,
-        )
-        .with_test(
-            "local_index_filter_by_clustering_key_range",
-            timeout,
-            local_index_filter_by_clustering_key_range,
-        )
-        .with_test(
-            "local_index_filter_returns_no_results_when_nothing_matches",
-            timeout,
-            local_index_filter_returns_no_results_when_nothing_matches,
-        )
-        .with_test(
-            "global_ann_with_timestamp_eq_filter",
-            timeout,
-            global_ann_with_timestamp_eq_filter,
-        )
-        .with_test(
-            "local_ann_with_timestamp_gte_filter",
-            timeout,
-            local_ann_with_timestamp_gte_filter,
-        )
+e2etest::group!(
+    name = filtering,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
 }
 
 /// Test ANN search filtered by partition key equality.
 ///
 /// Table has composite primary key (pk, ck). Insert rows across multiple
 /// partitions. Query with `WHERE pk = 1` to get only rows from partition 1.
-#[framed]
-async fn ann_filter_by_partition_key_eq(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_partition_key_eq(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -178,8 +110,8 @@ async fn ann_filter_by_partition_key_eq(actors: TestActors) {
 /// Test ANN search filtered by partition key using IN clause.
 ///
 /// Query with `WHERE pk IN (0, 2)` to get rows from partitions 0 and 2 only.
-#[framed]
-async fn ann_filter_by_partition_key_in(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_partition_key_in(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -247,8 +179,8 @@ async fn ann_filter_by_partition_key_in(actors: TestActors) {
 ///
 /// Restrict to a single partition with `WHERE pk = 0 AND ck < 3`.
 /// Only rows with ck in {0, 1, 2} should be returned.
-#[framed]
-async fn ann_filter_by_clustering_key_lt(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_clustering_key_lt(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -314,8 +246,8 @@ async fn ann_filter_by_clustering_key_lt(actors: TestActors) {
 ///
 /// Restrict to a single partition with `WHERE pk = 0 AND ck > 7`.
 /// Only rows with ck in {8, 9} should be returned.
-#[framed]
-async fn ann_filter_by_clustering_key_gt(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_clustering_key_gt(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -381,8 +313,8 @@ async fn ann_filter_by_clustering_key_gt(actors: TestActors) {
 ///
 /// Restrict to a single partition with `WHERE pk = 0 AND ck >= 3 AND ck <= 5`.
 /// Only rows with ck in {3, 4, 5} should be returned.
-#[framed]
-async fn ann_filter_by_clustering_key_range(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_clustering_key_range(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -449,8 +381,8 @@ async fn ann_filter_by_clustering_key_range(actors: TestActors) {
 /// Create a table with composite primary key (pk, ck1, ck2).
 /// Use `WHERE pk = 1 AND ck1 = 0` to restrict on both partition and
 /// first clustering column.
-#[framed]
-async fn ann_filter_by_pk_and_ck(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_pk_and_ck(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -523,8 +455,8 @@ async fn ann_filter_by_pk_and_ck(actors: TestActors) {
 
 /// Test that a CQL ANN query filtering on a partition key with no matching
 /// rows returns empty results.
-#[framed]
-async fn ann_filter_returns_no_results_when_nothing_matches(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_returns_no_results_when_nothing_matches(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -592,8 +524,8 @@ async fn ann_filter_returns_no_results_when_nothing_matches(actors: TestActors) 
 /// Test that filtering by the vector column in a WHERE clause fails.
 ///
 /// `WHERE v = [...]` does not apply a filter and should be rejected.
-#[framed]
-async fn ann_filter_by_vector_column_fails(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_vector_column_fails(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -644,8 +576,8 @@ async fn ann_filter_by_vector_column_fails(actors: TestActors) {
 /// Test that filtering by a non-primary-key column in a WHERE clause fails.
 ///
 /// `WHERE f = 1` on a non-indexed column should be rejected.
-#[framed]
-async fn ann_filter_by_non_indexed_column_fails(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_non_indexed_column_fails(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -696,8 +628,8 @@ async fn ann_filter_by_non_indexed_column_fails(actors: TestActors) {
 /// Create a local index partitioned by pk. Insert rows across multiple
 /// partitions. Query with `WHERE pk = 1` and verify only rows from
 /// partition 1 are returned.
-#[framed]
-async fn local_index_filter_by_partition_key_eq(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn local_index_filter_by_partition_key_eq(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -772,8 +704,8 @@ async fn local_index_filter_by_partition_key_eq(actors: TestActors) {
 /// Create a local index partitioned by pk. Restrict to a single partition
 /// with `WHERE pk = 0 AND ck >= 3 AND ck <= 5` and verify only the matching
 /// clustering keys are returned.
-#[framed]
-async fn local_index_filter_by_clustering_key_range(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn local_index_filter_by_clustering_key_range(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -840,8 +772,8 @@ async fn local_index_filter_by_clustering_key_range(actors: TestActors) {
 
 /// Test that a CQL ANN query on a local index filtering on a non-existent
 /// partition key returns empty results.
-#[framed]
-async fn local_index_filter_returns_no_results_when_nothing_matches(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn local_index_filter_returns_no_results_when_nothing_matches(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -909,8 +841,8 @@ async fn local_index_filter_returns_no_results_when_nothing_matches(actors: Test
 
 /// Reproducer for VECTOR-593: ANN query with global index and a timestamp
 /// equality filter using a space-separated CQL timestamp must not fail.
-#[framed]
-async fn global_ann_with_timestamp_eq_filter(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn global_ann_with_timestamp_eq_filter(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -973,8 +905,8 @@ async fn global_ann_with_timestamp_eq_filter(actors: TestActors) {
 
 /// Reproducer for VECTOR-593: ANN query with local index and a timestamp
 /// inequality filter using a date-only CQL timestamp must not fail.
-#[framed]
-async fn local_ann_with_timestamp_gte_filter(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn local_ann_with_timestamp_gte_filter(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -1044,8 +976,8 @@ async fn local_ann_with_timestamp_gte_filter(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_filter_by_clustering_key_only_requires_allow_filtering(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_clustering_key_only_requires_allow_filtering(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -1090,8 +1022,8 @@ async fn ann_filter_by_clustering_key_only_requires_allow_filtering(actors: Test
     info!("finished");
 }
 
-#[framed]
-async fn ann_filter_by_non_pk_column_rejected_without_allow_filtering(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_non_pk_column_rejected_without_allow_filtering(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, keyspace, table) = prepare_non_pk_column_filter_test(&actors).await;
@@ -1113,8 +1045,8 @@ async fn ann_filter_by_non_pk_column_rejected_without_allow_filtering(actors: Te
     info!("finished");
 }
 
-#[framed]
-async fn ann_filter_by_non_pk_column_rejected_with_allow_filtering(actors: TestActors) {
+#[e2etest::test(group = filtering)]
+async fn ann_filter_by_non_pk_column_rejected_with_allow_filtering(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, keyspace, table) = prepare_non_pk_column_filter_test(&actors).await;

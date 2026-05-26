@@ -5,8 +5,7 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -17,44 +16,27 @@ const CDC_MAX_LATENCY: Duration = Duration::from_secs(60);
 const CDC_ACTOR_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const TTL_EXPIRATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "cdc_insert_visible_immediately",
-            timeout,
-            cdc_insert_visible_immediately,
-        )
-        .with_test(
-            "cdc_update_visible_immediately",
-            timeout,
-            cdc_update_visible_immediately,
-        )
-        .with_test(
-            "cdc_delete_visible_immediately",
-            timeout,
-            cdc_delete_visible_immediately,
-        )
-        .with_test("cdc_lwt_insert_visible", timeout, cdc_lwt_insert_visible)
-        .with_test("cdc_lwt_update_visible", timeout, cdc_lwt_update_visible)
-        .with_test("cdc_lwt_delete_visible", timeout, cdc_lwt_delete_visible)
-        .with_test(
-            "recreating_index_terminates_old_cdc_actors",
-            timeout,
-            recreating_index_terminates_old_cdc_actors,
-        )
-        .with_test(
-            "cql_per_row_ttl_expires_from_index",
-            timeout,
-            cql_per_row_ttl_expires_from_index,
-        )
+e2etest::group!(name = cdc, fixtures = (Fixture), parent = crate::validator);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn cdc_insert_visible_immediately(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = cdc)]
+async fn cdc_insert_visible_immediately(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -102,8 +84,8 @@ async fn cdc_insert_visible_immediately(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn cdc_update_visible_immediately(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn cdc_update_visible_immediately(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -196,8 +178,9 @@ fn now_epoch_secs() -> i64 {
         .expect("system time before UNIX epoch")
         .as_secs() as i64
 }
-#[framed]
-async fn cdc_delete_visible_immediately(actors: TestActors) {
+
+#[e2etest::test(group = cdc)]
+async fn cdc_delete_visible_immediately(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -245,8 +228,8 @@ async fn cdc_delete_visible_immediately(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn cdc_lwt_insert_visible(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn cdc_lwt_insert_visible(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -293,8 +276,8 @@ async fn cdc_lwt_insert_visible(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn cdc_lwt_update_visible(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn cdc_lwt_update_visible(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -385,8 +368,8 @@ async fn cdc_lwt_update_visible(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn cdc_lwt_delete_visible(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn cdc_lwt_delete_visible(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -440,8 +423,8 @@ async fn cdc_lwt_delete_visible(actors: TestActors) {
 /// DROP + CREATE of the same index), old CDC actors must terminate. If
 /// they are orphaned, the same index ends up with multiple CDC readers
 /// running concurrently, which is the symptom observed in the field.
-#[framed]
-async fn recreating_index_terminates_old_cdc_actors(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn recreating_index_terminates_old_cdc_actors(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs(&actors).await;
@@ -542,8 +525,8 @@ async fn recreating_index_terminates_old_cdc_actors(actors: TestActors) {
 /// 2. Create an index and verify all rows are queryable via ANN.
 /// 3. Wait for the expiration service to delete expired rows (via CDC).
 /// 4. Verify the index count drops and ANN queries return only non-TTL rows.
-#[framed]
-async fn cql_per_row_ttl_expires_from_index(actors: TestActors) {
+#[e2etest::test(group = cdc)]
+async fn cql_per_row_ttl_expires_from_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;

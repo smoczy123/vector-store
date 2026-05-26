@@ -1282,6 +1282,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1658,7 +1667,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
 dependencies = [
- "convert_case",
+ "convert_case 0.7.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1740,13 +1749,14 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "e2etest"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62d8953946c126952b7f490151686121d00327b3aa552e4ba3f7dde03da0ac31"
+checksum = "5c07d6e20f5593d38a99c606d037cd6e5c48ae207c807be3ba0bd41c772da0b2"
 dependencies = [
  "async-backtrace",
- "clap",
+ "e2etest-macros",
  "futures",
+ "itertools 0.14.0",
  "tokio",
  "tracing",
 ]
@@ -1777,13 +1787,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "e2etest-scylla-cluster"
+name = "e2etest-macros"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a145fd9bc023ed3596c4991329ccd46b29e6efde2ae267f8817fcd345e6ff60"
+checksum = "319137d449236a9c0b537f2d2266d31ce919bc3d367364178a05a1c69c01ff63"
+dependencies = [
+ "convert_case 0.11.0",
+ "itertools 0.14.0",
+ "linkme",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "e2etest-scylla-cluster"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "197c0c59ecd2d9a45609e32e1265df2657204a09cdf784d70062128fcec5ada7"
 dependencies = [
  "async-backtrace",
- "e2etest",
  "sysinfo",
  "tap",
  "tempfile",
@@ -1820,13 +1843,12 @@ dependencies = [
 
 [[package]]
 name = "e2etest-vector-store-cluster"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5060f9d070e4d422115f7981ef07606f815008f78bc257acbd9aa3d7c74b422"
+checksum = "bb3607172385cb4f2f193ecd769a492b5818da496a1ce3781ec732f9a403ac44"
 dependencies = [
  "anyhow",
  "async-backtrace",
- "e2etest",
  "reqwest",
  "serde",
  "tempfile",
@@ -3019,6 +3041,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f78c730aaa7d0b9336a299029ea49f9ee53b0ed06e9202e8cb7db9bae7b8c82"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "linkme"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e83272d46373fb8decca684579ac3e7c8f3d71d4cc3aa693df8759e260ae41cf"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32d59e20403c7d08fe62b4376edfe5c7fb2ef1e6b1465379686d0f21c8df444b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5602,11 +5644,15 @@ dependencies = [
  "httpapi",
  "httpclient",
  "itertools 0.14.0",
+ "linkme",
+ "rcgen",
+ "reqwest",
  "rustls",
  "scylla",
  "scylla-proxy",
  "serde_json",
  "tap",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

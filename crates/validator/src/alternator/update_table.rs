@@ -4,17 +4,15 @@
  */
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use aws_sdk_dynamodb::types::AttributeValue;
-use e2etest::TestCase;
-use serde_json::Value;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
 use crate::alternator::TableShape;
+use crate::common;
+use aws_sdk_dynamodb::types::AttributeValue;
+use serde_json::Value;
+use std::sync::Arc;
+use tracing::info;
 
 fn vector_index_create_update(index_name: &str, vec_attr: &str) -> Value {
     serde_json::json!([
@@ -30,8 +28,8 @@ fn vector_index_create_update(index_name: &str, vec_attr: &str) -> Value {
     ])
 }
 
-#[framed]
-async fn create_vector_index_via_update_table(actors: TestActors) {
+#[e2etest::test(group = update_table)]
+async fn create_vector_index_via_update_table(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -72,8 +70,8 @@ async fn create_vector_index_via_update_table(actors: TestActors) {
 }
 
 /// Like above but with pre-existing data in the table before adding the index.
-#[framed]
-async fn create_vector_index_via_update_table_with_preexisting_data(actors: TestActors) {
+#[e2etest::test(group = update_table)]
+async fn create_vector_index_via_update_table_with_preexisting_data(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -123,8 +121,8 @@ async fn create_vector_index_via_update_table_with_preexisting_data(actors: Test
 }
 
 /// Verifies that the initial-scan path skips non-indexable rows.
-#[framed]
-async fn create_vector_index_via_update_table_with_invalid_data(actors: TestActors) {
+#[e2etest::test(group = update_table)]
+async fn create_vector_index_via_update_table_with_invalid_data(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -184,8 +182,8 @@ async fn create_vector_index_via_update_table_with_invalid_data(actors: TestActo
 }
 
 /// Deletes a vector index via UpdateTable and verifies writes succeed after.
-#[framed]
-async fn delete_vector_index_via_update_table(actors: TestActors) {
+#[e2etest::test(group = update_table)]
+async fn delete_vector_index_via_update_table(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -233,28 +231,25 @@ async fn delete_vector_index_via_update_table(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "create_vector_index_via_update_table",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_vector_index_via_update_table,
-        )
-        .with_test(
-            "create_vector_index_via_update_table_with_preexisting_data",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_vector_index_via_update_table_with_preexisting_data,
-        )
-        .with_test(
-            "create_vector_index_via_update_table_with_invalid_data",
-            common::DEFAULT_TEST_TIMEOUT,
-            create_vector_index_via_update_table_with_invalid_data,
-        )
-        .with_test(
-            "delete_vector_index_via_update_table",
-            common::DEFAULT_TEST_TIMEOUT,
-            delete_vector_index_via_update_table,
-        )
+e2etest::group!(
+    name = update_table,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

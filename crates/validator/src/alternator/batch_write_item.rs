@@ -4,18 +4,16 @@
  */
 
 use crate::TestActors;
+use crate::alternator;
+use crate::alternator::Item;
+use crate::alternator::TableContext;
 use crate::common;
-use async_backtrace::framed;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::batch_write_item::BatchWriteItemError;
 use aws_sdk_dynamodb::operation::batch_write_item::BatchWriteItemOutput;
 use aws_sdk_dynamodb::types::AttributeValue;
-use e2etest::TestCase;
+use std::sync::Arc;
 use tracing::info;
-
-use crate::alternator;
-use crate::alternator::Item;
-use crate::alternator::TableContext;
 
 fn build_put_requests(items: &[Item]) -> Vec<aws_sdk_dynamodb::types::WriteRequest> {
     items
@@ -66,8 +64,8 @@ async fn batch_write_items(
 ///
 /// Loops [`alternator::name_patterns`] to cover all key schema and
 /// naming combinations.
-#[framed]
-async fn batch_write_item_updates_index(actors: TestActors) {
+#[e2etest::test(group = batch_write_item)]
+async fn batch_write_item_updates_index(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -134,8 +132,8 @@ async fn batch_write_item_updates_index(actors: TestActors) {
 /// Tests that `BatchWriteItem` containing an item with an invalid vector type
 /// is rejected by Scylla and does not update the VS index. Covers string
 /// values, mixed-type lists, NULL elements, and wrong dimensions.
-#[framed]
-async fn batch_write_item_with_invalid_vector(actors: TestActors) {
+#[e2etest::test(group = batch_write_item)]
+async fn batch_write_item_with_invalid_vector(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = &alternator::name_patterns()[0]; // plain names, HASH-only
@@ -238,18 +236,25 @@ async fn batch_write_item_with_invalid_vector(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "batch_write_item_updates_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            batch_write_item_updates_index,
-        )
-        .with_test(
-            "batch_write_item_with_invalid_vector",
-            common::DEFAULT_TEST_TIMEOUT,
-            batch_write_item_with_invalid_vector,
-        )
+e2etest::group!(
+    name = batch_write_item,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

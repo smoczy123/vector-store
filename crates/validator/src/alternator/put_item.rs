@@ -4,23 +4,21 @@
  */
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use aws_sdk_dynamodb::types::AttributeValue;
-use e2etest::TestCase;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
+use crate::common;
+use aws_sdk_dynamodb::types::AttributeValue;
+use std::sync::Arc;
+use tracing::info;
 
 /// Inserts items via `PutItem` and verifies the VS index is updated.
 ///
 /// Loops [`alternator::name_patterns`] so that every combination
 /// of key schema (HASH-only / HASH+RANGE) and naming style (plain /
 /// special) is covered.
-#[framed]
-async fn put_item_updates_index(actors: TestActors) {
+#[e2etest::test(group = put_item)]
+async fn put_item_updates_index(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -58,8 +56,8 @@ async fn put_item_updates_index(actors: TestActors) {
 
 /// Inserts items with various invalid vector attributes and verifies VS does
 /// not index them.  Only the valid item should appear in the index.
-#[framed]
-async fn put_item_with_invalid_vector_is_not_indexed(actors: TestActors) {
+#[e2etest::test(group = put_item)]
+async fn put_item_with_invalid_vector_is_not_indexed(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = &alternator::name_patterns()[0]; // plain names, HASH-only
@@ -130,18 +128,25 @@ async fn put_item_with_invalid_vector_is_not_indexed(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "put_item_updates_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            put_item_updates_index,
-        )
-        .with_test(
-            "put_item_with_invalid_vector_is_not_indexed",
-            common::DEFAULT_TEST_TIMEOUT,
-            put_item_with_invalid_vector_is_not_indexed,
-        )
+e2etest::group!(
+    name = put_item,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

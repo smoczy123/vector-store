@@ -4,20 +4,18 @@
  */
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use aws_sdk_dynamodb::primitives::Blob;
-use aws_sdk_dynamodb::types::AttributeValue;
-use aws_sdk_dynamodb::types::ScalarAttributeType;
-use e2etest::TestCase;
-use std::collections::HashMap;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
 use crate::alternator::TableShape;
 use crate::alternator::query::QueryBuilderExt;
+use crate::common;
+use aws_sdk_dynamodb::primitives::Blob;
+use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::ScalarAttributeType;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::info;
 
 /// Shared logic for all key-type tests: creates a table with initial items,
 /// adds extra items via PutItem, then queries with both L-type and FLOAT32VECTOR
@@ -86,8 +84,8 @@ async fn query_with_key_type(
     ctx.done().await;
 }
 
-#[framed]
-async fn query_with_string_key(actors: TestActors) {
+#[e2etest::test(group = types)]
+async fn query_with_string_key(actors: Arc<TestActors>) {
     info!("started");
     let shape = TableShape {
         table_prefix: None,
@@ -107,8 +105,8 @@ async fn query_with_string_key(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn query_with_number_key(actors: TestActors) {
+#[e2etest::test(group = types)]
+async fn query_with_number_key(actors: Arc<TestActors>) {
     info!("started");
     let shape = TableShape {
         table_prefix: None,
@@ -128,8 +126,8 @@ async fn query_with_number_key(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn query_with_binary_key(actors: TestActors) {
+#[e2etest::test(group = types)]
+async fn query_with_binary_key(actors: Arc<TestActors>) {
     info!("started");
     let shape = TableShape {
         table_prefix: None,
@@ -152,8 +150,8 @@ async fn query_with_binary_key(actors: TestActors) {
 }
 
 /// Verifies queries work with both FLOAT32VECTOR-encoded items and query vectors.
-#[framed]
-async fn query_with_optimized_vector_type(actors: TestActors) {
+#[e2etest::test(group = types)]
+async fn query_with_optimized_vector_type(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = TableShape {
@@ -181,28 +179,25 @@ async fn query_with_optimized_vector_type(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "query_with_string_key",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_string_key,
-        )
-        .with_test(
-            "query_with_number_key",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_number_key,
-        )
-        .with_test(
-            "query_with_binary_key",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_binary_key,
-        )
-        .with_test(
-            "query_with_optimized_vector_type",
-            common::DEFAULT_TEST_TIMEOUT,
-            query_with_optimized_vector_type,
-        )
+e2etest::group!(
+    name = types,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

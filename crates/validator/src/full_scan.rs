@@ -5,8 +5,6 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_scylla_proxy_cluster::ScyllaProxyClusterExt;
 use httpapi::IndexInfo;
 use httpapi::IndexStatus;
@@ -18,30 +16,36 @@ use scylla_proxy::RequestOpcode;
 use scylla_proxy::RequestReaction;
 use scylla_proxy::RequestRule;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init_with_proxy_single_vs)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "full_scan_is_completed_when_responding_to_messages_concurrently",
-            timeout,
-            full_scan_is_completed_when_responding_to_messages_concurrently,
-        )
-        .with_test(
-            "full_scan_stops_when_index_is_dropped",
-            timeout,
-            full_scan_stops_when_index_is_dropped,
-        )
+e2etest::group!(
+    name = full_scan,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn full_scan_is_completed_when_responding_to_messages_concurrently(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init_with_proxy_single_vs(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = full_scan)]
+async fn full_scan_is_completed_when_responding_to_messages_concurrently(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -140,8 +144,8 @@ async fn full_scan_is_completed_when_responding_to_messages_concurrently(actors:
     info!("finished");
 }
 
-#[framed]
-async fn full_scan_stops_when_index_is_dropped(actors: TestActors) {
+#[e2etest::test(group = full_scan)]
+async fn full_scan_stops_when_index_is_dropped(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;

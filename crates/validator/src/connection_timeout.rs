@@ -5,27 +5,36 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_firewall::FirewallExt;
 use e2etest_vector_store_cluster::VectorStoreClusterExt;
+use std::sync::Arc;
 use std::time::Duration;
 use tap::Pipe;
 use tracing::info;
 
 const CONNECTION_TIMEOUT: &str = "5s";
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init_with_proxy_single_vs)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "connection_timeout_triggers_session_failure",
-            timeout,
-            connection_timeout_triggers_session_failure,
-        )
+e2etest::group!(
+    name = connection_timeout,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init_with_proxy_single_vs(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
 }
 
 /// Test that the CQL connection timeout causes session creation to fail
@@ -40,8 +49,8 @@ pub(crate) async fn new() -> TestCase<TestActors> {
 /// - Verify that session-create-failure counter increments (timeout fires).
 /// - Restore connectivity by allowing traffic through the proxy.
 /// - Verify that vector-store eventually connects and becomes ready.
-#[framed]
-async fn connection_timeout_triggers_session_failure(actors: TestActors) {
+#[e2etest::test(group = connection_timeout)]
+async fn connection_timeout_triggers_session_failure(actors: Arc<TestActors>) {
     info!("started");
 
     info!("Stop vector-store");

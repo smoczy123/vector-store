@@ -5,13 +5,12 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_scylla_proxy_cluster::ScyllaProxyClusterExt;
 use scylla_proxy::Condition;
 use scylla_proxy::Reaction;
 use scylla_proxy::RequestReaction;
 use scylla_proxy::RequestRule;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -19,17 +18,27 @@ use tokio::sync::watch;
 use tokio::time;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init_with_proxy)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "client_timeout_doesnt_stop_cdc",
-            timeout,
-            client_timeout_doesnt_stop_cdc,
-        )
+e2etest::group!(
+    name = db_timeout,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init_with_proxy(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
 }
 
 /// Test that CDC is working after rust driver session's client timeout.
@@ -45,8 +54,8 @@ pub(crate) async fn new() -> TestCase<TestActors> {
 /// - Bring back simulator to normal operation.
 /// - Wait until vector-stores update indexes using CDC.
 /// - Drop the keyspace.
-#[framed]
-async fn client_timeout_doesnt_stop_cdc(actors: TestActors) {
+#[e2etest::test(group = db_timeout)]
+async fn client_timeout_doesnt_stop_cdc(actors: Arc<TestActors>) {
     info!("started");
     let (session, clients) = prepare_connection_no_tls(&actors).await;
     let keyspace = create_keyspace(&session).await;

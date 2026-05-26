@@ -5,54 +5,34 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "ann_query_returns_expected_results",
-            timeout,
-            ann_query_returns_expected_results,
-        )
-        .with_test(
-            "ann_query_returns_expected_results_multicolumn_pk",
-            timeout,
-            ann_query_returns_expected_results_multicolumn_pk,
-        )
-        .with_test(
-            "ann_query_respects_limit",
-            timeout,
-            ann_query_respects_limit,
-        )
-        .with_test(
-            "ann_query_respects_limit_over_1000_vectors",
-            timeout,
-            ann_query_respects_limit_over_1000_vectors,
-        )
-        .with_test(
-            "ann_query_returns_rows_identified_by_composite_primary_key",
-            timeout,
-            ann_query_returns_rows_identified_by_composite_primary_key,
-        )
-        .with_test(
-            "ann_query_returns_rows_using_cdc",
-            timeout,
-            ann_query_returns_rows_using_cdc,
-        )
+e2etest::group!(name = ann, fixtures = (Fixture), parent = crate::validator);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn ann_query_returns_expected_results(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = ann)]
+async fn ann_query_returns_expected_results(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -122,8 +102,8 @@ async fn ann_query_returns_expected_results(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_query_returns_expected_results_multicolumn_pk(actors: TestActors) {
+#[e2etest::test(group = ann)]
+async fn ann_query_returns_expected_results_multicolumn_pk(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -187,8 +167,8 @@ async fn ann_query_returns_expected_results_multicolumn_pk(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_query_respects_limit(actors: TestActors) {
+#[e2etest::test(group = ann)]
+async fn ann_query_respects_limit(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -255,8 +235,8 @@ async fn ann_query_respects_limit(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_query_respects_limit_over_1000_vectors(actors: TestActors) {
+#[e2etest::test(group = ann)]
+async fn ann_query_respects_limit_over_1000_vectors(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -325,8 +305,8 @@ async fn ann_query_respects_limit_over_1000_vectors(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_query_returns_rows_identified_by_composite_primary_key(actors: TestActors) {
+#[e2etest::test(group = ann)]
+async fn ann_query_returns_rows_identified_by_composite_primary_key(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -404,8 +384,8 @@ async fn ann_query_returns_rows_identified_by_composite_primary_key(actors: Test
 /// 6. Wait until vector-stores update indexes using CDC.
 /// 7. Perform an ANN query and verify the results.
 /// 8. Drop the keyspace.
-#[framed]
-async fn ann_query_returns_rows_using_cdc(actors: TestActors) {
+#[e2etest::test(group = ann)]
+async fn ann_query_returns_rows_using_cdc(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
