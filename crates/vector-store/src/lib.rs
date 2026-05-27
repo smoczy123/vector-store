@@ -621,6 +621,13 @@ pub enum DbIndexPartitioning {
     Local(Arc<Vec<ColumnName>>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kind of custom index as declared in ScyllaDB index options.
+pub enum DbIndexKind {
+    VectorSearch,
+    FullTextSearch,
+}
+
 #[derive(Debug)]
 pub struct DbCustomIndex {
     pub keyspace: KeyspaceName,
@@ -629,6 +636,7 @@ pub struct DbCustomIndex {
     pub target_column: ColumnName,
     pub partitioning: DbIndexPartitioning,
     pub filtering_columns: Arc<Vec<ColumnName>>,
+    pub kind: DbIndexKind,
 }
 
 impl DbCustomIndex {

@@ -22,6 +22,7 @@ use vector_store::AsyncInProgress;
 use vector_store::ColumnName;
 use vector_store::DbCustomIndex;
 use vector_store::DbEmbedding;
+use vector_store::DbIndexKind;
 use vector_store::Dimensions;
 use vector_store::IndexMetadata;
 use vector_store::IndexName;
@@ -270,6 +271,7 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                                 target_column: index.metadata.target_column.clone(),
                                 partitioning: index.metadata.partitioning.clone(),
                                 filtering_columns: index.metadata.filtering_columns.clone(),
+                                kind: DbIndexKind::VectorSearch,
                             })
                     })
                     .collect()))

@@ -5,10 +5,13 @@
 
 use crate::Config;
 use crate::Connectivity;
+use crate::DbCustomIndex;
+use crate::DbIndexKind;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
 use crate::IndexKind;
 use crate::IndexMetadata;
+use crate::IndexOptionsFts;
 use crate::IndexOptionsVs;
 use crate::Quantization;
 use crate::SpaceType;
@@ -183,37 +186,15 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
             continue;
         };
 
-        let Some(dimensions) = db
-            .get_index_target_type(
-                idx.keyspace.clone(),
-                idx.table.clone(),
-                idx.target_column.clone(),
-                idx.index.clone(),
-            )
-            .await
-            .inspect_err(|err| warn!("unable to get index target dimensions: {err}"))?
-        else {
-            debug!("get_indexes: missing or unsupported type for index {idx:?}");
-            continue;
+        let kind = match idx.kind {
+            DbIndexKind::VectorSearch => {
+                let Some(kind) = build_vs_index_kind(db, &idx).await? else {
+                    continue;
+                };
+                kind
+            }
+            DbIndexKind::FullTextSearch => IndexKind::Fts(IndexOptionsFts {}),
         };
-
-        let (connectivity, expansion_add, expansion_search, space_type, quantization) =
-            if let Some(params) = db
-                .get_index_params(idx.keyspace.clone(), idx.table.clone(), idx.index.clone())
-                .await
-                .inspect_err(|err| warn!("unable to get index params: {err}"))?
-            {
-                params
-            } else {
-                debug!("get_indexes: no params for index {idx:?}");
-                (
-                    Connectivity::default(),
-                    ExpansionAdd::default(),
-                    ExpansionSearch::default(),
-                    SpaceType::default(),
-                    Quantization::default(),
-                )
-            };
 
         let metadata = IndexMetadata {
             keyspace_name: idx.keyspace,
@@ -223,14 +204,7 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
             partitioning: idx.partitioning,
             filtering_columns: idx.filtering_columns,
             version,
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions,
-                connectivity,
-                expansion_add,
-                expansion_search,
-                space_type,
-                quantization,
-            }),
+            kind,
         };
 
         if !db.is_valid_index(metadata.clone()).await {
@@ -242,6 +216,52 @@ async fn get_indexes(db: &Sender<Db>) -> anyhow::Result<HashSet<IndexMetadata>> 
         indexes.insert(metadata);
     }
     Ok(indexes)
+}
+
+async fn build_vs_index_kind(
+    db: &Sender<Db>,
+    idx: &DbCustomIndex,
+) -> anyhow::Result<Option<IndexKind>> {
+    let Some(dimensions) = db
+        .get_index_target_type(
+            idx.keyspace.clone(),
+            idx.table.clone(),
+            idx.target_column.clone(),
+            idx.index.clone(),
+        )
+        .await
+        .inspect_err(|err| warn!("unable to get index target dimensions: {err}"))?
+    else {
+        debug!("get_indexes: missing or unsupported type for index {idx:?}");
+        return Ok(None);
+    };
+
+    let (connectivity, expansion_add, expansion_search, space_type, quantization) =
+        if let Some(params) = db
+            .get_index_params(idx.keyspace.clone(), idx.table.clone(), idx.index.clone())
+            .await
+            .inspect_err(|err| warn!("unable to get index params: {err}"))?
+        {
+            params
+        } else {
+            debug!("get_indexes: no params for index {idx:?}");
+            (
+                Connectivity::default(),
+                ExpansionAdd::default(),
+                ExpansionSearch::default(),
+                SpaceType::default(),
+                Quantization::default(),
+            )
+        };
+
+    Ok(Some(IndexKind::Vs(IndexOptionsVs {
+        dimensions,
+        connectivity,
+        expansion_add,
+        expansion_search,
+        space_type,
+        quantization,
+    })))
 }
 
 struct AddIndexesR {
@@ -428,6 +448,7 @@ mod tests {
                 target_column: "embedding".to_string().into(),
                 partitioning: DbIndexPartitioning::Global,
                 filtering_columns: Arc::new(Vec::new()),
+                kind: DbIndexKind::VectorSearch,
             }
         }
 
@@ -486,6 +507,7 @@ mod tests {
                         target_column: idx.target_column.clone(),
                         partitioning: DbIndexPartitioning::Global,
                         filtering_columns: Arc::new(Vec::new()),
+                        kind: idx.kind,
                     })
                     .collect()
             }
@@ -680,6 +702,7 @@ mod tests {
                         target_column: "embedding".to_string().into(),
                         partitioning: DbIndexPartitioning::Global,
                         filtering_columns: Arc::new(Vec::new()),
+                        kind: DbIndexKind::VectorSearch,
                     };
                     tx.send(Ok(vec![index(), index(), index()])).unwrap();
                 }
@@ -742,6 +765,53 @@ mod tests {
         // second index is invalid
         set_valid_indexes(vec![true, false, true]);
         assert!(get_indexes(&db).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_indexes_returns_fts_index() {
+        let mut mock_db = MockSimDb::new();
+
+        mock_db.expect_get_indexes().returning({
+            move |tx| {
+                async move {
+                    tx.send(Ok(vec![DbCustomIndex {
+                        keyspace: "ks".to_string().into(),
+                        index: "fts_idx".to_string().into(),
+                        table: "tbl".to_string().into(),
+                        target_column: "content".to_string().into(),
+                        index_type: DbIndexPartitioning::Global,
+                        filtering_columns: Arc::new(Vec::new()),
+                        kind: DbIndexKind::FullTextSearch,
+                    }]))
+                    .unwrap();
+                }
+                .boxed()
+            }
+        });
+
+        mock_db.expect_get_index_version().returning({
+            move |_, _, _, tx| {
+                async move {
+                    tx.send(Ok(Some(Uuid::new_v4().into()))).unwrap();
+                }
+                .boxed()
+            }
+        });
+
+        mock_db.expect_is_valid_index().returning(move |_, tx| {
+            async move {
+                tx.send(true).unwrap();
+            }
+            .boxed()
+        });
+
+        let db = db::tests::new(mock_db);
+        let result = get_indexes(&db).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        let idx = result.into_iter().next().unwrap();
+        assert_eq!(idx.index_name.as_ref(), "fts_idx");
+        assert_eq!(idx.kind, IndexKind::Fts(IndexOptionsFts {}));
     }
 
     #[test]
