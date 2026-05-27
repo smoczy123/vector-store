@@ -55,6 +55,11 @@ To install all cargo tools used in the CI:
 $ scripts/install-cargo-tools
 ```
 
+## Examples
+
+- [CQL quickstart](docs/examples/quick-start.cql) - create a vector table, insert sample vectors, and run an ANN query.
+- [LangChain Cassandra example](docs/examples/langchain-rag/README.md) - connect with LangChain's Cassandra vector store connector and print scored retrieval results.
+
 ## Subdirectories
 
 - [scripts](./scripts/README.md) - helper scripts for development, release,
