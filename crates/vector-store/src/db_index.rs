@@ -6,7 +6,8 @@
 use crate::AsyncInProgress;
 use crate::ColumnName;
 use crate::Config;
-use crate::DbEmbedding;
+use crate::DbIndexedRow;
+use crate::DbIndexedValue;
 use crate::IndexMetadata;
 use crate::KeyspaceIdentifier;
 use crate::Percentage;
@@ -65,7 +66,7 @@ use tracing::warn;
 type GetPrimaryKeyColumnsR = Arc<Vec<ColumnName>>;
 type GetTableColumnsR = Arc<HashMap<ColumnName, NativeType>>;
 type RangeScanResult =
-    anyhow::Result<Pin<Box<dyn Stream<Item = DbEmbedding> + std::marker::Send>>, anyhow::Error>;
+    anyhow::Result<Pin<Box<dyn Stream<Item = DbIndexedRow> + std::marker::Send>>, anyhow::Error>;
 
 const START_RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 const RETRY_TIMEOUT_LIMIT: Duration = Duration::from_secs(16);
@@ -152,7 +153,7 @@ pub(crate) async fn new(
     cdc_error_notify: Arc<Notify>,
 ) -> anyhow::Result<(
     mpsc::Sender<DbIndex>,
-    mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
+    mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>,
 )> {
     let key = metadata.key();
 
@@ -434,7 +435,7 @@ impl Statements {
     /// to send read embeddings into the pipeline.
     async fn initial_scan(
         &self,
-        tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         completed_scan_length: Arc<AtomicU64>,
     ) {
         let semaphore_capacity = self.nr_parallel_queries().get();
@@ -560,7 +561,7 @@ impl Statements {
         &self,
         begin: Token,
         end: Token,
-    ) -> anyhow::Result<BoxStream<'static, DbEmbedding>> {
+    ) -> anyhow::Result<BoxStream<'static, DbIndexedRow>> {
         // last two columns are embedding and writetime
         let columns_len_expected = self.primary_key_columns.len() + 2;
 
@@ -625,9 +626,9 @@ impl Statements {
                     return None;
                 };
 
-                Some(DbEmbedding {
+                Some(DbIndexedRow {
                     primary_key,
-                    embedding: vector,
+                    value: vector.map(DbIndexedValue::Vector),
                     timestamp,
                 })
             })

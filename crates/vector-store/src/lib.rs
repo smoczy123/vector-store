@@ -646,9 +646,16 @@ impl DbCustomIndex {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DbEmbedding {
+/// The indexed value read from a CDC row or full scan.
+pub enum DbIndexedValue {
+    Vector(Vector),
+    Document(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbIndexedRow {
     pub primary_key: PrimaryKey,
-    pub embedding: Option<Vector>,
+    pub value: Option<DbIndexedValue>,
     pub timestamp: Timestamp,
 }
 

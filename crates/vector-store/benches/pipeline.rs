@@ -46,8 +46,9 @@ use vector_store::ColumnName;
 use vector_store::Config;
 use vector_store::ConfigReceivers;
 use vector_store::Connectivity;
-use vector_store::DbEmbedding;
 use vector_store::DbIndexPartitioning;
+use vector_store::DbIndexedRow;
+use vector_store::DbIndexedValue;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::HttpServerConfig;
@@ -267,9 +268,9 @@ fn scan_fn_mpsc(
             while let Some((primary_key, embedding, timestamp, in_progress)) = items.recv().await {
                 let _ = tx
                     .send((
-                        DbEmbedding {
+                        DbIndexedRow {
                             primary_key,
-                            embedding,
+                            value: embedding.map(DbIndexedValue::Vector),
                             timestamp,
                         },
                         in_progress,

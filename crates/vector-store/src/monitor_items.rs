@@ -4,7 +4,8 @@
  */
 
 use crate::AsyncInProgress;
-use crate::DbEmbedding;
+use crate::DbIndexedRow;
+use crate::DbIndexedValue;
 use crate::IndexKey;
 use crate::Metrics;
 use crate::index::Index;
@@ -27,7 +28,7 @@ pub(crate) enum MonitorItems {}
 pub(crate) async fn new(
     key: IndexKey,
     table: Arc<RwLock<impl TableAdd + Send + Sync + 'static>>,
-    mut embeddings: Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
+    mut embeddings: Receiver<(DbIndexedRow, Option<AsyncInProgress>)>,
     index: Sender<Index>,
     metrics: Arc<Metrics>,
 ) -> anyhow::Result<Sender<MonitorItems>> {
@@ -60,7 +61,7 @@ pub(crate) async fn new(
 async fn add(
     table: &Arc<RwLock<impl TableAdd>>,
     index: &Sender<Index>,
-    embedding: DbEmbedding,
+    embedding: DbIndexedRow,
     mut in_progress: Option<AsyncInProgress>,
     metrics: &Metrics,
     key: &IndexKey,
@@ -78,28 +79,35 @@ async fn add(
     let in_progress = &mut in_progress;
     for operation in operations.into_iter() {
         match operation {
-            Operation::AddVector {
+            Operation::AddValue {
                 primary_id,
                 partition_id,
-                vector,
+                value,
                 is_update,
             } => {
                 let op_label = if is_update { "update" } else { "insert" };
-                index
-                    .add_vector(partition_id, primary_id, vector, in_progress.take())
-                    .await;
+                match value {
+                    DbIndexedValue::Vector(vector) => {
+                        index
+                            .add_vector(partition_id, primary_id, vector, in_progress.take())
+                            .await;
+                    }
+                    DbIndexedValue::Document(_document) => {
+                        error!("FTS document indexing not yet implemented");
+                    }
+                }
                 metrics
                     .modified
                     .with_label_values(&[key.keyspace().as_ref(), key.index().as_ref(), op_label])
                     .inc();
             }
-            Operation::RemoveBeforeAddVector {
+            Operation::RemoveBeforeAddValue {
                 primary_id,
                 partition_id,
             } => {
                 index.remove_vector(partition_id, primary_id, None).await;
             }
-            Operation::RemoveVector {
+            Operation::RemoveValue {
                 primary_id,
                 partition_id,
             } => {
@@ -172,9 +180,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: Some(vec![1.].into()),
+            value: Some(DbIndexedValue::Vector(vec![1.].into())),
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
@@ -207,9 +215,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: Some(vec![1.].into()),
+            value: Some(DbIndexedValue::Vector(vec![1.].into())),
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         let (tx_progress, _rx_progress) = mpsc::channel(1);
@@ -220,10 +228,10 @@ mod tests {
             .with(eq(index_key), eq(embedding.clone()))
             .once()
             .returning(|_, _| {
-                Ok(vec![Operation::AddVector {
+                Ok(vec![Operation::AddValue {
                     primary_id: 2.into(),
                     partition_id: 3.into(),
-                    vector: vec![4.].into(),
+                    value: DbIndexedValue::Vector(vec![4.].into()),
                     is_update: false,
                 }])
             });
@@ -267,9 +275,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: Some(vec![1.].into()),
+            value: Some(DbIndexedValue::Vector(vec![1.].into())),
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
@@ -279,10 +287,10 @@ mod tests {
             .with(eq(index_key), eq(embedding.clone()))
             .once()
             .returning(|_, _| {
-                Ok(vec![Operation::AddVector {
+                Ok(vec![Operation::AddValue {
                     primary_id: 2.into(),
                     partition_id: 3.into(),
-                    vector: vec![4.].into(),
+                    value: DbIndexedValue::Vector(vec![4.].into()),
                     is_update: false,
                 }])
             });
@@ -323,9 +331,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: Some(vec![1.].into()),
+            value: Some(DbIndexedValue::Vector(vec![1.].into())),
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
@@ -336,14 +344,14 @@ mod tests {
             .once()
             .returning(|_, _| {
                 Ok(vec![
-                    Operation::RemoveBeforeAddVector {
+                    Operation::RemoveBeforeAddValue {
                         primary_id: 2.into(),
                         partition_id: 3.into(),
                     },
-                    Operation::AddVector {
+                    Operation::AddValue {
                         primary_id: 3.into(),
                         partition_id: 3.into(),
-                        vector: vec![4.].into(),
+                        value: DbIndexedValue::Vector(vec![4.].into()),
                         is_update: true,
                     },
                 ])
@@ -396,9 +404,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: Some(vec![1.].into()),
+            value: Some(DbIndexedValue::Vector(vec![1.].into())),
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
@@ -410,21 +418,21 @@ mod tests {
             .returning(|_, _| {
                 Ok(vec![
                     // Plain insert
-                    Operation::AddVector {
+                    Operation::AddValue {
                         primary_id: 1.into(),
                         partition_id: 2.into(),
-                        vector: vec![10.].into(),
+                        value: DbIndexedValue::Vector(vec![10.].into()),
                         is_update: false,
                     },
                     // Update (remove + add)
-                    Operation::RemoveBeforeAddVector {
+                    Operation::RemoveBeforeAddValue {
                         primary_id: 3.into(),
                         partition_id: 4.into(),
                     },
-                    Operation::AddVector {
+                    Operation::AddValue {
                         primary_id: 5.into(),
                         partition_id: 4.into(),
-                        vector: vec![20.].into(),
+                        value: DbIndexedValue::Vector(vec![20.].into()),
                         is_update: true,
                     },
                 ])
@@ -494,9 +502,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: None,
+            value: None,
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
@@ -506,7 +514,7 @@ mod tests {
             .with(eq(index_key), eq(embedding.clone()))
             .once()
             .returning(|_, _| {
-                Ok(vec![Operation::RemoveVector {
+                Ok(vec![Operation::RemoveValue {
                     primary_id: 5.into(),
                     partition_id: 6.into(),
                 }])
@@ -546,9 +554,9 @@ mod tests {
         .await
         .unwrap();
 
-        let embedding = DbEmbedding {
+        let embedding = DbIndexedRow {
             primary_key: [CqlValue::Int(1)].into(),
-            embedding: None,
+            value: None,
             timestamp: Timestamp::from_unix_timestamp(10),
         };
         table
