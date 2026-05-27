@@ -54,13 +54,14 @@ pub(crate) async fn new(
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
     tokio::spawn(
         async move {
-            let (interval_duration, mut alter_index_simulator) = {
+            let (interval_duration, mut alter_index_simulator, mut fulltext_indexes) = {
                 let config = config_rx.borrow_and_update();
                 (
                     config
                         .monitor_indexes_interval
                         .unwrap_or(Duration::from_secs(1)),
                     config.alter_index_simulator,
+                    config.fulltext_indexes,
                 )
             };
             let mut interval = time::interval(interval_duration);
@@ -69,6 +70,9 @@ pub(crate) async fn new(
             let mut indexes = HashSet::new();
             if alter_index_simulator {
                 info!("monitor_indexes: alter index simulator is enabled");
+            }
+            if fulltext_indexes {
+                info!("monitor_indexes: fulltext indexes are enabled");
             }
             while !rx.is_closed() {
                 tokio::select! {
@@ -92,6 +96,8 @@ pub(crate) async fn new(
                             schema_version.reset();
                             continue;
                         };
+
+                        let new_indexes = filter_disabled_index_kinds(new_indexes, fulltext_indexes);
 
                         if alter_index_simulator {
                             node_state.send_event(Event::IndexesDiscovered(
@@ -132,12 +138,9 @@ pub(crate) async fn new(
                         let Ok(()) = cfg else {
                             break;
                         };
-                        let previous = alter_index_simulator;
-                        alter_index_simulator = config_rx.borrow_and_update().alter_index_simulator;
-                        if previous != alter_index_simulator {
-                            info!("monitor_indexes: alter index simulator is {}",
-                                if alter_index_simulator { "enabled" } else { "disabled" });
-                        }
+                        let config = config_rx.borrow_and_update();
+                        update_flag(&mut alter_index_simulator, config.alter_index_simulator, "alter index simulator");
+                        update_flag(&mut fulltext_indexes, config.fulltext_indexes, "fulltext indexes");
                     }
 
                     _ = rx.recv() => { }
@@ -299,6 +302,29 @@ async fn del_indexes(engine: &Sender<Engine>, idxs: impl Iterator<Item = IndexMe
     }
 }
 
+fn update_flag(current: &mut bool, new_value: bool, name: &str) {
+    if *current != new_value {
+        *current = new_value;
+        info!(
+            "monitor_indexes: {name} is {}",
+            if new_value { "enabled" } else { "disabled" }
+        );
+    }
+}
+
+fn filter_disabled_index_kinds(
+    indexes: HashSet<IndexMetadata>,
+    fulltext_indexes: bool,
+) -> HashSet<IndexMetadata> {
+    if fulltext_indexes {
+        return indexes;
+    }
+    indexes
+        .into_iter()
+        .filter(|idx| !matches!(idx.kind, IndexKind::Fts(_)))
+        .collect()
+}
+
 /// delete the index if it doesn't appear in the new_indexes
 fn should_delete(curr_idx: &IndexMetadata, new_indexes: &HashSet<IndexMetadata>) -> bool {
     !new_indexes.contains(curr_idx)
@@ -364,6 +390,39 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::Notify;
     use uuid::Uuid;
+
+    fn sample_vs_index_metadata(name: &str) -> IndexMetadata {
+        IndexMetadata {
+            keyspace_name: "ks".into(),
+            index_name: name.into(),
+            table_name: "tbl".into(),
+            target_column: "embedding".into(),
+            partitioning: DbIndexPartitioning::Global,
+            filtering_columns: Arc::new(Vec::new()),
+            version: Uuid::new_v4().into(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: NonZeroUsize::new(3).unwrap().into(),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
+        }
+    }
+
+    fn sample_fts_index_metadata(name: &str) -> IndexMetadata {
+        IndexMetadata {
+            keyspace_name: "ks".into(),
+            index_name: name.into(),
+            table_name: "tbl".into(),
+            target_column: "content".into(),
+            partitioning: DbIndexPartitioning::Global,
+            filtering_columns: Arc::new(Vec::new()),
+            version: Uuid::new_v4().into(),
+            kind: IndexKind::Fts(IndexOptionsFts {}),
+        }
+    }
 
     #[tokio::test]
     async fn schema_version_changed() {
@@ -779,7 +838,7 @@ mod tests {
                         index: "fts_idx".to_string().into(),
                         table: "tbl".to_string().into(),
                         target_column: "content".to_string().into(),
-                        index_type: DbIndexPartitioning::Global,
+                        partitioning: DbIndexPartitioning::Global,
                         filtering_columns: Arc::new(Vec::new()),
                         kind: DbIndexKind::FullTextSearch,
                     }]))
@@ -816,23 +875,7 @@ mod tests {
 
     #[test]
     fn validate_should_delete() {
-        let idx = IndexMetadata {
-            keyspace_name: "ks".into(),
-            index_name: "idx".into(),
-            table_name: "tbl".into(),
-            target_column: "embedding".into(),
-            partitioning: DbIndexPartitioning::Global,
-            filtering_columns: Arc::new(Vec::new()),
-            version: Uuid::new_v4().into(),
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions: NonZeroUsize::new(3).unwrap().into(),
-                connectivity: Default::default(),
-                expansion_add: Default::default(),
-                expansion_search: Default::default(),
-                space_type: Default::default(),
-                quantization: Default::default(),
-            }),
-        };
+        let idx = sample_vs_index_metadata("idx");
         assert!(should_delete(
             &IndexMetadata { ..idx.clone() },
             &HashSet::new()
@@ -862,23 +905,7 @@ mod tests {
 
     #[test]
     fn validate_should_delete_simulator() {
-        let idx = IndexMetadata {
-            keyspace_name: "ks".into(),
-            index_name: "idx".into(),
-            table_name: "tbl".into(),
-            target_column: "embedding".into(),
-            partitioning: DbIndexPartitioning::Global,
-            filtering_columns: Arc::new(Vec::new()),
-            version: Uuid::new_v4().into(),
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions: NonZeroUsize::new(3).unwrap().into(),
-                connectivity: Default::default(),
-                expansion_add: Default::default(),
-                expansion_search: Default::default(),
-                space_type: Default::default(),
-                quantization: Default::default(),
-            }),
-        };
+        let idx = sample_vs_index_metadata("idx");
         assert!(!should_delete_simulator(
             &IndexMetadata { ..idx.clone() },
             &HashSet::new()
@@ -930,23 +957,7 @@ mod tests {
 
     #[test]
     fn validate_should_add() {
-        let idx = IndexMetadata {
-            keyspace_name: "ks".into(),
-            index_name: "idx".into(),
-            table_name: "tbl".into(),
-            target_column: "embedding".into(),
-            partitioning: DbIndexPartitioning::Global,
-            filtering_columns: Arc::new(Vec::new()),
-            version: Uuid::new_v4().into(),
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions: NonZeroUsize::new(3).unwrap().into(),
-                connectivity: Default::default(),
-                expansion_add: Default::default(),
-                expansion_search: Default::default(),
-                space_type: Default::default(),
-                quantization: Default::default(),
-            }),
-        };
+        let idx = sample_vs_index_metadata("idx");
         assert!(should_add(
             &IndexMetadata { ..idx.clone() },
             &HashSet::new()
@@ -959,23 +970,7 @@ mod tests {
 
     #[test]
     fn validate_should_add_simulator() {
-        let idx = IndexMetadata {
-            keyspace_name: "ks".into(),
-            index_name: "idx".into(),
-            table_name: "tbl".into(),
-            target_column: "embedding".into(),
-            partitioning: DbIndexPartitioning::Global,
-            filtering_columns: Arc::new(Vec::new()),
-            version: Uuid::new_v4().into(),
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions: NonZeroUsize::new(3).unwrap().into(),
-                connectivity: Default::default(),
-                expansion_add: Default::default(),
-                expansion_search: Default::default(),
-                space_type: Default::default(),
-                quantization: Default::default(),
-            }),
-        };
+        let idx = sample_vs_index_metadata("idx");
         assert!(should_add_simulator(
             &IndexMetadata { ..idx.clone() },
             &HashSet::new()
@@ -1009,23 +1004,7 @@ mod tests {
         let discovered = discovered_indexes_simulator(&HashSet::new(), &HashSet::new());
         assert_eq!(discovered.len(), 0);
 
-        let idx1 = IndexMetadata {
-            keyspace_name: "ks".into(),
-            index_name: "idx".into(),
-            table_name: "tbl".into(),
-            target_column: "embedding".into(),
-            partitioning: DbIndexPartitioning::Global,
-            filtering_columns: Arc::new(Vec::new()),
-            version: Uuid::new_v4().into(),
-            kind: IndexKind::Vs(IndexOptionsVs {
-                dimensions: NonZeroUsize::new(3).unwrap().into(),
-                connectivity: Default::default(),
-                expansion_add: Default::default(),
-                expansion_search: Default::default(),
-                space_type: Default::default(),
-                quantization: Default::default(),
-            }),
-        };
+        let idx1 = sample_vs_index_metadata("idx");
 
         let discovered =
             discovered_indexes_simulator(&HashSet::new(), &[idx1.clone()].into_iter().collect());
@@ -1059,5 +1038,32 @@ mod tests {
         assert_eq!(discovered.len(), 1);
         assert!(!discovered.contains(&idx1));
         assert!(discovered.contains(&idx2));
+    }
+
+    #[test]
+    fn fts_indexes_are_kept_when_enabled() {
+        let vs_idx = sample_vs_index_metadata("vs_idx");
+        let fts_idx = sample_fts_index_metadata("fts_idx");
+        let indexes: HashSet<_> = [vs_idx, fts_idx].into_iter().collect();
+
+        let result = filter_disabled_index_kinds(indexes, true);
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn fts_indexes_are_filtered_out_when_disabled() {
+        let vs_idx = sample_vs_index_metadata("vs_idx");
+        let fts_idx = sample_fts_index_metadata("fts_idx");
+        let indexes: HashSet<_> = [vs_idx, fts_idx].into_iter().collect();
+
+        let result = filter_disabled_index_kinds(indexes, false);
+
+        assert_eq!(result.len(), 1);
+        assert!(
+            result
+                .iter()
+                .all(|idx| matches!(idx.kind, IndexKind::Vs(_)))
+        );
     }
 }

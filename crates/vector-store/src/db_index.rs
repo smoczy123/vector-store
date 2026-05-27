@@ -671,13 +671,13 @@ mod tests {
     use crate::Dimensions;
     use crate::ExpansionAdd;
     use crate::ExpansionSearch;
-    use crate::FtsIndexMetadata;
+    use crate::IndexOptionsFts;
+    use crate::IndexOptionsVs;
     use crate::Quantization;
     use crate::SpaceType;
-    use crate::VsIndexMetadata;
 
     fn vs_kind() -> IndexKind {
-        IndexKind::Vs(VsIndexMetadata {
+        IndexKind::Vs(IndexOptionsVs {
             dimensions: Dimensions::from(NonZeroUsize::new(3).unwrap()),
             connectivity: Connectivity::default(),
             expansion_add: ExpansionAdd::default(),
@@ -688,7 +688,7 @@ mod tests {
     }
 
     fn fts_kind() -> IndexKind {
-        IndexKind::Fts(FtsIndexMetadata {})
+        IndexKind::Fts(IndexOptionsFts {})
     }
 
     #[test]
