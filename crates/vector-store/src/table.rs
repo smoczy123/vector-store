@@ -4,13 +4,13 @@
  */
 
 use crate::ColumnName;
-use crate::DbEmbedding;
+use crate::DbIndexedRow;
+use crate::DbIndexedValue;
 use crate::IndexKey;
 use crate::PartitionKey;
 use crate::PrimaryKey;
 use crate::Restriction;
 use crate::Timestamp;
-use crate::Vector;
 use crate::primary_key::normalize;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -1063,11 +1063,8 @@ impl Table {
 /// A trait that defines the add operation for the table.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait TableAdd {
-    fn add(
-        &mut self,
-        index_key: &IndexKey,
-        db_embedding: DbEmbedding,
-    ) -> anyhow::Result<Vec<Operation>>;
+    fn add(&mut self, index_key: &IndexKey, db_row: DbIndexedRow)
+    -> anyhow::Result<Vec<Operation>>;
 }
 
 impl TableAdd for Table {
@@ -1075,15 +1072,15 @@ impl TableAdd for Table {
     fn add(
         &mut self,
         _index_key: &IndexKey,
-        db_embedding: DbEmbedding,
+        db_row: DbIndexedRow,
     ) -> anyhow::Result<Vec<Operation>> {
         self.reserve_primary_ids()?;
         self.reserve_partition_ids()?;
 
         let mut operations = vec![];
 
-        let primary_key = db_embedding.primary_key;
-        let vector = db_embedding.embedding;
+        let primary_key = db_row.primary_key;
+        let value = db_row.value;
 
         let normalized_key = self.normalize_primary_key(&primary_key);
         let row_map = &mut self.primary_ids;
@@ -1105,7 +1102,7 @@ impl TableAdd for Table {
                             );
                         }
                     };
-                    if *timestamp >= db_embedding.timestamp {
+                    if *timestamp >= db_row.timestamp {
                         return Ok(());
                     }
                     let primary_id = primary_id.new_epoch(epoch);
@@ -1115,20 +1112,20 @@ impl TableAdd for Table {
                             missing partition id for index_id {index_id:?} and primary_id {primary_id:?}"
                         )
                     })?;
-                    if let Some(vector) = &vector {
+                    if let Some(value) = &value {
                         if vector_already_exists {
-                            operations.push(Operation::RemoveBeforeAddVector {
+                            operations.push(Operation::RemoveBeforeAddValue {
                                 primary_id,
                                 partition_id,
                             });
                         }
 
                         let primary_id = primary_id.next_epoch();
-                        let timestamp = db_embedding.timestamp;
-                        operations.push(Operation::AddVector {
+                        let timestamp = db_row.timestamp;
+                        operations.push(Operation::AddValue {
                             primary_id,
                             partition_id,
-                            vector: vector.clone(),
+                            value: value.clone(),
                             is_update: vector_already_exists,
                         });
                         index
@@ -1140,7 +1137,7 @@ impl TableAdd for Table {
                             .vector_timestamps
                             .update(primary_id, ETValue::None(epoch, *timestamp))?;
                         if vector_already_exists {
-                            operations.push(Operation::RemoveVector {
+                            operations.push(Operation::RemoveValue {
                                 primary_id,
                                 partition_id,
                             });
@@ -1155,7 +1152,7 @@ impl TableAdd for Table {
             }
 
             Entry::Vacant(entry) => {
-                if let Some(vector) = &vector {
+                if let Some(value) = &value {
                     let primary_id = self.free_primary_ids.take_id()?;
                     entry.insert(primary_id);
                     self.primary_keys
@@ -1177,12 +1174,12 @@ impl TableAdd for Table {
                             };
                             index.vector_timestamps.update(
                                 primary_id,
-                                ETValue::Some(primary_id.epoch(), db_embedding.timestamp, ()),
+                                ETValue::Some(primary_id.epoch(), db_row.timestamp, ()),
                             )?;
-                            operations.push(Operation::AddVector {
+                            operations.push(Operation::AddValue {
                                 primary_id,
                                 partition_id,
-                                vector: vector.clone(),
+                                value: value.clone(),
                                 is_update: false,
                             });
                             Ok(())
@@ -1469,17 +1466,17 @@ fn cql_cmp_tuple(
 
 #[derive(Clone, Debug)]
 pub(crate) enum Operation {
-    AddVector {
+    AddValue {
         primary_id: PrimaryId,
         partition_id: PartitionId,
-        vector: Vector,
+        value: DbIndexedValue,
         is_update: bool,
     },
-    RemoveBeforeAddVector {
+    RemoveBeforeAddValue {
         primary_id: PrimaryId,
         partition_id: PartitionId,
     },
-    RemoveVector {
+    RemoveValue {
         primary_id: PrimaryId,
         partition_id: PartitionId,
     },
@@ -1517,50 +1514,50 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(1)].into(),
-                        embedding: Some(vec![0.1, 0.2, 0.3].into()),
+                        value: Some(DbIndexedValue::Vector(vec![0.1, 0.2, 0.3].into())),
                         timestamp: Timestamp::from_unix_timestamp(100),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 1);
             let (primary_id11, partition_id11) = match operations.first().unwrap() {
-                Operation::AddVector {
+                Operation::AddValue {
                     primary_id,
                     partition_id,
-                    vector,
+                    value,
                     is_update: false,
                 } => {
-                    assert_eq!(vector, &vec![0.1, 0.2, 0.3].into());
+                    assert_eq!(value, &DbIndexedValue::Vector(vec![0.1, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
 
             // insert second vector
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(2)].into(),
-                        embedding: Some(vec![0.2, 0.2, 0.3].into()),
+                        value: Some(DbIndexedValue::Vector(vec![0.2, 0.2, 0.3].into())),
                         timestamp: Timestamp::from_unix_timestamp(100),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 1);
             let (primary_id21, partition_id21) = match operations.first().unwrap() {
-                Operation::AddVector {
+                Operation::AddValue {
                     primary_id,
                     partition_id,
-                    vector,
+                    value,
                     is_update: false,
                 } => {
-                    assert_eq!(vector, &vec![0.2, 0.2, 0.3].into());
+                    assert_eq!(value, &DbIndexedValue::Vector(vec![0.2, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id11, primary_id21);
             assert_eq!(partition_id11, partition_id21);
@@ -1569,25 +1566,25 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(3)].into(),
-                        embedding: Some(vec![0.3, 0.2, 0.3].into()),
+                        value: Some(DbIndexedValue::Vector(vec![0.3, 0.2, 0.3].into())),
                         timestamp: Timestamp::from_unix_timestamp(100),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 1);
             let (primary_id31, partition_id31) = match operations.first().unwrap() {
-                Operation::AddVector {
+                Operation::AddValue {
                     primary_id,
                     partition_id,
-                    vector,
+                    value,
                     is_update: false,
                 } => {
-                    assert_eq!(vector, &vec![0.3, 0.2, 0.3].into());
+                    assert_eq!(value, &DbIndexedValue::Vector(vec![0.3, 0.2, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id11, primary_id31);
             assert_ne!(primary_id21, primary_id31);
@@ -1636,9 +1633,9 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(2)].into(),
-                        embedding: Some(vec![0.2, 0.2, 0.3].into()),
+                        value: Some(DbIndexedValue::Vector(vec![0.2, 0.2, 0.3].into())),
                         timestamp: Timestamp::from_unix_timestamp(50),
                     },
                 )
@@ -1649,34 +1646,34 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(2)].into(),
-                        embedding: Some(vec![0.5, 0.5, 0.3].into()),
+                        value: Some(DbIndexedValue::Vector(vec![0.5, 0.5, 0.3].into())),
                         timestamp: Timestamp::from_unix_timestamp(150),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 2);
             let (primary_id22, partition_id22) = match operations.first().unwrap() {
-                Operation::RemoveBeforeAddVector {
+                Operation::RemoveBeforeAddValue {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveBeforeAddVector operation"),
+                _ => panic!("Expected RemoveBeforeAddValue operation"),
             };
             assert_eq!(primary_id22, primary_id21);
             assert_eq!(partition_id22, partition_id21);
             let (primary_id22, partition_id22) = match operations.get(1).unwrap() {
-                Operation::AddVector {
+                Operation::AddValue {
                     primary_id,
                     partition_id,
-                    vector,
+                    value,
                     is_update: true,
                 } => {
-                    assert_eq!(vector, &vec![0.5, 0.5, 0.3].into());
+                    assert_eq!(value, &DbIndexedValue::Vector(vec![0.5, 0.5, 0.3].into()));
                     (*primary_id, *partition_id)
                 }
-                _ => panic!("Expected AddVector operation"),
+                _ => panic!("Expected AddValue operation"),
             };
             assert_ne!(primary_id22, primary_id21);
             assert_eq!(partition_id22, partition_id21);
@@ -1691,20 +1688,20 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(1)].into(),
-                        embedding: None,
+                        value: None,
                         timestamp: Timestamp::from_unix_timestamp(200),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 1);
             let (primary_id13, partition_id13) = match operations.first().unwrap() {
-                Operation::RemoveVector {
+                Operation::RemoveValue {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id13, primary_id11);
             assert_eq!(partition_id13, partition_id11);
@@ -1714,20 +1711,20 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(2)].into(),
-                        embedding: None,
+                        value: None,
                         timestamp: Timestamp::from_unix_timestamp(200),
                     },
                 )
                 .unwrap();
             assert_eq!(operations.len(), 1);
             let (primary_id23, partition_id23) = match operations.first().unwrap() {
-                Operation::RemoveVector {
+                Operation::RemoveValue {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id23, primary_id22);
             assert_eq!(partition_id23, partition_id22);
@@ -1737,9 +1734,9 @@ mod tests {
             let operations = table
                 .add(
                     &index_key,
-                    DbEmbedding {
+                    DbIndexedRow {
                         primary_key: [CqlValue::Int(1), CqlValue::Int(3)].into(),
-                        embedding: None,
+                        value: None,
                         timestamp: Timestamp::from_unix_timestamp(200),
                     },
                 )
@@ -1750,11 +1747,11 @@ mod tests {
                 assert_eq!(operations.len(), 2);
             }
             let (primary_id33, partition_id33) = match operations.first().unwrap() {
-                Operation::RemoveVector {
+                Operation::RemoveValue {
                     primary_id,
                     partition_id,
                 } => (*primary_id, *partition_id),
-                _ => panic!("Expected RemoveVector operation"),
+                _ => panic!("Expected RemoveValue operation"),
             };
             assert_eq!(primary_id33, primary_id31);
             assert_eq!(partition_id33, partition_id31);

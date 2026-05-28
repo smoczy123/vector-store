@@ -163,6 +163,7 @@ pub struct Config {
     pub credentials: Option<Credentials>,
     pub usearch_simulator: Option<Vec<Duration>>,
     pub alter_index_simulator: bool,
+    pub fulltext_indexes: bool,
     pub cql_connection_timeout: Option<Duration>,
     pub cql_keepalive_interval: Option<Duration>,
     pub cql_keepalive_timeout: Option<Duration>,
@@ -193,6 +194,7 @@ impl Default for Config {
             credentials: None,
             usearch_simulator: None,
             alter_index_simulator: false,
+            fulltext_indexes: false,
             disable_colors: false,
             tls_cert_path: None,
             tls_key_path: None,
@@ -556,26 +558,56 @@ impl Ord for IndexVersion {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Vector-search-specific index configuration.
+pub struct IndexOptionsVs {
+    pub dimensions: Dimensions,
+    pub connectivity: Connectivity,
+    pub expansion_add: ExpansionAdd,
+    pub expansion_search: ExpansionSearch,
+    pub space_type: SpaceType,
+    pub quantization: Quantization,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Full-text-search-specific index configuration.
+pub struct IndexOptionsFts {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Discriminates between vector-search and full-text-search index.
+pub enum IndexKind {
+    Vs(IndexOptionsVs),
+    Fts(IndexOptionsFts),
+}
+
+impl IndexKind {
+    pub fn as_vs(&self) -> Option<&IndexOptionsVs> {
+        match self {
+            IndexKind::Vs(vs) => Some(vs),
+            IndexKind::Fts(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// Information about an index
 pub struct IndexMetadata {
     pub keyspace_name: KeyspaceName,
     pub index_name: IndexName,
     pub table_name: TableName,
     pub target_column: ColumnName,
-    pub index_type: DbIndexType,
+    pub partitioning: DbIndexPartitioning,
     pub filtering_columns: Arc<Vec<ColumnName>>,
-    pub dimensions: Dimensions,
-    pub connectivity: Connectivity,
-    pub expansion_add: ExpansionAdd,
-    pub expansion_search: ExpansionSearch,
-    pub space_type: SpaceType,
     pub version: IndexVersion,
-    pub quantization: Quantization,
+    pub kind: IndexKind,
 }
 
 impl IndexMetadata {
     pub fn key(&self) -> IndexKey {
         IndexKey::new(&self.keyspace_name, &self.index_name)
+    }
+
+    pub fn vs(&self) -> Option<&IndexOptionsVs> {
+        self.kind.as_vs()
     }
 
     fn discard_version(&self) -> Self {
@@ -586,9 +618,16 @@ impl IndexMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DbIndexType {
+pub enum DbIndexPartitioning {
     Global,
     Local(Arc<Vec<ColumnName>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kind of custom index as declared in ScyllaDB index options.
+pub enum DbIndexKind {
+    VectorSearch,
+    FullTextSearch,
 }
 
 #[derive(Debug)]
@@ -597,8 +636,9 @@ pub struct DbCustomIndex {
     pub index: IndexName,
     pub table: TableName,
     pub target_column: ColumnName,
-    pub index_type: DbIndexType,
+    pub partitioning: DbIndexPartitioning,
     pub filtering_columns: Arc<Vec<ColumnName>>,
+    pub kind: DbIndexKind,
 }
 
 impl DbCustomIndex {
@@ -608,9 +648,16 @@ impl DbCustomIndex {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DbEmbedding {
+/// The indexed value read from a CDC row or full scan.
+pub enum DbIndexedValue {
+    Vector(Vector),
+    Document(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbIndexedRow {
     pub primary_key: PrimaryKey,
-    pub embedding: Option<Vector>,
+    pub value: Option<DbIndexedValue>,
     pub timestamp: Timestamp,
 }
 

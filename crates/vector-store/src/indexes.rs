@@ -4,13 +4,12 @@
  */
 
 use crate::ColumnName;
-use crate::DbIndexType;
+use crate::DbIndexPartitioning;
 use crate::IndexKey;
 use crate::IndexMetadata;
 use crate::IndexVersion;
 use crate::KeyspaceName;
 use crate::Progress;
-use crate::Quantization;
 use crate::TableName;
 use crate::db_index::DbIndex;
 use crate::db_index::DbIndexExt;
@@ -81,12 +80,12 @@ pub(crate) struct IndexEntry {
     _monitor: mpsc::Sender<MonitorItems>,
     db_index: mpsc::Sender<DbIndex>,
     routing_group: RoutingGroupKey,
-    index_type: DbIndexType,
+    partitioning: DbIndexPartitioning,
     primary_key_columns: Arc<Vec<ColumnName>>,
     filtering_columns: Arc<Vec<ColumnName>>,
     table_columns: Arc<HashMap<ColumnName, NativeType>>,
     version: IndexVersion,
-    quantization: Quantization,
+    options: crate::IndexKind,
     status: IndexStatus,
     progress: Progress,
 }
@@ -115,12 +114,12 @@ impl IndexEntry {
             _monitor: monitor,
             db_index,
             routing_group,
-            index_type: metadata.index_type,
+            partitioning: metadata.partitioning,
             primary_key_columns,
             filtering_columns,
             table_columns,
             version: metadata.version,
-            quantization: metadata.quantization,
+            options: metadata.kind,
             status: IndexStatus::Initializing,
             progress,
         }
@@ -134,8 +133,8 @@ impl IndexEntry {
         self.db_index.clone()
     }
 
-    pub(crate) fn quantization(&self) -> Quantization {
-        self.quantization
+    pub(crate) fn options(&self) -> &crate::IndexKind {
+        &self.options
     }
 
     pub(crate) fn progress(&self) -> Progress {
@@ -176,8 +175,8 @@ impl IndexEntry {
             return None;
         }
 
-        match &self.index_type {
-            DbIndexType::Global => {
+        match &self.partitioning {
+            DbIndexPartitioning::Global => {
                 let uncovered = equality_columns.len() + range_columns.len();
                 Some(if uncovered == 0 {
                     NeedsFiltering::No
@@ -185,7 +184,7 @@ impl IndexEntry {
                     NeedsFiltering::Yes(uncovered)
                 })
             }
-            DbIndexType::Local(pk_columns) => {
+            DbIndexPartitioning::Local(pk_columns) => {
                 if !pk_columns.iter().all(|col| equality_columns.contains(col)) {
                     return None;
                 }

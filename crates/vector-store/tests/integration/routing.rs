@@ -22,9 +22,11 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use uuid::Uuid;
 use vector_store::ColumnName;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 use vector_store::HttpServerExt;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
+use vector_store::IndexOptionsVs;
 use vector_store::Timestamp;
 
 const ANN_LIMIT: usize = 5;
@@ -53,7 +55,7 @@ fn single_row_scan(pks: impl IntoIterator<Item = CqlValue> + Send + Sync + 'stat
 fn make_index(
     name: &str,
     column: &str,
-    index_type: DbIndexType,
+    partitioning: DbIndexPartitioning,
     filtering_columns: &[&str],
     version: Uuid,
 ) -> IndexMetadata {
@@ -62,20 +64,22 @@ fn make_index(
         table_name: "items".into(),
         index_name: name.into(),
         target_column: column.into(),
-        index_type,
+        partitioning,
         filtering_columns: Arc::new(
             filtering_columns
                 .iter()
                 .map(|s| ColumnName::from(*s))
                 .collect(),
         ),
-        dimensions: NonZeroUsize::new(3).unwrap().into(),
-        connectivity: Default::default(),
-        expansion_add: Default::default(),
-        expansion_search: Default::default(),
-        space_type: Default::default(),
         version: version.into(),
-        quantization: Default::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(3).unwrap().into(),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            quantization: Default::default(),
+        }),
     }
 }
 
@@ -238,7 +242,7 @@ async fn ann_routes_to_serving_index_while_replacement_is_bootstrapping() {
     let oldest = make_index(
         "oldest",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(1),
     );
@@ -253,7 +257,7 @@ async fn ann_routes_to_serving_index_while_replacement_is_bootstrapping() {
     let replacement = make_index(
         "replacement",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(2),
     );
@@ -283,7 +287,7 @@ async fn ann_routes_to_newest_serving_index() {
     let oldest = make_index(
         "oldest",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(1),
     );
@@ -298,7 +302,7 @@ async fn ann_routes_to_newest_serving_index() {
     let replacement = make_index(
         "replacement",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(2),
     );
@@ -335,7 +339,7 @@ async fn ann_routes_to_newest_local_index_with_same_score() {
     let older_local = make_index(
         "older",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &[],
         ordered_timeuuid(1),
     );
@@ -350,7 +354,7 @@ async fn ann_routes_to_newest_local_index_with_same_score() {
     let newer_local = make_index(
         "newer",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &[],
         ordered_timeuuid(2),
     );
@@ -401,7 +405,7 @@ async fn ann_routes_to_local_index_with_more_matching_partition_key_columns() {
     let less_precise = make_index(
         "less_precise",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk1".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk1".into()])),
         &[],
         ordered_timeuuid(1),
     );
@@ -420,7 +424,7 @@ async fn ann_routes_to_local_index_with_more_matching_partition_key_columns() {
     let more_precise = make_index(
         "more_precise",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk1".into(), "pk2".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk1".into(), "pk2".into()])),
         &[],
         ordered_timeuuid(2),
     );
@@ -481,7 +485,7 @@ async fn ann_routes_to_local_index_with_filter_columns_covering_restriction() {
     let covering = make_index(
         "covering",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &["f"],
         ordered_timeuuid(1),
     );
@@ -496,7 +500,7 @@ async fn ann_routes_to_local_index_with_filter_columns_covering_restriction() {
     let non_covering = make_index(
         "non_covering",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &[],
         ordered_timeuuid(2),
     );
@@ -556,7 +560,7 @@ async fn ann_routes_to_global_index_with_filter_columns_covering_restriction() {
     let covering = make_index(
         "covering",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &["f"],
         ordered_timeuuid(1),
     );
@@ -571,7 +575,7 @@ async fn ann_routes_to_global_index_with_filter_columns_covering_restriction() {
     let non_covering = make_index(
         "non_covering",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(2),
     );
@@ -630,7 +634,7 @@ async fn ann_routes_to_local_index_when_pk_restrictions_match() {
     let local_index = make_index(
         "local_idx",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &[],
         ordered_timeuuid(1),
     );
@@ -645,7 +649,7 @@ async fn ann_routes_to_local_index_when_pk_restrictions_match() {
     let global_index = make_index(
         "global_idx",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(2),
     );
@@ -695,7 +699,7 @@ async fn ann_routes_to_global_index_without_pk_restrictions() {
     let local_index = make_index(
         "local_idx",
         "embedding",
-        DbIndexType::Local(Arc::new(vec!["pk".into()])),
+        DbIndexPartitioning::Local(Arc::new(vec!["pk".into()])),
         &[],
         ordered_timeuuid(1),
     );
@@ -710,7 +714,7 @@ async fn ann_routes_to_global_index_without_pk_restrictions() {
     let global_index = make_index(
         "global_idx",
         "embedding",
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         &[],
         ordered_timeuuid(2),
     );

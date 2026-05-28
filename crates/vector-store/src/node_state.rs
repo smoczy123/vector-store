@@ -185,9 +185,11 @@ pub(crate) async fn new() -> mpsc::Sender<NodeState> {
 mod tests {
     use super::*;
     use crate::ColumnName;
-    use crate::DbIndexType;
+    use crate::DbIndexPartitioning;
     use crate::Dimensions;
+    use crate::IndexKind;
     use crate::IndexName;
+    use crate::IndexOptionsVs;
     use crate::KeyspaceName;
     use crate::TableName;
     use std::num::NonZeroUsize;
@@ -211,30 +213,34 @@ mod tests {
             index_name: IndexName("test_index".to_string()),
             table_name: TableName("test_table".to_string()),
             target_column: ColumnName("test_column".to_string()),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         let idx2 = IndexMetadata {
             keyspace_name: KeyspaceName("test_keyspace".to_string()),
             index_name: IndexName("test_index1".to_string()),
             table_name: TableName("test_table".to_string()),
             target_column: ColumnName("test_column".to_string()),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         let idxs = HashSet::from([idx1.clone(), idx2.clone()]);
         node_state.send_event(Event::IndexesDiscovered(idxs)).await;
@@ -265,15 +271,17 @@ mod tests {
             index_name: IndexName("test_index".to_string()),
             table_name: TableName("test_table".to_string()),
             target_column: ColumnName("test_column".to_string()),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
         let idxs = HashSet::from([idx.clone()]);
         node_state.send_event(Event::IndexesDiscovered(idxs)).await;
@@ -354,15 +362,17 @@ mod tests {
             index_name: IndexName("test_index".to_string()),
             table_name: TableName("test_table".to_string()),
             target_column: ColumnName("test_column".to_string()),
-            index_type: DbIndexType::Global,
+            partitioning: DbIndexPartitioning::Global,
             filtering_columns: Arc::new(Vec::new()),
-            dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
-            connectivity: Default::default(),
-            expansion_add: Default::default(),
-            expansion_search: Default::default(),
-            space_type: Default::default(),
             version: Uuid::new_v4().into(),
-            quantization: Default::default(),
+            kind: IndexKind::Vs(IndexOptionsVs {
+                dimensions: Dimensions(NonZeroUsize::new(3).unwrap()),
+                connectivity: Default::default(),
+                expansion_add: Default::default(),
+                expansion_search: Default::default(),
+                space_type: Default::default(),
+                quantization: Default::default(),
+            }),
         };
 
         // Simulate discovering an index

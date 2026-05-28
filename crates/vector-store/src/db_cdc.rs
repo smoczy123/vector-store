@@ -6,7 +6,9 @@
 use crate::AsyncInProgress;
 use crate::ColumnName;
 use crate::Config;
-use crate::DbEmbedding;
+use crate::DbIndexedRow;
+use crate::DbIndexedValue;
+use crate::IndexKind;
 use crate::IndexMetadata;
 use crate::db_index_backend::DbIndexBackend;
 use crate::internals::Internals;
@@ -23,6 +25,7 @@ use anyhow::bail;
 use async_trait::async_trait;
 use futures::FutureExt;
 use scylla::client::session::Session;
+use scylla::value::CqlValue;
 use scylla_cdc::consumer::CDCRow;
 use scylla_cdc::consumer::Consumer;
 use scylla_cdc::consumer::ConsumerFactory;
@@ -123,7 +126,7 @@ pub(crate) fn new(
     mut session_rx: watch::Receiver<Option<Arc<Session>>>,
     metadata: IndexMetadata,
     internals: Sender<Internals>,
-    tx_embeddings: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+    tx_embeddings: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
     config: CdcReaderConfig,
 ) -> mpsc::Sender<DbCdc> {
     let (tx, mut rx) = mpsc::channel::<DbCdc>(perf::channel_size().into());
@@ -274,7 +277,7 @@ impl CdcReaderState {
         params: CdcReaderParams,
         session: &Arc<Session>,
         metadata: &IndexMetadata,
-        tx_embeddings: &mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx_embeddings: &mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         internals: &Sender<Internals>,
     ) {
         self.stop().await;
@@ -321,7 +324,7 @@ impl CdcReaderState {
         session: Option<Arc<Session>>,
         config_rx: &watch::Receiver<Arc<Config>>,
         metadata: &IndexMetadata,
-        tx_embeddings: &mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx_embeddings: &mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         internals: &Sender<Internals>,
     ) {
         match session {
@@ -390,7 +393,7 @@ impl CdcReaderState {
         session_rx: &watch::Receiver<Option<Arc<Session>>>,
         config_rx: &watch::Receiver<Arc<Config>>,
         metadata: &IndexMetadata,
-        tx_embeddings: &mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx_embeddings: &mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         internals: &Sender<Internals>,
     ) {
         self.backoff_deadline = None;
@@ -427,7 +430,7 @@ async fn create_cdc_reader(
     params: CdcReaderParams,
     session: Arc<Session>,
     metadata: IndexMetadata,
-    tx_embeddings: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+    tx_embeddings: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
     reader_name: &str,
 ) -> anyhow::Result<(
     scylla_cdc::log_reader::CDCLogReader,
@@ -489,10 +492,26 @@ fn spawn_handler_task(
     )
 }
 
+fn extract_indexed_value(
+    backend: &DbIndexBackend,
+    value: CqlValue,
+    kind: &IndexKind,
+) -> anyhow::Result<Option<DbIndexedValue>> {
+    match kind {
+        IndexKind::Vs(_) => backend
+            .extract_vector(value)
+            .map(|opt| opt.map(DbIndexedValue::Vector)),
+        IndexKind::Fts(_) => backend
+            .extract_document(value)
+            .map(|opt| opt.map(DbIndexedValue::Document)),
+    }
+}
+
 struct CdcConsumerData {
     primary_key_columns: Vec<ColumnName>,
     backend: DbIndexBackend,
-    tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+    kind: IndexKind,
+    tx: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
     gregorian_epoch: PrimitiveDateTime,
 }
 
@@ -507,13 +526,13 @@ impl Consumer for CdcConsumer {
         }
 
         let source = &self.0.backend;
-        let column = source.vector_column_name();
+        let column = source.target_column_name();
         if !row.column_deletable(column) {
             bail!("CDC error: column {column} should be deletable");
         }
-        let embedding = row
+        let value = row
             .take_value(column)
-            .map(|v| source.extract_vector(v))
+            .map(|v| extract_indexed_value(source, v, &self.0.kind))
             .transpose()?
             .flatten();
 
@@ -550,9 +569,9 @@ impl Consumer for CdcConsumer {
             .0
             .tx
             .send((
-                DbEmbedding {
+                DbIndexedRow {
                     primary_key,
-                    embedding,
+                    value,
                     timestamp,
                 },
                 None,
@@ -575,7 +594,7 @@ impl CdcConsumerFactory {
     fn new(
         session: Arc<Session>,
         metadata: &IndexMetadata,
-        tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
     ) -> anyhow::Result<Self> {
         let cluster_state = session.get_cluster_state();
         let table = cluster_state
@@ -603,6 +622,7 @@ impl CdcConsumerFactory {
         Ok(Self(Arc::new(CdcConsumerData {
             primary_key_columns,
             backend,
+            kind: metadata.kind.clone(),
             tx,
             gregorian_epoch,
         })))

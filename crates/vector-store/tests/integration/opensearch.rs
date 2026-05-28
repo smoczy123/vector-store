@@ -17,9 +17,11 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::watch;
 use uuid::Uuid;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 use vector_store::HttpServerExt;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
+use vector_store::IndexOptionsVs;
 use vector_store::Timestamp;
 
 #[tokio::test]
@@ -34,15 +36,17 @@ async fn simple_create_search_delete_index() {
         table_name: "items".into(),
         index_name: "ann".into(),
         target_column: "embedding".into(),
-        index_type: DbIndexType::Global,
+        partitioning: DbIndexPartitioning::Global,
         filtering_columns: Arc::new(Vec::new()),
-        dimensions: NonZeroUsize::new(3).unwrap().into(),
-        connectivity: Default::default(),
-        expansion_add: Default::default(),
-        expansion_search: Default::default(),
-        space_type: Default::default(),
         version: Uuid::new_v4().into(),
-        quantization: Default::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(3).unwrap().into(),
+            connectivity: Default::default(),
+            expansion_add: Default::default(),
+            expansion_search: Default::default(),
+            space_type: Default::default(),
+            quantization: Default::default(),
+        }),
     };
     let server = mock_opensearch::TestOpenSearchServer::start().await;
 
@@ -73,7 +77,7 @@ async fn simple_create_search_delete_index() {
                 .into_iter()
                 .collect(),
             ),
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },

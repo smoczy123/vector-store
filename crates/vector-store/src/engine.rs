@@ -4,11 +4,11 @@
  */
 
 use crate::Config;
-use crate::DbIndexType;
+use crate::DbIndexPartitioning;
 use crate::IndexKey;
+use crate::IndexKind;
 use crate::IndexMetadata;
 use crate::Metrics;
-use crate::Quantization;
 use crate::db::Db;
 use crate::db::DbExt;
 use crate::db_index::DbIndex;
@@ -41,7 +41,7 @@ use tracing::debug_span;
 use tracing::info;
 use tracing::trace;
 
-type GetIndexKeysR = Vec<(IndexKey, Quantization)>;
+type GetIndexKeysR = Vec<(IndexKey, IndexKind)>;
 type AddIndexR = anyhow::Result<()>;
 type GetIndexR = Option<(mpsc::Sender<Index>, mpsc::Sender<DbIndex>)>;
 
@@ -180,7 +180,7 @@ async fn get_index_keys(tx: oneshot::Sender<GetIndexKeysR>, indexes: &RwLock<Ind
             .read()
             .unwrap()
             .iter()
-            .map(|(key, entry)| (key.clone(), entry.quantization()))
+            .map(|(key, entry)| (key.clone(), entry.options().clone()))
             .collect(),
     )
     .unwrap_or_else(|_| trace!("Engine::GetIndexIds: unable to send response"));
@@ -196,6 +196,12 @@ async fn add_index(
     metrics: Arc<Metrics>,
     memory: Sender<Memory>,
 ) {
+    let IndexKind::Vs(ref vs) = metadata.kind else {
+        tx.send(Err(anyhow::anyhow!("FTS index not yet implemented")))
+            .unwrap_or_else(|_| trace!("add_index: unable to send response"));
+        return;
+    };
+
     let key = metadata.key();
     if indexes.read().unwrap().contains_key(&key) {
         trace!("add_index: trying to replace index with key {key}");
@@ -217,9 +223,11 @@ async fn add_index(
     let primary_key_columns = db_index.get_primary_key_columns().await;
     let partition_key_count = db_index.get_partition_key_count().await;
     let table_columns = db_index.get_table_columns().await;
-    let partition_key_columns = match &metadata.index_type {
-        DbIndexType::Local(partition_key_columns) => Some(Arc::clone(partition_key_columns)),
-        DbIndexType::Global => None,
+    let partition_key_columns = match &metadata.partitioning {
+        DbIndexPartitioning::Local(partition_key_columns) => {
+            Some(Arc::clone(partition_key_columns))
+        }
+        DbIndexPartitioning::Global => None,
     };
     let table = match Table::new(
         key.clone(),
@@ -241,12 +249,12 @@ async fn add_index(
     let index_actor = match index_factory.create_index(
         IndexConfiguration {
             key: key.clone(),
-            dimensions: metadata.dimensions,
-            connectivity: metadata.connectivity,
-            expansion_add: metadata.expansion_add,
-            expansion_search: metadata.expansion_search,
-            space_type: metadata.space_type,
-            quantization: metadata.quantization,
+            dimensions: vs.dimensions,
+            connectivity: vs.connectivity,
+            expansion_add: vs.expansion_add,
+            expansion_search: vs.expansion_search,
+            space_type: vs.space_type,
+            quantization: vs.quantization,
         },
         Arc::clone(&table),
         memory,

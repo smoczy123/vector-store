@@ -254,10 +254,13 @@ async fn get_indexes(State(state): State<RoutesInnerState>) -> Response {
         .get_index_keys()
         .await
         .iter()
-        .map(|(key, quantization)| IndexInfo {
-            keyspace: key.keyspace().into(),
-            index: key.index().into(),
-            data_type: (*quantization).into(),
+        .filter_map(|(key, options)| {
+            let vs = options.as_vs()?;
+            Some(IndexInfo {
+                keyspace: key.keyspace().into(),
+                index: key.index().into(),
+                data_type: vs.quantization.into(),
+            })
         })
         .collect();
     (StatusCode::OK, response::Json(indexes)).into_response()

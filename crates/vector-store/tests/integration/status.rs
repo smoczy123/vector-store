@@ -8,13 +8,13 @@ use crate::usearch::test_config;
 use crate::wait_for;
 use httpapi::NodeStatus;
 use scylla::cluster::metadata::NativeType;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
 
 #[tokio::test]
 async fn status_is_serving_after_creation() {
     crate::enable_tracing();
     let (_index, client, _db, _server, _node_state) = usearch::setup_store_and_wait_for_index(
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [
@@ -36,7 +36,7 @@ async fn status_is_bootstrapping_while_discovering_indexes() {
     crate::enable_tracing();
     let (run, _index, db, _node_state) = usearch::setup_store(
         test_config(),
-        DbIndexType::Global,
+        DbIndexPartitioning::Global,
         ["pk".into(), "ck".into()],
         1,
         [

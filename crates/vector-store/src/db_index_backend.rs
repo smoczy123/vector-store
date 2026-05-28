@@ -46,7 +46,7 @@ impl From<&IndexMetadata> for DbIndexBackend {
 }
 
 impl DbIndexBackend {
-    pub fn vector_column_name(&self) -> &str {
+    pub fn target_column_name(&self) -> &str {
         match self {
             Self::Cql { target_column } => target_column.as_ref(),
             Self::Alternator { .. } => ":attrs",
@@ -61,6 +61,19 @@ impl DbIndexBackend {
                 target_column: target_column.as_ref(),
             }
             .try_into(),
+        }
+    }
+
+    pub fn extract_document(&self, value: CqlValue) -> anyhow::Result<Option<String>> {
+        match self {
+            Self::Cql { .. } => match value {
+                CqlValue::Text(s) => Ok(Some(s)),
+                CqlValue::Ascii(s) => Ok(Some(s)),
+                other => anyhow::bail!("expected text column, got {:?}", other),
+            },
+            Self::Alternator { .. } => {
+                anyhow::bail!("FTS not supported for Alternator")
+            }
         }
     }
 }

@@ -46,13 +46,16 @@ use vector_store::ColumnName;
 use vector_store::Config;
 use vector_store::ConfigReceivers;
 use vector_store::Connectivity;
-use vector_store::DbEmbedding;
-use vector_store::DbIndexType;
+use vector_store::DbIndexPartitioning;
+use vector_store::DbIndexedRow;
+use vector_store::DbIndexedValue;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::HttpServerConfig;
 use vector_store::HttpServerExt;
+use vector_store::IndexKind;
 use vector_store::IndexMetadata;
+use vector_store::IndexOptionsVs;
 use vector_store::PrimaryKey;
 use vector_store::Quantization;
 use vector_store::SpaceType;
@@ -113,15 +116,17 @@ fn default_index_metadata(dimensions: usize) -> IndexMetadata {
         table_name: "items".into(),
         index_name: "ann".into(),
         target_column: "embedding".into(),
-        index_type: DbIndexType::Global,
+        partitioning: DbIndexPartitioning::Global,
         filtering_columns: Arc::new(vec![]),
-        dimensions: NonZeroUsize::new(dimensions).unwrap().into(),
-        connectivity: Connectivity::default(),
-        expansion_add: ExpansionAdd::default(),
-        expansion_search: ExpansionSearch::default(),
-        space_type: SpaceType::Euclidean,
         version: Uuid::new_v4().into(),
-        quantization: Quantization::default(),
+        kind: IndexKind::Vs(IndexOptionsVs {
+            dimensions: NonZeroUsize::new(dimensions).unwrap().into(),
+            connectivity: Connectivity::default(),
+            expansion_add: ExpansionAdd::default(),
+            expansion_search: ExpansionSearch::default(),
+            space_type: SpaceType::Euclidean,
+            quantization: Quantization::default(),
+        }),
     }
 }
 
@@ -153,7 +158,7 @@ fn setup_table(
             primary_keys: Arc::new(primary_keys.into_iter().collect()),
             partition_key_count,
             columns: Arc::new(columns.into_iter().collect()),
-            dimensions: [(index.target_column.clone(), index.dimensions)]
+            dimensions: [(index.target_column.clone(), index.vs().unwrap().dimensions)]
                 .into_iter()
                 .collect(),
         },
@@ -263,9 +268,9 @@ fn scan_fn_mpsc(
             while let Some((primary_key, embedding, timestamp, in_progress)) = items.recv().await {
                 let _ = tx
                     .send((
-                        DbEmbedding {
+                        DbIndexedRow {
                             primary_key,
-                            embedding,
+                            value: embedding.map(DbIndexedValue::Vector),
                             timestamp,
                         },
                         in_progress,

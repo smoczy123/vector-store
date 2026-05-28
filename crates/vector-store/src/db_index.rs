@@ -6,7 +6,9 @@
 use crate::AsyncInProgress;
 use crate::ColumnName;
 use crate::Config;
-use crate::DbEmbedding;
+use crate::DbIndexedRow;
+use crate::DbIndexedValue;
+use crate::IndexKind;
 use crate::IndexMetadata;
 use crate::KeyspaceIdentifier;
 use crate::Percentage;
@@ -65,7 +67,7 @@ use tracing::warn;
 type GetPrimaryKeyColumnsR = Arc<Vec<ColumnName>>;
 type GetTableColumnsR = Arc<HashMap<ColumnName, NativeType>>;
 type RangeScanResult =
-    anyhow::Result<Pin<Box<dyn Stream<Item = DbEmbedding> + std::marker::Send>>, anyhow::Error>;
+    anyhow::Result<Pin<Box<dyn Stream<Item = DbIndexedRow> + std::marker::Send>>, anyhow::Error>;
 
 const START_RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 const RETRY_TIMEOUT_LIMIT: Duration = Duration::from_secs(16);
@@ -152,7 +154,7 @@ pub(crate) async fn new(
     cdc_error_notify: Arc<Notify>,
 ) -> anyhow::Result<(
     mpsc::Sender<DbIndex>,
-    mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
+    mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>,
 )> {
     let key = metadata.key();
 
@@ -302,6 +304,7 @@ struct Statements {
     partition_key_count: usize,
     table_columns: GetTableColumnsR,
     st_range_scan: PreparedStatement,
+    kind: IndexKind,
 }
 
 impl Statements {
@@ -389,6 +392,7 @@ impl Statements {
             table_columns,
             st_range_scan,
             session_rx,
+            kind: metadata.kind.clone(),
         })
     }
 
@@ -434,7 +438,7 @@ impl Statements {
     /// to send read embeddings into the pipeline.
     async fn initial_scan(
         &self,
-        tx: mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>,
+        tx: mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         completed_scan_length: Arc<AtomicU64>,
     ) {
         let semaphore_capacity = self.nr_parallel_queries().get();
@@ -560,9 +564,10 @@ impl Statements {
         &self,
         begin: Token,
         end: Token,
-    ) -> anyhow::Result<BoxStream<'static, DbEmbedding>> {
+    ) -> anyhow::Result<BoxStream<'static, DbIndexedRow>> {
         // last two columns are embedding and writetime
         let columns_len_expected = self.primary_key_columns.len() + 2;
+        let kind = self.kind.clone();
 
         // wait for an active session
         let session = {
@@ -599,16 +604,12 @@ impl Statements {
                 };
                 let timestamp = Timestamp::UNIX_EPOCH + Duration::from_micros(timestamp as u64);
 
-                let Some(vector_value) = row.columns.pop().unwrap() else {
-                    debug!("range_scan_stream: missing vector column");
+                let Some(column_value) = row.columns.pop().unwrap() else {
+                    debug!("range_scan_stream: missing target column");
                     return None;
                 };
-                let Ok(vector) = Vector::try_from(vector_value)
-                    .inspect_err(|err| debug!("range_scan_stream: {err}"))
-                else {
-                    return None;
-                };
-                let vector = Some(vector);
+
+                let value = parse_indexed_value(column_value, &kind)?;
 
                 let Ok(primary_key) = row
                     .columns
@@ -625,9 +626,9 @@ impl Statements {
                     return None;
                 };
 
-                Some(DbEmbedding {
+                Some(DbIndexedRow {
                     primary_key,
-                    embedding: vector,
+                    value,
                     timestamp,
                 })
             })
@@ -641,10 +642,54 @@ impl Statements {
     }
 }
 
+fn parse_indexed_value(value: CqlValue, kind: &IndexKind) -> Option<Option<DbIndexedValue>> {
+    match kind {
+        IndexKind::Vs(_) => {
+            let Ok(vector) =
+                Vector::try_from(value).inspect_err(|err| debug!("range_scan_stream: {err}"))
+            else {
+                return None;
+            };
+            Some(Some(DbIndexedValue::Vector(vector)))
+        }
+        IndexKind::Fts(_) => match value {
+            CqlValue::Text(s) => Some(Some(DbIndexedValue::Document(s))),
+            CqlValue::Ascii(s) => Some(Some(DbIndexedValue::Document(s))),
+            other => {
+                debug!("range_scan_stream: expected text column, got {:?}", other);
+                None
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use crate::Connectivity;
+    use crate::Dimensions;
+    use crate::ExpansionAdd;
+    use crate::ExpansionSearch;
+    use crate::IndexOptionsFts;
+    use crate::IndexOptionsVs;
+    use crate::Quantization;
+    use crate::SpaceType;
+
+    fn vs_kind() -> IndexKind {
+        IndexKind::Vs(IndexOptionsVs {
+            dimensions: Dimensions::from(NonZeroUsize::new(3).unwrap()),
+            connectivity: Connectivity::default(),
+            expansion_add: ExpansionAdd::default(),
+            expansion_search: ExpansionSearch::default(),
+            space_type: SpaceType::default(),
+            quantization: Quantization::default(),
+        })
+    }
+
+    fn fts_kind() -> IndexKind {
+        IndexKind::Fts(IndexOptionsFts {})
+    }
 
     #[test]
     fn test_percentage_from_u64() {
@@ -664,5 +709,55 @@ mod tests {
         assert!(matches!(progress, Progress::InProgress(p) if p.get() == 50.0));
         let progress = Progress::from(u64::MAX);
         assert!(matches!(progress, Progress::Done));
+    }
+
+    #[test]
+    fn parse_indexed_value_vector_from_cql_vector() {
+        let cql = CqlValue::Vector(vec![
+            CqlValue::Float(1.0),
+            CqlValue::Float(2.0),
+            CqlValue::Float(3.0),
+        ]);
+        let result = parse_indexed_value(cql, &vs_kind());
+        assert_eq!(
+            result,
+            Some(Some(DbIndexedValue::Vector(Vector::from(vec![
+                1.0, 2.0, 3.0
+            ]))))
+        );
+    }
+
+    #[test]
+    fn parse_indexed_value_vector_rejects_invalid_type() {
+        let cql = CqlValue::Text("not a vector".to_string());
+        let result = parse_indexed_value(cql, &vs_kind());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn parse_indexed_value_fts_from_text() {
+        let cql = CqlValue::Text("hello world".to_string());
+        let result = parse_indexed_value(cql, &fts_kind());
+        assert_eq!(
+            result,
+            Some(Some(DbIndexedValue::Document("hello world".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_indexed_value_fts_from_ascii() {
+        let cql = CqlValue::Ascii("ascii doc".to_string());
+        let result = parse_indexed_value(cql, &fts_kind());
+        assert_eq!(
+            result,
+            Some(Some(DbIndexedValue::Document("ascii doc".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_indexed_value_fts_rejects_invalid_type() {
+        let cql = CqlValue::Int(42);
+        let result = parse_indexed_value(cql, &fts_kind());
+        assert_eq!(result, None);
     }
 }

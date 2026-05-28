@@ -410,6 +410,14 @@ pub async fn load_config(env: impl Fn(&str) -> anyhow::Result<String>) -> anyhow
             "Unable to parse VECTOR_STORE_ALTER_INDEX_SIMULATOR env (true/false)"
         )))?;
 
+    config.fulltext_indexes = env("VECTOR_STORE_FULLTEXT_INDEXES")
+        .unwrap_or("false".into())
+        .trim()
+        .parse()
+        .or(Err(anyhow!(
+            "Unable to parse VECTOR_STORE_FULLTEXT_INDEXES env (true/false)"
+        )))?;
+
     config.credentials = credentials(&env).await?;
 
     // Load TLS configuration

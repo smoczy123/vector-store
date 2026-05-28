@@ -9,8 +9,9 @@ use crate::Config;
 use crate::Connectivity;
 use crate::Credentials;
 use crate::DbCustomIndex;
-use crate::DbEmbedding;
-use crate::DbIndexType;
+use crate::DbIndexKind;
+use crate::DbIndexPartitioning;
+use crate::DbIndexedRow;
 use crate::Dimensions;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
@@ -43,6 +44,7 @@ use scylla::client::session::Session;
 use scylla::client::session::TlsContext;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::cluster::metadata::ColumnType;
+use scylla::cluster::metadata::NativeType;
 use scylla::cluster::metadata::Table;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::value::CqlTimeuuid;
@@ -67,7 +69,7 @@ use uuid::Uuid;
 
 type GetDbIndexR = anyhow::Result<(
     mpsc::Sender<DbIndex>,
-    mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>,
+    mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>,
 )>;
 pub(crate) type LatestSchemaVersionR = anyhow::Result<Option<CqlTimeuuid>>;
 type GetIndexesR = anyhow::Result<Vec<DbCustomIndex>>;
@@ -751,15 +753,17 @@ impl Statements {
                             anyhow!("table {table_name} does not exist").context(InvalidMetadata)
                         })?;
                     Ok(options.remove("target").and_then(|target| {
-                        from_target_option(table, target)
+                        let kind = db_index_kind_from_options(&mut options)?;
+                        from_target_option(table, target, kind)
                             .map(
-                                |(index_type, target_column, filtering_columns)| DbCustomIndex {
+                                |(partitioning, target_column, filtering_columns)| DbCustomIndex {
                                     keyspace: keyspace_name.into(),
                                     index: index_name.clone().into(),
                                     table: table_name.into(),
                                     target_column,
-                                    index_type,
+                                    partitioning,
                                     filtering_columns: Arc::new(filtering_columns),
+                                    kind,
                                 },
                             )
                             .inspect_err(|err| {
@@ -1013,29 +1017,31 @@ fn convert_legacy_target_option(
     })
 }
 
+fn db_index_kind_from_options(options: &mut BTreeMap<String, String>) -> Option<DbIndexKind> {
+    match options.remove("kind").as_deref() {
+        Some("vector_index") | None => Some(DbIndexKind::VectorSearch),
+        Some("fulltext_index") => Some(DbIndexKind::FullTextSearch),
+        Some(unknown) => {
+            debug!("unrecognized index kind: {unknown:?}, skipping index");
+            None
+        }
+    }
+}
+
 fn from_target_option(
     table: &Table,
     value: String,
-) -> anyhow::Result<(DbIndexType, ColumnName, Vec<ColumnName>)> {
+    kind: DbIndexKind,
+) -> anyhow::Result<(DbIndexPartitioning, ColumnName, Vec<ColumnName>)> {
     let Some(target) = parse_target_option(table, &value)? else {
         // Global index with a single target column
-        return Ok((DbIndexType::Global, value.into(), vec![]));
+        return Ok((DbIndexPartitioning::Global, value.into(), vec![]));
     };
 
-    let validate_target_type = |target_name: &str| -> anyhow::Result<()> {
-        let column = table.columns.get(target_name).ok_or_else(|| {
-            anyhow!("invalid target option: column {target_name} does not exist in a table")
-        })?;
-        if !matches!(column.typ, ColumnType::Vector { .. }) {
-            bail!("invalid target option: column {target_name} is not a vector column in a table");
-        }
-        Ok(())
-    };
+    validate_target_column(table, &target.target_column, kind)?;
 
-    validate_target_type(&target.target_column)?;
-
-    let index_type = if target.partition_key_columns.is_empty() {
-        DbIndexType::Global
+    let partitioning = if target.partition_key_columns.is_empty() {
+        DbIndexPartitioning::Global
     } else {
         if let Some(invalid) = target
             .partition_key_columns
@@ -1044,7 +1050,7 @@ fn from_target_option(
         {
             bail!("invalid target option: pk column {invalid} is not in the table's partition key");
         }
-        DbIndexType::Local(Arc::new(
+        DbIndexPartitioning::Local(Arc::new(
             target
                 .partition_key_columns
                 .into_iter()
@@ -1054,7 +1060,7 @@ fn from_target_option(
     };
 
     Ok((
-        index_type,
+        partitioning,
         target.target_column.into(),
         target
             .filter_columns
@@ -1062,6 +1068,44 @@ fn from_target_option(
             .map(ColumnName::from)
             .collect(),
     ))
+}
+
+fn validate_target_column(
+    table: &Table,
+    target_name: &str,
+    kind: DbIndexKind,
+) -> anyhow::Result<()> {
+    let column = table.columns.get(target_name).ok_or_else(|| {
+        anyhow!("invalid target option: column {target_name} does not exist in a table")
+    })?;
+    validate_column_type_for_kind(target_name, &column.typ, kind)
+}
+
+fn validate_column_type_for_kind(
+    target_name: &str,
+    column_type: &ColumnType,
+    kind: DbIndexKind,
+) -> anyhow::Result<()> {
+    match kind {
+        DbIndexKind::VectorSearch => {
+            if !matches!(column_type, ColumnType::Vector { .. }) {
+                bail!(
+                    "invalid target option: column {target_name} is not a vector column in a table"
+                );
+            }
+        }
+        DbIndexKind::FullTextSearch => {
+            if !matches!(
+                column_type,
+                ColumnType::Native(NativeType::Text) | ColumnType::Native(NativeType::Ascii)
+            ) {
+                bail!(
+                    "invalid target option: column {target_name} is not a text column in a table"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1196,6 +1240,108 @@ pub(crate) mod tests {
         assert_eq!(
             reconnect_reasons(&old_config, &new_config),
             vec!["CQL URI translation map"]
+        );
+    }
+
+    #[test]
+    fn db_index_kind_from_options_vector() {
+        let mut options = BTreeMap::from([("kind".to_string(), "vector_index".to_string())]);
+        assert_eq!(
+            db_index_kind_from_options(&mut options),
+            Some(DbIndexKind::VectorSearch)
+        );
+        assert!(!options.contains_key("kind"));
+    }
+
+    #[test]
+    fn db_index_kind_from_options_fts() {
+        let mut options = BTreeMap::from([("kind".to_string(), "fulltext_index".to_string())]);
+        assert_eq!(
+            db_index_kind_from_options(&mut options),
+            Some(DbIndexKind::FullTextSearch)
+        );
+        assert!(!options.contains_key("kind"));
+    }
+
+    #[test]
+    fn db_index_kind_from_options_absent() {
+        let mut options = BTreeMap::new();
+        assert_eq!(
+            db_index_kind_from_options(&mut options),
+            Some(DbIndexKind::VectorSearch)
+        );
+    }
+
+    #[test]
+    fn db_index_kind_from_options_unknown_returns_none() {
+        let mut options = BTreeMap::from([("kind".to_string(), "unknown_kind".to_string())]);
+        assert_eq!(db_index_kind_from_options(&mut options), None);
+    }
+
+    #[test]
+    fn validate_vector_search_accepts_vector_column() {
+        let col_type = ColumnType::Vector {
+            typ: Box::new(ColumnType::Native(NativeType::Float)),
+            dimensions: 128,
+        };
+        assert!(validate_column_type_for_kind("emb", &col_type, DbIndexKind::VectorSearch).is_ok());
+    }
+
+    #[test]
+    fn validate_vector_search_rejects_non_vector_column() {
+        let col_type = ColumnType::Native(NativeType::Text);
+        let result = validate_column_type_for_kind("col", &col_type, DbIndexKind::VectorSearch);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not a vector column")
+        );
+    }
+
+    #[test]
+    fn validate_fts_accepts_text_column() {
+        let col_type = ColumnType::Native(NativeType::Text);
+        assert!(
+            validate_column_type_for_kind("doc", &col_type, DbIndexKind::FullTextSearch).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_fts_accepts_ascii_column() {
+        let col_type = ColumnType::Native(NativeType::Ascii);
+        assert!(
+            validate_column_type_for_kind("doc", &col_type, DbIndexKind::FullTextSearch).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_fts_rejects_non_text_column() {
+        let col_type = ColumnType::Native(NativeType::Int);
+        let result = validate_column_type_for_kind("col", &col_type, DbIndexKind::FullTextSearch);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not a text column")
+        );
+    }
+
+    #[test]
+    fn validate_fts_rejects_vector_column() {
+        let col_type = ColumnType::Vector {
+            typ: Box::new(ColumnType::Native(NativeType::Float)),
+            dimensions: 3,
+        };
+        let result = validate_column_type_for_kind("col", &col_type, DbIndexKind::FullTextSearch);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not a text column")
         );
     }
 }

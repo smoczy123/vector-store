@@ -21,7 +21,9 @@ use uuid::Uuid;
 use vector_store::AsyncInProgress;
 use vector_store::ColumnName;
 use vector_store::DbCustomIndex;
-use vector_store::DbEmbedding;
+use vector_store::DbIndexKind;
+use vector_store::DbIndexedRow;
+use vector_store::DbIndexedValue;
 use vector_store::Dimensions;
 use vector_store::IndexMetadata;
 use vector_store::IndexName;
@@ -38,8 +40,8 @@ use vector_store::db_index::DbIndex;
 use vector_store::node_state::Event;
 use vector_store::node_state::NodeState;
 
-pub(crate) type RxEmbeddings = mpsc::Receiver<(DbEmbedding, Option<AsyncInProgress>)>;
-pub(crate) type TxEmbeddings = mpsc::Sender<(DbEmbedding, Option<AsyncInProgress>)>;
+pub(crate) type RxEmbeddings = mpsc::Receiver<(DbIndexedRow, Option<AsyncInProgress>)>;
+pub(crate) type TxEmbeddings = mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>;
 pub(crate) type ScanFn = Box<dyn FnOnce(TxEmbeddings) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub(crate) fn scan_fn(
@@ -54,9 +56,9 @@ pub(crate) fn scan_fn(
             for (primary_key, embedding, timestamp) in items.iter().cloned() {
                 let _ = tx
                     .send((
-                        DbEmbedding {
+                        DbIndexedRow {
                             primary_key,
-                            embedding,
+                            value: embedding.map(DbIndexedValue::Vector),
                             timestamp,
                         },
                         Some(tx_in_progress.clone().into()),
@@ -268,8 +270,9 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                                 index: index_name.clone(),
                                 table: index.metadata.table_name.clone(),
                                 target_column: index.metadata.target_column.clone(),
-                                index_type: index.metadata.index_type.clone(),
+                                partitioning: index.metadata.partitioning.clone(),
                                 filtering_columns: index.metadata.filtering_columns.clone(),
+                                kind: DbIndexKind::VectorSearch,
                             })
                     })
                     .collect()))
@@ -327,12 +330,13 @@ fn process_db(db: &DbBasic, msg: Db, node_state: Sender<NodeState>) {
                 .get(&keyspace)
                 .and_then(|keyspace| keyspace.indexes.get(&index))
                 .map(|index| {
+                    let vs = index.metadata.vs().unwrap();
                     (
-                        index.metadata.connectivity,
-                        index.metadata.expansion_add,
-                        index.metadata.expansion_search,
-                        index.metadata.space_type,
-                        index.metadata.quantization,
+                        vs.connectivity,
+                        vs.expansion_add,
+                        vs.expansion_search,
+                        vs.space_type,
+                        vs.quantization,
                     )
                 })))
             .map_err(|_| anyhow!("Db::GetIndexParams: unable to send response"))
