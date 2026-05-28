@@ -1272,6 +1272,7 @@ mod tests {
     #[tokio::test]
     async fn add_or_replace_size_ann() {
         let (_, config_rx) = watch::channel(Arc::new(Config::default()));
+        let (internals_tx, _rx) = mpsc::channel(100);
 
         let options = IndexOptions {
             dimensions: 3,
@@ -1287,7 +1288,7 @@ mod tests {
             NonZeroUsize::new(3).unwrap().into(),
             Arc::clone(&table),
             worker::new(),
-            memory::new(config_rx),
+            memory::new(internals_tx, config_rx),
         )
         .unwrap();
 
@@ -1477,6 +1478,7 @@ mod tests {
         // Exceeding this limit results in a "No available threads to lock" error.
         // This test verifies our concurrency control by spawning a high number of parallel adds and searches (2 x num of cores).
         let (_, config_rx) = watch::channel(Arc::new(Config::default()));
+        let (internals_tx, _rx) = mpsc::channel(100);
 
         let dimensions = NonZeroUsize::new(1024).unwrap();
         let options = IndexOptions {
@@ -1493,7 +1495,7 @@ mod tests {
             dimensions.into(),
             Arc::clone(&table),
             worker::new(),
-            memory::new(config_rx),
+            memory::new(internals_tx, config_rx),
         )
         .unwrap();
 

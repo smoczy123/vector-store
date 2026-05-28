@@ -8,6 +8,7 @@ use crate::DbIndexPartitioning;
 use crate::IndexKey;
 use crate::IndexKind;
 use crate::IndexMetadata;
+use crate::Internals;
 use crate::Metrics;
 use crate::db::Db;
 use crate::db::DbExt;
@@ -110,6 +111,7 @@ pub(crate) async fn new(
     node_state: Sender<NodeState>,
     metrics: Arc<Metrics>,
     indexes: Arc<RwLock<Indexes>>,
+    internals: Sender<Internals>,
     config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<mpsc::Sender<Engine>> {
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
@@ -125,7 +127,7 @@ pub(crate) async fn new(
         .borrow()
         .engine_status_update_interval
         .unwrap_or(Duration::from_secs(1));
-    let memory_actor = memory::new(config_rx);
+    let memory_actor = memory::new(internals, config_rx);
 
     tokio::spawn(
         async move {

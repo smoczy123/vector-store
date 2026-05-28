@@ -700,6 +700,7 @@ pub async fn run(
         node_state.clone(),
         metrics.clone(),
         Arc::clone(&indexes),
+        internals.clone(),
         receivers.config,
     )
     .await?;
