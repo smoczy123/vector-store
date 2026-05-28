@@ -13,13 +13,17 @@ use crate::TestActors;
 use crate::common;
 use async_backtrace::framed;
 use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::Select;
 use aws_sdk_dynamodb::types::TimeToLiveSpecification;
 use e2etest::TestCase;
 use tracing::info;
 
-use super::Item;
-use super::TableContext;
-use super::TableShape;
+use crate::alternator;
+use crate::alternator::Item;
+use crate::alternator::TableContext;
+use crate::alternator::TableShape;
+use crate::alternator::query::QueryBuilderExt;
+use aws_sdk_dynamodb::types::ScalarAttributeType;
 
 /// Enables DynamoDB TTL on `ttl_attribute` for the given table.
 async fn enable_ttl(client: &aws_sdk_dynamodb::Client, table_name: &str, ttl_attribute: &str) {
@@ -64,7 +68,7 @@ async fn ttl_expiration_removes_vector(actors: TestActors) {
             pk_name: "Pk-TTL".into(),
             sk_name: None,
             vec_name: Some("Vec-TTL".into()),
-            pk_type: super::ScalarAttributeType::S,
+            pk_type: ScalarAttributeType::S,
         },
         TableShape {
             table_prefix: None,
@@ -72,7 +76,7 @@ async fn ttl_expiration_removes_vector(actors: TestActors) {
             pk_name: "Pk-TTLHR".into(),
             sk_name: Some("Sk-TTLHR".into()),
             vec_name: Some("Vec-TTLHR".into()),
-            pk_type: super::ScalarAttributeType::S,
+            pk_type: ScalarAttributeType::S,
         },
     ];
 
@@ -115,13 +119,90 @@ async fn ttl_expiration_removes_vector(actors: TestActors) {
     info!("finished");
 }
 
+/// Like [`ttl_expiration_removes_vector`] but uses `Select::AllProjectedAttributes`
+/// - an index-only read that skips the base table.
+#[framed]
+async fn ttl_expiration_verified_via_query_with_all_projected(actors: TestActors) {
+    info!("started");
+
+    let shape = TableShape {
+        table_prefix: None,
+        index_prefix: None,
+        pk_name: "Pk-TTLProj".into(),
+        sk_name: None,
+        vec_name: Some("Vec-TTLProj".into()),
+        pk_type: ScalarAttributeType::S,
+    };
+    let ttl_attribute = "ttl_expiry";
+
+    let vec_attr = shape.vec().unwrap();
+
+    let perm1 = Item::key(shape.pk(), shape.sk(), "pk", "1").vec(vec_attr, [1.0, 1.0, 1.0]);
+    let perm2 = Item::key(shape.pk(), shape.sk(), "pk", "2").vec(vec_attr, [1.0, 2.0, 4.0]);
+    let expiring = Item::key(shape.pk(), shape.sk(), "pk", "expiring")
+        .vec(vec_attr, [1.0, 4.0, 8.0])
+        .attr(ttl_attribute, AttributeValue::N(ttl_epoch(2).to_string()));
+
+    let ctx =
+        TableContext::create_with_data(&actors, &shape, &[perm1.clone(), perm2.clone(), expiring])
+            .await;
+
+    info!(
+        "Enabling TTL on attribute '{ttl_attribute}' for '{}'",
+        ctx.table_name
+    );
+    enable_ttl(&ctx.client, &ctx.table_name, ttl_attribute).await;
+
+    info!("Waiting for TTL to expire the item and for VS to remove it");
+    ctx.wait_for_count(2).await;
+
+    info!("Querying via Alternator with Select::AllProjectedAttributes after TTL expiration");
+    common::wait_for(
+        || {
+            let ctx = &ctx;
+            async move {
+                let items = ctx
+                    .client
+                    .query()
+                    .table_name(&ctx.table_name)
+                    .index_name(ctx.index.index.as_ref())
+                    .limit(5)
+                    .select(Select::AllProjectedAttributes)
+                    .vector_search([1.0, 1.0, 1.0])
+                    .send()
+                    .await
+                    .expect("Query with VectorSearch should succeed")
+                    .items()
+                    .to_vec();
+
+                items.len() == 2
+                    && items.iter().all(|item| {
+                        !matches!(item.get(ctx.shape.pk()), Some(AttributeValue::S(s)) if s == "pk-expiring")
+                    })
+            }
+        },
+        "AllProjectedAttributes query to return only 2 permanent items after TTL expiration",
+        common::DEFAULT_TEST_TIMEOUT,
+    )
+    .await;
+
+    ctx.done().await;
+
+    info!("finished");
+}
+
 pub(super) async fn new() -> TestCase<TestActors> {
     TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, super::init)
+        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
         .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
         .with_test(
             "ttl_expiration_removes_vector",
             common::DEFAULT_TEST_TIMEOUT,
             ttl_expiration_removes_vector,
+        )
+        .with_test(
+            "ttl_expiration_verified_via_query_with_all_projected",
+            common::DEFAULT_TEST_TIMEOUT,
+            ttl_expiration_verified_via_query_with_all_projected,
         )
 }
