@@ -293,8 +293,8 @@ impl From<crate::node_state::IndexStatus> for httpapi::IndexStatus {
     responses(
         (
             status = 200,
-            description = "Successful operation. Returns the current operational status of the specified vector index, including its state \
-            and the total number of vectors currently indexed.",
+            description = "Successful operation. Returns the current operational status of the specified index, including its state \
+            and the total number of items currently indexed.",
             body = httpapi::IndexStatusResponse,
             content_type = "application/json",
             example = json!({

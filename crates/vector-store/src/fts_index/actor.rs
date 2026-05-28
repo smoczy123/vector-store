@@ -5,12 +5,15 @@
 
 use crate::AsyncInProgress;
 use crate::IndexKey;
+use crate::Limit;
+use crate::PrimaryKey;
 use crate::table::PrimaryId;
 use crate::vs_index::actor::CountR;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-/// Actor messages for the full-text-search index.
+pub(crate) type FtsSearchR = anyhow::Result<(Vec<PrimaryKey>, Vec<f32>)>;
+
 #[allow(dead_code)]
 pub(crate) enum FtsIndex {
     AddDocument {
@@ -26,8 +29,15 @@ pub(crate) enum FtsIndex {
         index_key: IndexKey,
         tx: oneshot::Sender<CountR>,
     },
+    Search {
+        index_key: IndexKey,
+        query: String,
+        limit: Limit,
+        tx: oneshot::Sender<FtsSearchR>,
+    },
 }
 
+#[allow(dead_code)]
 pub(crate) trait FtsIndexExt {
     async fn add_document(
         &self,
@@ -37,6 +47,7 @@ pub(crate) trait FtsIndexExt {
     );
     async fn remove_document(&self, primary_id: PrimaryId, in_progress: Option<AsyncInProgress>);
     async fn count(&self, index_key: IndexKey) -> CountR;
+    async fn search(&self, index_key: IndexKey, query: String, limit: Limit) -> FtsSearchR;
 }
 
 impl FtsIndexExt for mpsc::Sender<FtsIndex> {
@@ -67,6 +78,18 @@ impl FtsIndexExt for mpsc::Sender<FtsIndex> {
     async fn count(&self, index_key: IndexKey) -> CountR {
         let (tx, rx) = oneshot::channel();
         self.send(FtsIndex::Count { index_key, tx }).await?;
+        rx.await?
+    }
+
+    async fn search(&self, index_key: IndexKey, query: String, limit: Limit) -> FtsSearchR {
+        let (tx, rx) = oneshot::channel();
+        self.send(FtsIndex::Search {
+            index_key,
+            query,
+            limit,
+            tx,
+        })
+        .await?;
         rx.await?
     }
 }

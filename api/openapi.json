@@ -264,7 +264,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful operation. Returns the current operational status of the specified vector index, including its state and the total number of vectors currently indexed.",
+            "description": "Successful operation. Returns the current operational status of the specified index, including its state and the total number of items currently indexed.",
             "content": {
               "application/json": {
                 "schema": {

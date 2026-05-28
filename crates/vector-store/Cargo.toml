@@ -60,6 +60,7 @@ secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
+tantivy.workspace = true
 tap.workspace = true
 thiserror.workspace = true
 time.workspace = true
