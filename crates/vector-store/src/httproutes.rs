@@ -87,7 +87,7 @@ use utoipa_swagger_ui::SwaggerUi;
             name = "LicenseRef-ScyllaDB-Source-Available-1.0"
         ),
         // version should be updated manually when there are changes in API
-        version = "1.4.0"
+        version = "1.5.0"
     ),
     tags(
         (
@@ -160,6 +160,7 @@ fn new_open_api_router() -> (Router<RoutesInnerState>, utoipa::openapi::OpenApi)
                 .routes(routes!(get_indexes))
                 .routes(routes!(get_index_status))
                 .routes(routes!(post_index_ann))
+                .routes(routes!(post_index_bm25))
                 .routes(routes!(get_info))
                 .routes(routes!(get_status)),
         )
@@ -700,6 +701,67 @@ async fn post_index_ann(
         }
     })
     .await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/indexes/{keyspace}/{index}/bm25",
+    tag = "scylla-vector-store-index",
+    description = "Performs a full-text search query against the specified index. \
+Returns primary keys of the documents most relevant to the provided text query, ranked by BM25 score. \
+The maximum number of results is controlled by the optional 'limit' parameter in the payload. \
+If TLS is enabled on the server, clients must connect using a HTTPS protocol.",
+    params(
+        ("keyspace" = httpapi::KeyspaceName, Path, description = "The name of the ScyllaDB keyspace containing the index."),
+        ("index" = httpapi::IndexName, Path, description = "The name of the full-text index within the specified keyspace to search.")
+    ),
+    request_body = httpapi::PostIndexBm25Request,
+    responses(
+        (
+            status = 200,
+            description = "Successful full-text search. Returns a list of primary keys and their corresponding relevance scores for the most relevant documents found.",
+            body = httpapi::PostIndexBm25Response
+        ),
+        (
+            status = 400,
+            description = "Bad request. Possible causes: malformed input, or missing required fields.",
+            content_type = "application/json",
+            body = ErrorMessage
+        ),
+        (
+            status = 403,
+            description = "Forbidden. TLS is enabled in the configuration, but the client connected over plain HTTP.",
+            content_type = "application/json",
+            body = ErrorMessage
+        ),
+        (
+            status = 404,
+            description = "Index not found. Possible causes: index does not exist, or is not discovered yet.",
+            content_type = "application/json",
+            body = ErrorMessage
+        ),
+        (
+            status = 500,
+            description = "Error while searching. Possible causes: internal error, or search engine issues.",
+            content_type = "application/json",
+            body = ErrorMessage
+        ),
+        (
+            status = 503,
+            description = "Service Unavailable. Indicates that a full scan of the index is in progress and the search cannot be performed at this time.",
+            content_type = "application/json",
+            body = ErrorMessage
+        )
+    )
+)]
+async fn post_index_bm25(
+    Path((_keyspace, _index_name)): Path<(httpapi::KeyspaceName, httpapi::IndexName)>,
+) -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "Full-text search is not yet implemented",
+    )
+        .into_response()
 }
 
 fn try_from_post_index_ann_filter(

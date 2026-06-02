@@ -299,3 +299,19 @@ pub struct SimilarityScore(f32);
 )]
 /// The vector to use for the Approximate Nearest Neighbor search. The format of data must match the data_type of the index.
 pub struct Vector(Vec<f32>);
+
+#[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+/// Request body for full-text search.
+pub struct PostIndexBm25Request {
+    /// The text query to search for.
+    pub query: String,
+    #[serde(default)]
+    pub limit: Limit,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+/// Response for full-text search.
+pub struct PostIndexBm25Response {
+    pub primary_keys: HashMap<ColumnName, Vec<Value>>,
+    pub scores: Vec<f32>,
+}

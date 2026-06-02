@@ -6,7 +6,7 @@
     "license": {
       "name": "LicenseRef-ScyllaDB-Source-Available-1.0"
     },
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "paths": {
     "/api/v1/indexes": {
@@ -113,6 +113,107 @@
           },
           "500": {
             "description": "Error while searching vectors. Possible causes: internal error, or search engine issues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable. Indicates that a full scan of the index is in progress and the search cannot be performed at this time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/indexes/{keyspace}/{index}/bm25": {
+      "post": {
+        "tags": [
+          "scylla-vector-store-index"
+        ],
+        "description": "Performs a full-text search query against the specified index. Returns primary keys of the documents most relevant to the provided text query, ranked by BM25 score. The maximum number of results is controlled by the optional 'limit' parameter in the payload. If TLS is enabled on the server, clients must connect using a HTTPS protocol.",
+        "operationId": "post_index_bm25",
+        "parameters": [
+          {
+            "name": "keyspace",
+            "in": "path",
+            "description": "The name of the ScyllaDB keyspace containing the index.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/KeyspaceName"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "description": "The name of the full-text index within the specified keyspace to search.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/IndexName"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostIndexBm25Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful full-text search. Returns a list of primary keys and their corresponding relevance scores for the most relevant documents found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostIndexBm25Response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request. Possible causes: malformed input, or missing required fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden. TLS is enabled in the configuration, but the client connected over plain HTTP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Index not found. Possible causes: index does not exist, or is not discovered yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error while searching. Possible causes: internal error, or search engine issues.",
             "content": {
               "application/json": {
                 "schema": {
@@ -731,6 +832,50 @@
           }
         ],
         "description": "A filter restriction used in ANN search requests."
+      },
+      "PostIndexBm25Request": {
+        "type": "object",
+        "description": "Request body for full-text search.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "query": {
+            "type": "string",
+            "description": "The text query to search for."
+          }
+        }
+      },
+      "PostIndexBm25Response": {
+        "type": "object",
+        "description": "Response for full-text search.",
+        "required": [
+          "primary_keys",
+          "scores"
+        ],
+        "properties": {
+          "primary_keys": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string",
+              "description": "Name of the column in a db table."
+            }
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          }
+        }
       },
       "SimilarityScore": {
         "type": "number",
