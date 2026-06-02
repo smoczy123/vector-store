@@ -7,6 +7,7 @@ use crate::create_config_channels;
 use crate::db_basic;
 use crate::db_basic::Table;
 use crate::usearch::test_config;
+use futures::FutureExt;
 use httpapi::NodeStatus;
 use httpclient::HttpClient;
 use scylla::cluster::metadata::NativeType;
@@ -14,12 +15,14 @@ use scylla::value::CqlValue;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
-use sysinfo::System;
+use tokio::sync::mpsc;
 use tracing::info;
 use uuid::Uuid;
 use vector_store::Config;
 use vector_store::Connectivity;
 use vector_store::DbIndexPartitioning;
+use vector_store::DbIndexedRow;
+use vector_store::DbIndexedValue;
 use vector_store::ExpansionAdd;
 use vector_store::ExpansionSearch;
 use vector_store::HttpServerExt;
@@ -79,42 +82,45 @@ async fn memory_limit_during_index_build() {
     )
     .unwrap();
 
-    const VECTOR_COUNT: i32 = 1_000;
+    let (tx_outer, mut rx_outer) = mpsc::channel(1);
     db.add_index(
         index.clone(),
-        Some(db_basic::scan_fn((0..VECTOR_COUNT).map(|i| {
-            (
-                [CqlValue::Int(i)].into(),
-                Some(vec![0.0, 0.0, 0.0].into()),
-                Timestamp::from_unix_timestamp(10),
-            )
-        }))),
+        Some(Box::new(move |tx_inner| {
+            async move {
+                let mut pk = 0;
+                while let Some(item) = rx_outer.recv().await {
+                    pk += 1;
+                    let (tx_in_progress, mut rx_in_progress) = mpsc::channel(1);
+                    tx_inner
+                        .send((
+                            DbIndexedRow {
+                                primary_key: [CqlValue::Int(pk)].into(),
+                                value: Some(DbIndexedValue::Vector(item)),
+                                timestamp: Timestamp::from_unix_timestamp(10),
+                            },
+                            Some(tx_in_progress.clone().into()),
+                        ))
+                        .await
+                        .unwrap();
+                    // wait until in-progress marker is dropped
+                    drop(tx_in_progress);
+                    while rx_in_progress.recv().await.is_some() {}
+                }
+            }
+            .boxed()
+        })),
         None,
     )
     .unwrap();
 
-    // Set memory limit for Vector Store
-    let mut system_info = System::new_all();
-    system_info.refresh_memory();
-    let used_memory = if let Some(cgroup) = system_info.cgroup_limits() {
-        cgroup.rss
-    } else {
-        system_info.used_memory()
-    };
-
-    const LIMIT_MEMORY: u64 = 20 * 1024 * 1024; // 20 MB - it shouldn't be enough to index all vectors
-    let limit_memory = used_memory + LIMIT_MEMORY;
-    info!(
-        "Setting VS memory limit to {LIMIT_MEMORY} bytes, current used memory is {used_memory} bytes, "
-    );
-
-    let config = Config {
-        memory_limit: Some(limit_memory),
+    const LIMIT_MEMORY: u64 = 20 * 1024 * 1024; // 20 MB - it shouldn't be enough to index any vector
+    let mut config = Config {
+        memory_limit: Some(LIMIT_MEMORY),
         memory_usage_check_interval: Some(Duration::from_millis(10)),
         ..test_config()
     };
 
-    let (receivers, _senders) = create_config_channels(config).await;
+    let (receivers, senders) = create_config_channels(config.clone()).await;
     let index_factory = vector_store::new_index_factory_usearch(receivers.config.clone()).unwrap();
 
     let node_state = node_state.clone();
@@ -126,26 +132,86 @@ async fn memory_limit_during_index_build() {
 
     let client = HttpClient::new(addr);
 
+    info!("Waiting for index to be bootstrapping");
     crate::wait_for(
         || async {
             client
                 .status()
                 .await
-                .ok()
-                .map(|status| status == NodeStatus::Serving)
-                .unwrap_or(false)
+                .is_ok_and(|status| status == NodeStatus::Bootstrapping)
         },
-        "Waiting for index to be build",
+        "Waiting for index to be bootstrapping",
     )
     .await;
 
-    assert!(
+    const VECTOR_COUNT: usize = 10;
+
+    info!("Send vectors to be indexed - they shouldn't be indexed, because of the memory limit");
+    for i in 0..VECTOR_COUNT {
+        tx_outer
+            .send(vec![i as f32, i as f32, i as f32].into())
+            .await
+            .unwrap();
+    }
+
+    let keyspace_name = index.keyspace_name.into();
+    let index_name = index.index_name.into();
+    assert_eq!(
         client
-            .index_status(&index.keyspace_name.into(), &index.index_name.into())
+            .index_status(&keyspace_name, &index_name)
             .await
             .unwrap()
-            .count
-            < VECTOR_COUNT as usize,
-        "Expected less than {VECTOR_COUNT} vectors to be indexed"
+            .count,
+        0,
+        "Expected all vectors not to be indexed"
+    );
+
+    info!("Remove memory limit - it should allow to index all vectors");
+    client
+        .internals_start_counter("memory-usage-below-limit".to_string())
+        .await
+        .unwrap();
+    config.memory_limit = None;
+    senders.config.send(Arc::new(config)).unwrap();
+    crate::wait_for(
+        || async {
+            client.internals_counters().await.is_ok_and(|map| {
+                map.get("memory-usage-below-limit")
+                    .is_some_and(|counter| *counter == 1)
+            })
+        },
+        "Waiting for memory usage to be below limit after removing the memory limit",
+    )
+    .await;
+
+    info!("Send vectors to be indexed - they should be indexed");
+    for i in 0..VECTOR_COUNT {
+        tx_outer
+            .send(vec![i as f32, i as f32, i as f32].into())
+            .await
+            .unwrap();
+    }
+
+    info!("Waiting for index to be serving");
+    drop(tx_outer);
+    crate::wait_for(
+        || async {
+            client
+                .status()
+                .await
+                .is_ok_and(|status| status == NodeStatus::Serving)
+        },
+        "Waiting for index to be serving",
+    )
+    .await;
+
+    assert_eq!(
+        client
+            .index_status(&keyspace_name, &index_name)
+            .await
+            .unwrap()
+            .count,
+        VECTOR_COUNT,
+        "Expected only last part of vectors to be indexed"
     );
 }

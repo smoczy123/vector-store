@@ -4,6 +4,8 @@
  */
 
 use crate::Config;
+use crate::internals::Internals;
+use crate::internals::InternalsExt;
 use crate::perf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +51,10 @@ impl MemoryExt for mpsc::Sender<Memory> {
     }
 }
 
-pub(crate) fn new(mut config_rx: watch::Receiver<Arc<Config>>) -> mpsc::Sender<Memory> {
+pub(crate) fn new(
+    internals: mpsc::Sender<Internals>,
+    mut config_rx: watch::Receiver<Arc<Config>>,
+) -> mpsc::Sender<Memory> {
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
 
     tokio::spawn(async move {
@@ -70,7 +75,7 @@ pub(crate) fn new(mut config_rx: watch::Receiver<Arc<Config>>) -> mpsc::Sender<M
         info!("Memory usage check interval set to {:?}", interval.period());
 
         let (allocate_tx, allocate_rx) = watch::channel(
-            can_allocate(used_memory(&system_info), memory_limit, Allocate::Can));
+            can_allocate(&internals, used_memory(&system_info), memory_limit, Allocate::Can).await);
 
         loop {
             select! {
@@ -96,7 +101,7 @@ pub(crate) fn new(mut config_rx: watch::Receiver<Arc<Config>>) -> mpsc::Sender<M
                     system_info.refresh_memory();
                     let allocate = *allocate_tx.borrow();
                     _ = allocate_tx.send(
-                        can_allocate(used_memory(&system_info), memory_limit, allocate));
+                        can_allocate(&internals, used_memory(&system_info), memory_limit, allocate).await);
                 }
 
                 msg = rx.recv() => {
@@ -153,15 +158,26 @@ fn calculate_memory_limit(available_memory: u64, config: &Config) -> u64 {
     }
 }
 
-fn can_allocate(used_memory: u64, memory_limit: u64, current: Allocate) -> Allocate {
+async fn can_allocate(
+    internals: &mpsc::Sender<Internals>,
+    used_memory: u64,
+    memory_limit: u64,
+    current: Allocate,
+) -> Allocate {
     if used_memory < memory_limit {
         if current == Allocate::Cannot {
             info!("Memory usage below limit ({used_memory}), can allocate more memory");
+            internals
+                .increment_counter("memory-usage-below-limit".to_string())
+                .await;
         }
         Allocate::Can
     } else {
         if current == Allocate::Can {
             info!("Memory usage above limit ({used_memory}), cannot allocate more memory");
+            internals
+                .increment_counter("memory-usage-above-limit".to_string())
+                .await;
         }
         Allocate::Cannot
     }
@@ -215,14 +231,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn check_can_allocate() {
-        assert_eq!(can_allocate(99, 100, Allocate::Can), Allocate::Can);
-        assert_eq!(can_allocate(99, 100, Allocate::Cannot), Allocate::Can);
-        assert_eq!(can_allocate(100, 100, Allocate::Can), Allocate::Cannot);
-        assert_eq!(can_allocate(100, 100, Allocate::Cannot), Allocate::Cannot);
-        assert_eq!(can_allocate(101, 100, Allocate::Can), Allocate::Cannot);
-        assert_eq!(can_allocate(101, 100, Allocate::Cannot), Allocate::Cannot);
+    #[tokio::test]
+    async fn check_can_allocate() {
+        let (tx, _rx) = mpsc::channel(100);
+        assert_eq!(
+            can_allocate(&tx, 99, 100, Allocate::Can).await,
+            Allocate::Can
+        );
+        assert_eq!(
+            can_allocate(&tx, 99, 100, Allocate::Cannot).await,
+            Allocate::Can
+        );
+        assert_eq!(
+            can_allocate(&tx, 100, 100, Allocate::Can).await,
+            Allocate::Cannot
+        );
+        assert_eq!(
+            can_allocate(&tx, 100, 100, Allocate::Cannot).await,
+            Allocate::Cannot
+        );
+        assert_eq!(
+            can_allocate(&tx, 101, 100, Allocate::Can).await,
+            Allocate::Cannot
+        );
+        assert_eq!(
+            can_allocate(&tx, 101, 100, Allocate::Cannot).await,
+            Allocate::Cannot
+        );
     }
 
     #[tokio::test]
@@ -232,7 +267,8 @@ mod tests {
             memory_usage_check_interval: Some(Duration::from_secs(3600)),
             ..Config::default()
         }));
-        let memory_actor = new(config_rx);
+        let (tx, _rx) = mpsc::channel(100);
+        let memory_actor = new(tx, config_rx);
         let allocator_rx = memory_actor.subscribe_allocate().await;
 
         // be sure the actor has started
