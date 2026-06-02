@@ -1,0 +1,6 @@
+cassio>=0.1,<0.2
+cassandra-driver>=3.30,<4
+fastembed>=0.8,<0.9
+langchain-community>=0.4,<0.5
+langchain-core>=1.4,<2
+python-dotenv>=1.2,<2
