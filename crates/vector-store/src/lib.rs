@@ -13,7 +13,6 @@ mod engine;
 mod file_monitor;
 mod httproutes;
 mod httpserver;
-mod index;
 mod index_key;
 mod indexes;
 mod info;
@@ -32,6 +31,7 @@ mod table;
 mod timestamp;
 pub mod tls;
 mod vector;
+mod vs_index;
 mod worker;
 
 pub use crate::config_manager::ConfigManager;
@@ -54,8 +54,8 @@ pub use crate::table::PartitionId;
 pub use crate::table::PrimaryId;
 pub use crate::timestamp::Timestamp;
 use db::Db;
-use index::factory;
-pub use index::factory::IndexFactory;
+use vs_index::factory;
+pub use vs_index::factory::IndexFactory;
 use scylla::cluster::metadata::ColumnType;
 use scylla::serialize::SerializationError;
 use scylla::serialize::value::SerializeValue;
@@ -750,14 +750,14 @@ pub fn new_internals() -> Sender<Internals> {
 pub fn new_index_factory_usearch(
     config_tx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::usearch::new_usearch(config_tx)?))
+    Ok(Box::new(vs_index::usearch::new_usearch(config_tx)?))
 }
 
 pub fn new_index_factory_opensearch(
     addr: String,
     config_rx: watch::Receiver<Arc<Config>>,
 ) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::opensearch::new_opensearch(
+    Ok(Box::new(vs_index::opensearch::new_opensearch(
         &addr, config_rx,
     )?))
 }

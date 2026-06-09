@@ -10,7 +10,7 @@ use crate::ExpansionSearch;
 use crate::IndexKey;
 use crate::Quantization;
 use crate::SpaceType;
-use crate::index::actor::Index;
+use crate::vs_index::actor::Index;
 use crate::memory::Memory;
 use crate::table::Table;
 use std::sync::Arc;

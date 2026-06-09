@@ -13,7 +13,7 @@ use crate::Progress;
 use crate::TableName;
 use crate::db_index::DbIndex;
 use crate::db_index::DbIndexExt;
-use crate::index::Index;
+use crate::vs_index::Index;
 use crate::monitor_items::MonitorItems;
 use crate::node_state::IndexStatus;
 use scylla::cluster::metadata::NativeType;
