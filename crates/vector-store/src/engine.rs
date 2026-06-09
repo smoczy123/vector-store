@@ -14,9 +14,9 @@ use crate::db::Db;
 use crate::db::DbExt;
 use crate::db_index::DbIndex;
 use crate::db_index::DbIndexExt;
-use crate::factory::IndexFactory;
-use crate::vs_index::Index;
-use crate::vs_index::factory::IndexConfiguration;
+use crate::factory::VsIndexFactory;
+use crate::vs_index::VsIndex;
+use crate::vs_index::factory::VsIndexConfiguration;
 use crate::indexes::IndexEntry;
 use crate::indexes::Indexes;
 use crate::memory;
@@ -44,7 +44,7 @@ use tracing::trace;
 
 type GetIndexKeysR = Vec<(IndexKey, IndexKind)>;
 type AddIndexR = anyhow::Result<()>;
-type GetIndexR = Option<(mpsc::Sender<Index>, mpsc::Sender<DbIndex>)>;
+type GetIndexR = Option<(mpsc::Sender<VsIndex>, mpsc::Sender<DbIndex>)>;
 
 pub(crate) enum Engine {
     GetIndexIds {
@@ -107,7 +107,7 @@ impl EngineExt for mpsc::Sender<Engine> {
 
 pub(crate) async fn new(
     db: mpsc::Sender<Db>,
-    index_factory: Box<dyn IndexFactory + Send + Sync>,
+    index_factory: Box<dyn VsIndexFactory + Send + Sync>,
     node_state: Sender<NodeState>,
     metrics: Arc<Metrics>,
     indexes: Arc<RwLock<Indexes>>,
@@ -193,7 +193,7 @@ async fn add_index(
     metadata: IndexMetadata,
     tx: oneshot::Sender<AddIndexR>,
     db: &mpsc::Sender<Db>,
-    index_factory: &(dyn IndexFactory + Send + Sync),
+    index_factory: &(dyn VsIndexFactory + Send + Sync),
     indexes: &RwLock<Indexes>,
     metrics: Arc<Metrics>,
     memory: Sender<Memory>,
@@ -249,7 +249,7 @@ async fn add_index(
     };
 
     let index_actor = match index_factory.create_index(
-        IndexConfiguration {
+        VsIndexConfiguration {
             key: key.clone(),
             dimensions: vs.dimensions,
             connectivity: vs.connectivity,

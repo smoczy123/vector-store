@@ -55,7 +55,7 @@ pub use crate::table::PrimaryId;
 pub use crate::timestamp::Timestamp;
 use db::Db;
 use vs_index::factory;
-pub use vs_index::factory::IndexFactory;
+pub use vs_index::factory::VsIndexFactory;
 use scylla::cluster::metadata::ColumnType;
 use scylla::serialize::SerializationError;
 use scylla::serialize::value::SerializeValue;
@@ -688,7 +688,7 @@ pub async fn run(
     node_state: Sender<NodeState>,
     db_actor: Sender<Db>,
     internals: Sender<Internals>,
-    index_factory: Box<dyn IndexFactory + Send + Sync>,
+    index_factory: Box<dyn VsIndexFactory + Send + Sync>,
     receivers: ConfigReceivers,
 ) -> anyhow::Result<(Sender<HttpServer>, Sender<HttpServer>)> {
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
@@ -749,14 +749,14 @@ pub fn new_internals() -> Sender<Internals> {
 
 pub fn new_index_factory_usearch(
     config_tx: watch::Receiver<Arc<Config>>,
-) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
+) -> anyhow::Result<Box<dyn VsIndexFactory + Send + Sync>> {
     Ok(Box::new(vs_index::usearch::new_usearch(config_tx)?))
 }
 
 pub fn new_index_factory_opensearch(
     addr: String,
     config_rx: watch::Receiver<Arc<Config>>,
-) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
+) -> anyhow::Result<Box<dyn VsIndexFactory + Send + Sync>> {
     Ok(Box::new(vs_index::opensearch::new_opensearch(
         &addr, config_rx,
     )?))

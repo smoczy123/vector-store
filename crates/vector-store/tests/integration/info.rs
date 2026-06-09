@@ -13,7 +13,7 @@ use vector_store::Config;
 use vector_store::HttpServerExt;
 
 async fn run_vs(
-    index_factory: Box<dyn vector_store::IndexFactory + Send + Sync>,
+    index_factory: Box<dyn vector_store::VsIndexFactory + Send + Sync>,
 ) -> (HttpClient, impl Sized, impl Sized) {
     let node_state = vector_store::new_node_state().await;
     let internals = vector_store::new_internals();

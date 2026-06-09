@@ -12,7 +12,7 @@ use crate::SimilarityScore;
 use crate::distance;
 use crate::engine::Engine;
 use crate::engine::EngineExt;
-use crate::vs_index::IndexExt;
+use crate::vs_index::VsIndexExt;
 use crate::vs_index::validator;
 use crate::indexes;
 use crate::indexes::Indexes;

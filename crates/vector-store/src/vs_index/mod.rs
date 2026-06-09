@@ -7,8 +7,8 @@ pub mod actor;
 pub mod factory;
 pub mod validator;
 
-pub(crate) use actor::Index;
-pub(crate) use actor::IndexExt;
+pub(crate) use actor::VsIndex;
+pub(crate) use actor::VsIndexExt;
 
 pub(crate) mod opensearch;
 pub(crate) mod usearch;

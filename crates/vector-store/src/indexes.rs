@@ -13,7 +13,7 @@ use crate::Progress;
 use crate::TableName;
 use crate::db_index::DbIndex;
 use crate::db_index::DbIndexExt;
-use crate::vs_index::Index;
+use crate::vs_index::VsIndex;
 use crate::monitor_items::MonitorItems;
 use crate::node_state::IndexStatus;
 use scylla::cluster::metadata::NativeType;
@@ -76,7 +76,7 @@ impl From<&IndexMetadata> for RoutingGroupKey {
 
 #[derive(Debug)]
 pub(crate) struct IndexEntry {
-    index: mpsc::Sender<Index>,
+    index: mpsc::Sender<VsIndex>,
     _monitor: mpsc::Sender<MonitorItems>,
     db_index: mpsc::Sender<DbIndex>,
     routing_group: RoutingGroupKey,
@@ -92,7 +92,7 @@ pub(crate) struct IndexEntry {
 
 impl IndexEntry {
     pub(crate) async fn new(
-        index: mpsc::Sender<Index>,
+        index: mpsc::Sender<VsIndex>,
         monitor: mpsc::Sender<MonitorItems>,
         db_index: mpsc::Sender<DbIndex>,
         metadata: IndexMetadata,
@@ -125,7 +125,7 @@ impl IndexEntry {
         }
     }
 
-    pub(crate) fn index(&self) -> mpsc::Sender<Index> {
+    pub(crate) fn index(&self) -> mpsc::Sender<VsIndex> {
         self.index.clone()
     }
 
@@ -208,7 +208,7 @@ pub(crate) enum BestIndexState {
     /// A serving candidate was found.
     Serving {
         key: IndexKey,
-        index: mpsc::Sender<Index>,
+        index: mpsc::Sender<VsIndex>,
         primary_key_columns: Arc<Vec<ColumnName>>,
         table_columns: Arc<HashMap<ColumnName, NativeType>>,
         needs_filtering: NeedsFiltering,
