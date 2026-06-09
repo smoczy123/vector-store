@@ -4,6 +4,8 @@
  */
 
 use macros::ToEnumSchema;
+use serde::Serialize;
+use serde::Serializer;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -66,10 +68,18 @@ pub enum DataType {
     derive_more::From,
     derive_more::Into,
     utoipa::ToSchema,
-    serde::Serialize,
 )]
 /// Distance between vectors measured using the distance function defined while creating the index.
 pub struct Distance(f32);
+
+impl Serialize for Distance {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_saturated_f32(self.0, serializer)
+    }
+}
 
 #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
 /// Information about a vector index, such as keyspace, name and data type.
@@ -279,12 +289,72 @@ pub struct PostIndexAnnResponse {
     pub similarity_scores: Vec<SimilarityScore>,
 }
 
-#[derive(
-    Copy, Clone, Debug, serde::Serialize, serde::Deserialize, derive_more::From, utoipa::ToSchema,
-)]
+#[derive(Copy, Clone, Debug, serde::Deserialize, derive_more::From, utoipa::ToSchema)]
 #[from(f32)]
 /// Similarity score between vectors derived from the distance. Higher score means more similar.
 pub struct SimilarityScore(f32);
+
+impl Serialize for SimilarityScore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_saturated_f32(self.0, serializer)
+    }
+}
+
+fn serialize_saturated_f32<S>(value: f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let value = if value == f32::INFINITY {
+        f32::MAX
+    } else if value == f32::NEG_INFINITY {
+        f32::MIN
+    } else {
+        value
+    };
+    serializer.serialize_f32(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_ann_values_serialize_as_f32_max() {
+        let json = serde_json::to_value(PostIndexAnnResponse {
+            primary_keys: HashMap::new(),
+            distances: vec![
+                Distance::from(f32::INFINITY),
+                Distance::from(f32::NEG_INFINITY),
+                Distance::from(1.5),
+            ],
+            similarity_scores: vec![
+                SimilarityScore::from(f32::INFINITY),
+                SimilarityScore::from(f32::NEG_INFINITY),
+                SimilarityScore::from(0.5),
+            ],
+        })
+        .unwrap();
+
+        let distances: Vec<f32> = json["distances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|distance| serde_json::from_value(distance.clone()).unwrap())
+            .collect();
+        let similarity_scores: Vec<f32> = json["similarity_scores"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|score| serde_json::from_value(score.clone()).unwrap())
+            .collect();
+
+        assert_eq!(distances, vec![f32::MAX, -f32::MAX, 1.5]);
+        assert_eq!(similarity_scores, vec![f32::MAX, -f32::MAX, 0.5]);
+    }
+}
 
 #[derive(
     Clone,
