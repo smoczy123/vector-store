@@ -21,6 +21,7 @@ mod reconnect;
 mod routing;
 mod serde;
 mod similarity_functions;
+mod tls_reload;
 
 use async_backtrace::framed;
 use e2etest::TestCase;
@@ -239,6 +240,7 @@ pub async fn test_cases() -> impl Iterator<Item = (String, TestCase<TestActors>)
         ("routing", routing::new().await),
         ("serde", serde::new().await),
         ("similarity_function", similarity_functions::new().await),
+        ("tls_reload", tls_reload::new().await),
         (
             "quantization_and_rescoring",
             quantization_and_rescoring::new().await,

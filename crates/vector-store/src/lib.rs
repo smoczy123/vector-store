@@ -10,6 +10,7 @@ pub mod db_index;
 mod db_index_backend;
 mod distance;
 mod engine;
+mod file_monitor;
 mod httproutes;
 mod httpserver;
 mod index;
