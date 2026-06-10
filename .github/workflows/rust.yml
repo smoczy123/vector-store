@@ -23,10 +23,10 @@ jobs:
   cargo-clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
       with:
         components: clippy
 
@@ -45,10 +45,10 @@ jobs:
   cargo-fmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
       with:
         components: rustfmt
 
@@ -64,10 +64,10 @@ jobs:
   cargo-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
 
     - name: Print rustc version
       run: rustc --version
@@ -78,13 +78,13 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
 
     - name: Setup cargo-deny
-      uses: taiki-e/install-action@cargo-deny
+      uses: taiki-e/install-action@894ed6ded408bba4b650a982305dc5353e661648 # cargo-deny
 
     - name: Print cargo-deny version
       run: cargo deny --version
@@ -95,13 +95,13 @@ jobs:
   cargo-machete:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
 
     - name: Setup cargo-machete
-      uses: taiki-e/install-action@cargo-machete
+      uses: taiki-e/install-action@d56616f1be134d33d513c59d577b2c0142b64a83 # cargo-machete
 
     - name: Print cargo-machete version
       run: cargo machete --version
@@ -112,13 +112,13 @@ jobs:
   cargo-sbom:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
     - name: Setup rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
 
     - name: Setup cargo-cyclonedx
-      uses: taiki-e/install-action@cargo-cyclonedx
+      uses: taiki-e/install-action@4fb4bfc098655bcd1461f113b03ff34ffb480d16 # cargo-cyclonedx
 
     - name: Print cargo-cyclonedx version
       run: cargo cyclonedx --version
@@ -133,7 +133,7 @@ jobs:
         python3 -c "import json; json.load(open('$file'))"
 
     - name: Upload SBOM artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: sbom
         path: crates/vector-store/vector-store.cdx.json
