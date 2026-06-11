@@ -38,7 +38,6 @@ use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::base64;
 use aws_smithy_types::body::SdkBody;
 use aws_smithy_types::config_bag::ConfigBag;
-use e2etest::TestCase;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
 use httpapi::ColumnName;
@@ -94,23 +93,7 @@ const MAX_ALTERNATOR_INDEX_NAME_LEN: usize = MAX_ALTERNATOR_TABLE_NAME_LEN;
 /// See <https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/HowItWorks.NamingRulesDataTypes.html>.
 const MAX_ALTERNATOR_ATTRIBUTE_NAME_LEN: usize = 255;
 
-#[framed]
-pub(crate) async fn test_cases() -> Vec<(String, TestCase<TestActors>)> {
-    vec![
-        ("alternator_create_table".into(), create_table::new().await),
-        ("alternator_update_table".into(), update_table::new().await),
-        ("alternator_put_item".into(), put_item::new().await),
-        ("alternator_delete_item".into(), delete_item::new().await),
-        ("alternator_update_item".into(), update_item::new().await),
-        (
-            "alternator_batch_write_item".into(),
-            batch_write_item::new().await,
-        ),
-        ("alternator_ttl".into(), ttl::new().await),
-        ("alternator_query".into(), query::new().await),
-        ("alternator_types".into(), types::new().await),
-    ]
-}
+e2etest::group!(name = alternator, fixtures = (), parent = crate::validator);
 
 const ALTERNATOR_PORT: u16 = 8000;
 
@@ -634,10 +617,10 @@ where
 /// Standard test init: starts ScyllaDB with the Alternator endpoint enabled on
 /// each node's own IP, alongside the Vector Store.
 #[framed]
-pub async fn init(actors: TestActors) {
+pub async fn init(actors: &TestActors) {
     info!("started");
 
-    let mut scylla_configs = common::get_default_scylla_node_configs(&actors).await;
+    let mut scylla_configs = common::get_default_scylla_node_configs(actors).await;
 
     for config in &mut scylla_configs {
         let node_ip = config.db_ip;
@@ -653,7 +636,7 @@ pub async fn init(actors: TestActors) {
 
     // Capture db_ip before actors is moved into init_with_config.
     let db_ip = actors.services_subnet.ip(common::DB_OCTET_1);
-    let vs_configs = common::get_default_vs_node_configs(&actors).await;
+    let vs_configs = common::get_default_vs_node_configs(actors).await;
     common::init_with_config(actors, scylla_configs, vs_configs).await;
 
     wait_for_alternator(db_ip).await;

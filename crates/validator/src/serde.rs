@@ -6,32 +6,38 @@
 use crate::TestActors;
 use crate::common;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use scylla::statement::{Consistency, Statement};
 use scylla::value::CqlValue;
+use std::sync::Arc;
 use std::time::Duration;
 
 const CDC_WAIT: Duration = Duration::from_secs(2);
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, common::init)
-        .with_cleanup(timeout, common::cleanup)
-        .with_test(
-            "test_serialization_deserialization_all_types",
-            timeout,
-            test_serialization_deserialization_all_types,
-        )
-        .with_test("test_varint_filter", timeout, test_varint_filter)
-        .with_test("test_decimal_key", timeout, test_decimal_key)
-        .with_test("test_decimal_filter", timeout, test_decimal_filter)
+e2etest::group!(
+    name = serde,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn test_serialization_deserialization_all_types(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        common::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = serde)]
+async fn test_serialization_deserialization_all_types(actors: Arc<TestActors>) {
     let (session, clients) = common::prepare_connection(&actors).await;
 
     let cases = vec![
@@ -102,8 +108,8 @@ async fn test_serialization_deserialization_all_types(actors: TestActors) {
         .expect("failed to drop keyspace");
 }
 
-#[framed]
-async fn test_varint_filter(actors: TestActors) {
+#[e2etest::test(group = serde)]
+async fn test_varint_filter(actors: Arc<TestActors>) {
     let (session, clients) = common::prepare_connection(&actors).await;
     let keyspace = create_keyspace(&session).await;
 
@@ -203,8 +209,8 @@ async fn test_varint_filter(actors: TestActors) {
 /// - CK is semantic: `3.14` and `3.140` are the same row (overwrite).
 ///
 /// Verified via index_status.count and direct VS ANN queries (not CQL).
-#[framed]
-async fn test_decimal_key(actors: TestActors) {
+#[e2etest::test(group = serde)]
+async fn test_decimal_key(actors: Arc<TestActors>) {
     let (session, clients) = common::prepare_connection(&actors).await;
     let client = clients.first().unwrap();
     let keyspace = create_keyspace(&session).await;
@@ -325,8 +331,8 @@ async fn test_decimal_key(actors: TestActors) {
 /// Verify decimal filters use semantic BigDecimal comparison (not byte/unscaled comparison).
 /// Tests PK byte-identity (pk=1.0 vs pk=1.00 are separate partitions) and CK semantic
 /// comparison (cross-scale ordering, unnormalized CK match, beyond-i64 values).
-#[framed]
-async fn test_decimal_filter(actors: TestActors) {
+#[e2etest::test(group = serde)]
+async fn test_decimal_filter(actors: Arc<TestActors>) {
     let (session, clients) = common::prepare_connection(&actors).await;
     let keyspace = create_keyspace(&session).await;
 

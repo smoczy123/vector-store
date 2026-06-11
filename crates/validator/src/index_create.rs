@@ -6,10 +6,8 @@
 use crate::TestActors;
 use crate::common;
 use crate::common::CreateIndexQuery;
-use crate::common::DEFAULT_TEST_TIMEOUT;
 use crate::common::TableName;
 use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::IndexInfo;
 use httpapi::KeyspaceName;
 use httpclient::HttpClient;
@@ -17,32 +15,27 @@ use scylla::client::session::Session;
 use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, common::init)
-        .with_cleanup(timeout, common::cleanup)
-        .with_test(
-            "global_index_without_filtering_columns",
-            timeout,
-            global_index_without_filtering_columns,
-        )
-        .with_test(
-            "global_index_with_filtering_columns",
-            timeout,
-            global_index_with_filtering_columns,
-        )
-        .with_test(
-            "local_index_without_filtering_columns",
-            timeout,
-            local_index_without_filtering_columns,
-        )
-        .with_test(
-            "local_index_with_filtering_columns",
-            timeout,
-            local_index_with_filtering_columns,
-        )
+e2etest::group!(
+    name = index_create,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        common::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }
 
 #[framed]
@@ -96,8 +89,8 @@ async fn wait_for_index(clients: &[HttpClient], index: &IndexInfo) {
     }
 }
 
-#[framed]
-async fn global_index_without_filtering_columns(actors: TestActors) {
+#[e2etest::test(group = index_create)]
+async fn global_index_without_filtering_columns(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients, keyspace, table) = init_keyspace_table(&actors).await;
@@ -121,8 +114,8 @@ async fn global_index_without_filtering_columns(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn global_index_with_filtering_columns(actors: TestActors) {
+#[e2etest::test(group = index_create)]
+async fn global_index_with_filtering_columns(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients, keyspace, table) = init_keyspace_table(&actors).await;
@@ -150,8 +143,8 @@ async fn global_index_with_filtering_columns(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn local_index_without_filtering_columns(actors: TestActors) {
+#[e2etest::test(group = index_create)]
+async fn local_index_without_filtering_columns(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients, keyspace, table) = init_keyspace_table(&actors).await;
@@ -178,8 +171,8 @@ async fn local_index_without_filtering_columns(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn local_index_with_filtering_columns(actors: TestActors) {
+#[e2etest::test(group = index_create)]
+async fn local_index_with_filtering_columns(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients, keyspace, table) = init_keyspace_table(&actors).await;

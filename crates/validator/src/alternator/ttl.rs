@@ -10,20 +10,18 @@
 //! from the index.
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use aws_sdk_dynamodb::types::AttributeValue;
-use aws_sdk_dynamodb::types::Select;
-use aws_sdk_dynamodb::types::TimeToLiveSpecification;
-use e2etest::TestCase;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
 use crate::alternator::TableShape;
 use crate::alternator::query::QueryBuilderExt;
+use crate::common;
+use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::types::ScalarAttributeType;
+use aws_sdk_dynamodb::types::Select;
+use aws_sdk_dynamodb::types::TimeToLiveSpecification;
+use std::sync::Arc;
+use tracing::info;
 
 /// Enables DynamoDB TTL on `ttl_attribute` for the given table.
 async fn enable_ttl(client: &aws_sdk_dynamodb::Client, table_name: &str, ttl_attribute: &str) {
@@ -57,8 +55,8 @@ fn ttl_epoch(seconds_from_now: i64) -> i64 {
 /// index count to drop to 2.
 ///
 /// Covers both HASH-only and HASH+RANGE key schemas.
-#[framed]
-async fn ttl_expiration_removes_vector(actors: TestActors) {
+#[e2etest::test(group = ttl)]
+async fn ttl_expiration_removes_vector(actors: Arc<TestActors>) {
     info!("started");
 
     let shapes: &[TableShape] = &[
@@ -121,8 +119,8 @@ async fn ttl_expiration_removes_vector(actors: TestActors) {
 
 /// Like [`ttl_expiration_removes_vector`] but uses `Select::AllProjectedAttributes`
 /// - an index-only read that skips the base table.
-#[framed]
-async fn ttl_expiration_verified_via_query_with_all_projected(actors: TestActors) {
+#[e2etest::test(group = ttl)]
+async fn ttl_expiration_verified_via_query_with_all_projected(actors: Arc<TestActors>) {
     info!("started");
 
     let shape = TableShape {
@@ -191,18 +189,25 @@ async fn ttl_expiration_verified_via_query_with_all_projected(actors: TestActors
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "ttl_expiration_removes_vector",
-            common::DEFAULT_TEST_TIMEOUT,
-            ttl_expiration_removes_vector,
-        )
-        .with_test(
-            "ttl_expiration_verified_via_query_with_all_projected",
-            common::DEFAULT_TEST_TIMEOUT,
-            ttl_expiration_verified_via_query_with_all_projected,
-        )
+e2etest::group!(
+    name = ttl,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

@@ -103,7 +103,7 @@ jobs:
     - name: Set testcases output
       id: testcases
       run: |
-        echo "testcases=[$(./vector-search-validator list | cut -d : -f 1 | sort | uniq | xargs -n 1 -I '{}' echo \"{}\" | paste -sd,)]" >> "$GITHUB_OUTPUT"
+        echo "testcases=[$(./vector-search-validator list | sed -E 's/(.*)::.*/\1/' | sort | uniq | xargs -n 1 -I '{}' echo \"{}\" | paste -sd,)]" >> "$GITHUB_OUTPUT"
 
   validator-tests:
     needs: ["validator-scylla-nightly-digest", "validator-build"]

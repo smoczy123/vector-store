@@ -23,8 +23,9 @@ mod serde;
 mod similarity_functions;
 mod tls_reload;
 
-use async_backtrace::framed;
-use e2etest::TestCase;
+use clap::Parser;
+use clap::Subcommand;
+use e2etest::Config;
 use e2etest_dns::Dns;
 use e2etest_dns::DnsExt;
 use e2etest_firewall::Firewall;
@@ -38,7 +39,10 @@ use std::env;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use tokio::time;
+use tracing::error;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -46,8 +50,24 @@ use tracing_subscriber::filter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-#[derive(clap::Args)]
+#[derive(Parser)]
+#[clap(version)]
 struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Print the list of available tests and exit.
+    List,
+
+    /// Run the E2E tests.
+    Run(RunArgs),
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
     /// IP address for the DNS server to bind to. Must be a loopback address.
     #[arg(short, long, default_value = "127.0.1.1", value_name = "IP")]
     dns_ip: Ipv4Addr,
@@ -83,9 +103,19 @@ struct Args {
     /// Path to the Vector Store executable.
     #[arg(value_name = "PATH")]
     vector_store: PathBuf,
+
+    /// Filters to select specific tests to run.
+    /// The syntax is as follows:
+    ///     `<partially_matching_test_group_name>::<partially_matching_test_case_name>`
+    /// Wrap either side in double quotes to require an exact match, for example:
+    ///     `"crud"::`
+    ///     `::"simple_create"`
+    /// Without specifying `::`, the filter will try to match both the group and test names.
+    #[arg(value_name = "FILTER")]
+    filters: Vec<String>,
 }
 
-fn init(args: &Args) {
+fn init(args: RunArgs) -> Config {
     let ansi = !args.disable_colors;
     let rust_log = if args.verbose {
         "info"
@@ -121,12 +151,12 @@ fn init(args: &Args) {
                 .with_writer(std::io::stdout),
         )
         .init();
-}
 
-#[framed]
-/// Returns a vector of all known test cases to be run. Each test case is registered with a name
-async fn register() -> Vec<(String, TestCase<TestActors>)> {
-    test_cases().await.collect()
+    args.filters
+        .iter()
+        .fold(Config::default(), |acc, filter| acc.with_filter(filter))
+        .with_permanent_fixture(args)
+        .with_default_timeout(common::DEFAULT_TEST_TIMEOUT)
 }
 
 fn validate_different_subnet(dns_ip: Ipv4Addr, base_ip: Ipv4Addr) {
@@ -138,52 +168,50 @@ fn validate_different_subnet(dns_ip: Ipv4Addr, base_ip: Ipv4Addr) {
     );
 }
 
-async fn fixture(args: &Args) -> TestActors {
-    validate_different_subnet(args.dns_ip, args.base_ip);
+e2etest::group!(name = validator, fixtures = (TestActors));
 
-    let services_subnet = Arc::new(ServicesSubnet::new(args.base_ip));
-    let tls = e2etest_tls::new(&common::get_default_db_ips_for_subnet(&services_subnet)).await;
-    let dns = e2etest_dns::new(args.dns_ip).await;
-    let firewall = e2etest_firewall::new().await;
-    let db = e2etest_scylla_cluster::new(
-        args.scylla.clone(),
-        args.scylla_default_conf.clone(),
-        args.tmpdir.clone(),
-        args.verbose,
-    )
-    .await;
-    let vs = e2etest_vector_store_cluster::new(
-        args.vector_store.clone(),
-        args.verbose,
-        args.disable_colors,
-        args.tmpdir.clone(),
-    )
-    .await;
-    let db_proxy = e2etest_scylla_proxy_cluster::new().await;
+pub async fn run() {
+    let args = Args::parse();
+    let root = validator();
+    let stats = match args.command {
+        Command::List => {
+            root.test_names().into_iter().for_each(|name| {
+                println!("{name}");
+            });
+            return;
+        }
+        Command::Run(args) => e2etest::run(init(args), root).await,
+    };
 
-    info!(
-        "{} version: {}",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION")
-    );
-    let version = db.version().await;
-    info!("scylla version: {}", version);
-    info!("dns version: {}", dns.version().await);
-    info!("vector-store version: {}", vs.version().await);
+    info!("Waiting for all tasks to finish...");
+    if time::timeout(common::DEFAULT_TEST_TIMEOUT, async {
+        while Handle::current().metrics().num_alive_tasks() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_err()
+    {
+        error!("Timed out waiting for tasks to finish");
+    } else {
+        info!("All tasks finished");
+    }
 
-    TestActors {
-        services_subnet,
-        tls,
-        dns,
-        firewall,
-        db,
-        vs,
-        db_proxy,
+    if !stats.is_success() {
+        error!(
+            "{error_list}",
+            error_list = format_failed_names(&stats.failed_names())
+        );
     }
 }
 
-pub fn run() -> Result<(), &'static str> {
-    e2etest::run(env::args_os(), init, register, fixture)
+pub(crate) fn format_failed_names(failed_names: &[String]) -> String {
+    let failed_names = failed_names
+        .iter()
+        .map(|name| format!("- {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("List of failures:\n{failed_names}")
 }
 
 /// Represents a subnet for services, derived from a base IP address.
@@ -222,31 +250,51 @@ struct TestActors {
     pub(crate) db_proxy: mpsc::Sender<ScyllaProxyCluster>,
 }
 
-#[framed]
-pub async fn test_cases() -> impl Iterator<Item = (String, TestCase<TestActors>)> {
-    vec![
-        ("ann", ann::new().await),
-        ("auth", auth::new().await),
-        ("cdc", cdc::new().await),
-        ("connection_timeout", connection_timeout::new().await),
-        ("crud", crud::new().await),
-        ("db_timeout", db_timeout::new().await),
-        ("filtering", filtering::new().await),
-        ("full_scan", full_scan::new().await),
-        ("high_availability", high_availability::new().await),
-        ("index_status", index_status::new().await),
-        ("index_create", index_create::new().await),
-        ("reconnect", reconnect::new().await),
-        ("routing", routing::new().await),
-        ("serde", serde::new().await),
-        ("similarity_function", similarity_functions::new().await),
-        ("tls_reload", tls_reload::new().await),
-        (
-            "quantization_and_rescoring",
-            quantization_and_rescoring::new().await,
-        ),
-    ]
-    .into_iter()
-    .map(|(name, test_case)| (name.to_string(), test_case))
-    .chain(alternator::test_cases().await)
+impl e2etest::Fixture for TestActors {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        let args = setup.get::<RunArgs>().await.unwrap();
+
+        validate_different_subnet(args.dns_ip, args.base_ip);
+
+        let services_subnet = Arc::new(ServicesSubnet::new(args.base_ip));
+        let tls = e2etest_tls::new(&common::get_default_db_ips_for_subnet(&services_subnet)).await;
+        let dns = e2etest_dns::new(args.dns_ip).await;
+        let firewall = e2etest_firewall::new().await;
+        let db = e2etest_scylla_cluster::new(
+            args.scylla.clone(),
+            args.scylla_default_conf.clone(),
+            args.tmpdir.clone(),
+            args.verbose,
+        )
+        .await;
+        let vs = e2etest_vector_store_cluster::new(
+            args.vector_store.clone(),
+            args.verbose,
+            args.disable_colors,
+            args.tmpdir.clone(),
+        )
+        .await;
+        let db_proxy = e2etest_scylla_proxy_cluster::new().await;
+
+        info!(
+            "{} version: {}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
+        let version = db.version().await;
+        info!("scylla version: {}", version);
+        info!("dns version: {}", dns.version().await);
+        info!("vector-store version: {}", vs.version().await);
+
+        Self {
+            services_subnet,
+            tls,
+            dns,
+            firewall,
+            db,
+            vs,
+            db_proxy,
+        }
+    }
+    async fn teardown(self) {}
 }

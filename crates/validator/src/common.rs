@@ -205,25 +205,25 @@ pub fn get_proxy_translation_map(
 }
 
 #[framed]
-pub async fn init(actors: TestActors) {
+pub async fn init(actors: &TestActors) {
     info!("started");
 
-    let scylla_configs = get_default_scylla_node_configs(&actors).await;
-    let vs_configs = get_default_vs_node_configs(&actors).await;
+    let scylla_configs = get_default_scylla_node_configs(actors).await;
+    let vs_configs = get_default_vs_node_configs(actors).await;
     init_with_config(actors, scylla_configs, vs_configs).await;
 
     info!("finished");
 }
 
 #[framed]
-pub async fn init_with_proxy(actors: TestActors) {
+pub async fn init_with_proxy(actors: &TestActors) {
     info!("started");
 
-    init_dns(&actors).await;
+    init_dns(actors).await;
 
     // Proxy operates at CQL frame level and cannot handle TLS, so ScyllaDB
     // must be started without TLS when using the proxy.
-    let scylla_configs: Vec<ScyllaNodeConfig> = get_default_scylla_node_configs(&actors)
+    let scylla_configs: Vec<ScyllaNodeConfig> = get_default_scylla_node_configs(actors)
         .await
         .into_iter()
         .map(|mut c| {
@@ -232,8 +232,8 @@ pub async fn init_with_proxy(actors: TestActors) {
             c
         })
         .collect();
-    let scylla_proxy_configs = get_default_scylla_proxy_node_configs(&actors).await;
-    let mut vs_configs = get_proxy_vs_node_configs(&actors);
+    let scylla_proxy_configs = get_default_scylla_proxy_node_configs(actors).await;
+    let mut vs_configs = get_proxy_vs_node_configs(actors);
 
     actors.db.start(scylla_configs).await;
     assert!(actors.db.wait_for_ready().await);
@@ -254,14 +254,14 @@ pub async fn init_with_proxy(actors: TestActors) {
 }
 
 #[framed]
-pub async fn init_with_proxy_single_vs(actors: TestActors) {
+pub async fn init_with_proxy_single_vs(actors: &TestActors) {
     info!("started");
 
-    init_dns(&actors).await;
+    init_dns(actors).await;
 
     // Proxy operates at CQL frame level and cannot handle TLS, so ScyllaDB
     // must be started without TLS when using the proxy.
-    let mut scylla_configs: Vec<ScyllaNodeConfig> = get_default_scylla_node_configs(&actors)
+    let mut scylla_configs: Vec<ScyllaNodeConfig> = get_default_scylla_node_configs(actors)
         .await
         .into_iter()
         .map(|mut c| {
@@ -282,8 +282,8 @@ pub async fn init_with_proxy_single_vs(actors: TestActors) {
         config.primary_vs_uris = vec![first_vs_url.clone()];
         config.secondary_vs_uris = vec![];
     });
-    let scylla_proxy_configs = get_default_scylla_proxy_node_configs(&actors).await;
-    let mut vs_configs: Vec<_> = get_proxy_vs_node_configs(&actors)
+    let scylla_proxy_configs = get_default_scylla_proxy_node_configs(actors).await;
+    let mut vs_configs: Vec<_> = get_proxy_vs_node_configs(actors)
         .into_iter()
         .take(1)
         .collect();
@@ -316,11 +316,11 @@ pub async fn init_dns(actors: &TestActors) {
 
 #[framed]
 pub async fn init_with_config(
-    actors: TestActors,
+    actors: &TestActors,
     scylla_configs: Vec<ScyllaNodeConfig>,
     vs_configs: Vec<VectorStoreNodeConfig>,
 ) {
-    init_dns(&actors).await;
+    init_dns(actors).await;
 
     actors.db.start(scylla_configs).await;
     assert!(actors.db.wait_for_ready().await);
@@ -329,7 +329,7 @@ pub async fn init_with_config(
 }
 
 #[framed]
-pub async fn cleanup(actors: TestActors) {
+pub async fn cleanup(actors: &TestActors) {
     info!("started");
     for name in VS_NAMES.iter() {
         actors.dns.remove(name.to_string()).await;

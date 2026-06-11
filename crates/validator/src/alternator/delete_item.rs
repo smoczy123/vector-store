@@ -4,16 +4,14 @@
  */
 
 use crate::TestActors;
-use crate::common;
-use async_backtrace::framed;
-use e2etest::TestCase;
-use tracing::info;
-
 use crate::alternator;
 use crate::alternator::Item;
 use crate::alternator::TableContext;
+use crate::common;
+use std::sync::Arc;
+use tracing::info;
 
-async fn delete_item(ctx: &TableContext, item: &Item) {
+async fn ctx_delete_item(ctx: &TableContext, item: &Item) {
     let mut req = ctx.client.delete_item().table_name(&ctx.table_name);
     let key_attrs: Vec<&str> = std::iter::once(ctx.shape.pk())
         .chain(ctx.shape.sk())
@@ -32,8 +30,8 @@ async fn delete_item(ctx: &TableContext, item: &Item) {
 /// Loops [`alternator::name_patterns`] so that every combination
 /// of key schema (HASH-only / HASH+RANGE) and naming style (plain /
 /// special) is covered.
-#[framed]
-async fn delete_item_updates_index(actors: TestActors) {
+#[e2etest::test(group = delete_item)]
+async fn delete_item_updates_index(actors: Arc<TestActors>) {
     info!("started");
 
     for shape in &alternator::name_patterns() {
@@ -50,7 +48,7 @@ async fn delete_item_updates_index(actors: TestActors) {
                 .await;
 
         info!("Deleting item from '{}'", ctx.table_name);
-        delete_item(&ctx, &a).await;
+        ctx_delete_item(&ctx, &a).await;
 
         ctx.wait_for_count(2).await;
         ctx.wait_for_ann([1.0, 1.0, 1.0], &[b.clone(), c]).await;
@@ -62,13 +60,25 @@ async fn delete_item_updates_index(actors: TestActors) {
     info!("finished");
 }
 
-pub(super) async fn new() -> TestCase<TestActors> {
-    TestCase::empty()
-        .with_init(common::DEFAULT_TEST_TIMEOUT, alternator::init)
-        .with_cleanup(common::DEFAULT_TEST_TIMEOUT, common::cleanup)
-        .with_test(
-            "delete_item_updates_index",
-            common::DEFAULT_TEST_TIMEOUT,
-            delete_item_updates_index,
-        )
+e2etest::group!(
+    name = delete_item,
+    fixtures = (Fixture),
+    parent = alternator::alternator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        alternator::init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        common::cleanup(&self.actors).await;
+    }
 }

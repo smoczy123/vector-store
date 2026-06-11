@@ -5,41 +5,31 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::IndexStatus;
+use std::sync::Arc;
 use tracing::info;
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "simple_create_drop_index",
-            timeout,
-            simple_create_drop_index,
-        )
-        .with_test(
-            "simple_create_drop_multiple_indexes",
-            timeout,
-            simple_create_drop_multiple_indexes,
-        )
-        .with_test(
-            "drop_table_removes_index",
-            timeout,
-            drop_table_removes_index,
-        )
-        .with_test(
-            "null_vector_is_not_indexed",
-            timeout,
-            null_vector_is_not_indexed,
-        )
+e2etest::group!(name = crud, fixtures = (Fixture), parent = crate::validator);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
-async fn simple_create_drop_index(actors: TestActors) {
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = crud)]
+async fn simple_create_drop_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -84,8 +74,8 @@ async fn simple_create_drop_index(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn simple_create_drop_multiple_indexes(actors: TestActors) {
+#[e2etest::test(group = crud)]
+async fn simple_create_drop_multiple_indexes(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -211,8 +201,8 @@ async fn simple_create_drop_multiple_indexes(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn drop_table_removes_index(actors: TestActors) {
+#[e2etest::test(group = crud)]
+async fn drop_table_removes_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -273,8 +263,8 @@ async fn drop_table_removes_index(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn null_vector_is_not_indexed(actors: TestActors) {
+#[e2etest::test(group = crud)]
+async fn null_vector_is_not_indexed(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;

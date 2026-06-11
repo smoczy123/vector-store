@@ -147,7 +147,7 @@ jobs:
     - name: Set testcases output
       id: testcases
       run: |
-        echo "testcases=[$(./vector-search-validator-amd64 list | cut -d : -f 1 | sort | uniq | xargs -n 1 -I '{}' echo \"{}\" | paste -sd,)]" >> "$GITHUB_OUTPUT"
+        echo "testcases=[$(./vector-search-validator-amd64 list | sed -E 's/(.*)::.*/\1/' | sort | uniq | xargs -n 1 -I '{}' echo \"{}\" | paste -sd,)]" >> "$GITHUB_OUTPUT"
 
   daily-validator-tests:
     needs: ["daily-get-scylla-nightly-digest", "daily-get-testcases"]

@@ -8,11 +8,11 @@ use crate::common;
 use crate::common::TableName;
 use crate::common::*;
 use async_backtrace::framed;
-use e2etest::TestCase;
 use httpapi::IndexInfo;
 use httpclient::HttpClient;
 use scylla::client::session::Session;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::info;
 
 /// Generate test vectors for quantization precision testing
@@ -65,42 +65,37 @@ async fn insert_vectors(session: &Session, table: &TableName, embeddings: &HashM
     }
 }
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "non_quantized_index_returns_correctly_ranked_vectors",
-            timeout,
-            non_quantized_index_returns_correctly_ranked_vectors,
-        )
-        .with_test(
-            "quantized_index_returns_incorrectly_ranked_vectors_due_to_precision_loss",
-            timeout,
-            quantized_index_returns_incorrectly_ranked_vectors_due_to_precision_loss,
-        )
-        .with_test(
-            "rescoring_ranks_results_correctly_for_quantized_index",
-            timeout,
-            rescoring_ranks_results_correctly_for_quantized_index,
-        )
-        .with_test(
-            "searching_and_rescoring_works_for_binary_quantization",
-            timeout,
-            searching_and_rescoring_works_for_binary_quantization,
-        )
+e2etest::group!(
+    name = quantization_and_rescoring,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
 }
 
-#[framed]
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
+}
+
+#[e2etest::test(group = quantization_and_rescoring)]
 // This test confirms that with full f32 precision, the vector search can distinguish
 // between very similar vectors and rank them correctly. The test vectors are generated
 // with small, incremental differences. A correct implementation should order them by their
 // primary key (pk), which corresponds to their increasing distance from the query vector.
 // The success of this test depends on the underlying floating-point precision (f32) being
 // sufficient to handle the small differences in the test data.
-async fn non_quantized_index_returns_correctly_ranked_vectors(actors: TestActors) {
+async fn non_quantized_index_returns_correctly_ranked_vectors(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -158,7 +153,7 @@ async fn non_quantized_index_returns_correctly_ranked_vectors(actors: TestActors
     info!("finished");
 }
 
-#[framed]
+#[e2etest::test(group = quantization_and_rescoring)]
 // This test verifies that i8 quantization leads to a loss of precision.
 // Test vectors are generated such that their distance from the query vector increases
 // with their primary key (pk). The differences are small and are lost when vectors
@@ -171,7 +166,7 @@ async fn non_quantized_index_returns_correctly_ranked_vectors(actors: TestActors
 // We assert that the results are NOT sorted by pk, which would be the correct order
 // if full precision were maintained. This demonstrates the effect of precision loss.
 async fn quantized_index_returns_incorrectly_ranked_vectors_due_to_precision_loss(
-    actors: TestActors,
+    actors: Arc<TestActors>,
 ) {
     info!("started");
 
@@ -230,7 +225,7 @@ async fn quantized_index_returns_incorrectly_ranked_vectors_due_to_precision_los
     info!("finished");
 }
 
-#[framed]
+#[e2etest::test(group = quantization_and_rescoring)]
 // This test demonstrates that rescoring can correct the ranking inaccuracies introduced by quantization.
 //
 // The initial search is performed on the quantized (i8) index. As shown in the previous test,
@@ -239,7 +234,7 @@ async fn quantized_index_returns_incorrectly_ranked_vectors_due_to_precision_los
 // By enabling rescoring, the system recalculates the exact distances using the original, full-precision
 // vectors for a set of top candidates. This corrects the ranking. The test asserts that the final
 // results are sorted by primary key (pk), confirming that rescoring successfully restored the correct order.
-async fn rescoring_ranks_results_correctly_for_quantized_index(actors: TestActors) {
+async fn rescoring_ranks_results_correctly_for_quantized_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;
@@ -298,10 +293,10 @@ async fn rescoring_ranks_results_correctly_for_quantized_index(actors: TestActor
     info!("finished");
 }
 
-#[framed]
+#[e2etest::test(group = quantization_and_rescoring)]
 // Binary quantization has a special implementation in vector-store.
 // Hence we need to verify that search and rescoring also work correctly with it.
-async fn searching_and_rescoring_works_for_binary_quantization(actors: TestActors) {
+async fn searching_and_rescoring_works_for_binary_quantization(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection(&actors).await;

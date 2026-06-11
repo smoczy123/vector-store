@@ -5,8 +5,6 @@
 
 use crate::TestActors;
 use crate::common::*;
-use async_backtrace::framed;
-use e2etest::TestCase;
 use e2etest_scylla_proxy_cluster::ScyllaProxyClusterExt;
 use httpapi::IndexInfo;
 use httpapi::IndexStatus;
@@ -15,43 +13,34 @@ use scylla_proxy::Condition;
 use scylla_proxy::Reaction;
 use scylla_proxy::RequestReaction;
 use scylla_proxy::RequestRule;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
 const ANN_LIMIT: usize = 5;
 const FRAME_DELAY: Duration = Duration::from_millis(100);
 
-#[framed]
-pub(crate) async fn new() -> TestCase<TestActors> {
-    let timeout = DEFAULT_TEST_TIMEOUT;
-    TestCase::empty()
-        .with_init(timeout, init_with_proxy_single_vs)
-        .with_cleanup(timeout, cleanup)
-        .with_test(
-            "ann_routes_to_serving_index_while_replacement_is_bootstrapping",
-            timeout,
-            ann_routes_to_serving_index_while_replacement_is_bootstrapping,
-        )
-        .with_test(
-            "ann_does_not_route_between_columns_while_requested_index_is_bootstrapping",
-            timeout,
-            ann_does_not_route_between_columns_while_requested_index_is_bootstrapping,
-        )
-        .with_test(
-            "ann_returns_not_found_for_nonexistent_index",
-            timeout,
-            ann_returns_not_found_for_nonexistent_index,
-        )
-        .with_test(
-            "ann_returns_unavailable_when_only_index_is_bootstrapping",
-            timeout,
-            ann_returns_unavailable_when_only_index_is_bootstrapping,
-        )
-        .with_test(
-            "ann_returns_not_found_after_index_is_dropped",
-            timeout,
-            ann_returns_not_found_after_index_is_dropped,
-        )
+e2etest::group!(
+    name = routing,
+    fixtures = (Fixture),
+    parent = crate::validator
+);
+
+struct Fixture {
+    actors: Arc<TestActors>,
+}
+
+impl e2etest::Fixture for Fixture {
+    async fn setup(setup: &mut impl e2etest::Setup) -> Self {
+        setup.setup::<TestActors>().await;
+        let actors = setup.get::<TestActors>().await.unwrap();
+        init_with_proxy_single_vs(&actors).await;
+        Self { actors }
+    }
+
+    async fn teardown(self) {
+        cleanup(&self.actors).await;
+    }
 }
 
 async fn wait_for_bootstrapping(client: &HttpClient, index: &IndexInfo) {
@@ -72,8 +61,8 @@ async fn wait_for_bootstrapping(client: &HttpClient, index: &IndexInfo) {
     .await;
 }
 
-#[framed]
-async fn ann_routes_to_serving_index_while_replacement_is_bootstrapping(actors: TestActors) {
+#[e2etest::test(group = routing)]
+async fn ann_routes_to_serving_index_while_replacement_is_bootstrapping(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -169,9 +158,9 @@ async fn ann_routes_to_serving_index_while_replacement_is_bootstrapping(actors: 
     info!("finished");
 }
 
-#[framed]
+#[e2etest::test(group = routing)]
 async fn ann_does_not_route_between_columns_while_requested_index_is_bootstrapping(
-    actors: TestActors,
+    actors: Arc<TestActors>,
 ) {
     info!("started");
 
@@ -243,8 +232,8 @@ async fn ann_does_not_route_between_columns_while_requested_index_is_bootstrappi
     info!("finished");
 }
 
-#[framed]
-async fn ann_returns_not_found_for_nonexistent_index(actors: TestActors) {
+#[e2etest::test(group = routing)]
+async fn ann_returns_not_found_for_nonexistent_index(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, _clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -275,8 +264,8 @@ async fn ann_returns_not_found_for_nonexistent_index(actors: TestActors) {
     info!("finished");
 }
 
-#[framed]
-async fn ann_returns_unavailable_when_only_index_is_bootstrapping(actors: TestActors) {
+#[e2etest::test(group = routing)]
+async fn ann_returns_unavailable_when_only_index_is_bootstrapping(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
@@ -336,8 +325,8 @@ async fn ann_returns_unavailable_when_only_index_is_bootstrapping(actors: TestAc
     info!("finished");
 }
 
-#[framed]
-async fn ann_returns_not_found_after_index_is_dropped(actors: TestActors) {
+#[e2etest::test(group = routing)]
+async fn ann_returns_not_found_after_index_is_dropped(actors: Arc<TestActors>) {
     info!("started");
 
     let (session, clients) = prepare_connection_single_vs_no_tls(&actors).await;
