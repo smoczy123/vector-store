@@ -215,7 +215,7 @@ async fn simple_create_search_delete_index() {
             ("pk".to_string().into(), NativeType::Int),
             ("ck".to_string().into(), NativeType::Text),
         ],
-        Some(db_basic::scan_fn([
+        Some(db_basic::scan_fn_vectors([
             (
                 [CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
                 Some(vec![1., 1., 1.].into()),
@@ -419,7 +419,7 @@ async fn ann_returns_bad_request_when_provided_vector_size_is_not_eq_index_dimen
             ("pk".to_string().into(), NativeType::Int),
             ("ck".to_string().into(), NativeType::Text),
         ],
-        Some(db_basic::scan_fn([(
+        Some(db_basic::scan_fn_vectors([(
             [CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
             Some(vec![1., 1., 1.].into()),
             Timestamp::from_unix_timestamp(10),
@@ -457,7 +457,7 @@ async fn ann_returns_bad_request_when_filtering_required_but_not_allowed() {
             (pk_column.clone(), NativeType::Int),
             (ck_column.clone(), NativeType::Int),
         ],
-        Some(db_basic::scan_fn([(
+        Some(db_basic::scan_fn_vectors([(
             [CqlValue::Int(1), CqlValue::Int(1)].into(),
             Some(vec![1., 1., 1.].into()),
             Timestamp::from_unix_timestamp(10),
@@ -548,7 +548,7 @@ async fn ann_failed_when_wrong_number_of_primary_keys() {
         vec!["pk".into()],
         1,
         [("pk".into(), NativeType::Int)],
-        Some(db_basic::scan_fn([(
+        Some(db_basic::scan_fn_vectors([(
             [CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
             Some(vec![1., 1., 1.].into()),
             Timestamp::from_unix_timestamp(10),
@@ -898,15 +898,15 @@ async fn setup_int_int_store() -> (
             (pk_column.clone(), NativeType::Int),
             (ck_column.clone(), NativeType::Int),
         ],
-        Some(db_basic::scan_fn((0..INT_INT_VECTOR_COUNT as i32).map(
-            |i| {
+        Some(db_basic::scan_fn_vectors(
+            (0..INT_INT_VECTOR_COUNT as i32).map(|i| {
                 (
                     [CqlValue::Int(i / 10), CqlValue::Int(i % 10)].into(),
                     Some(vec![i as f32, i as f32, i as f32].into()),
                     Timestamp::from_unix_timestamp(10),
                 )
-            },
-        ))),
+            }),
+        )),
         None,
         Some(INT_INT_VECTOR_COUNT),
     )
@@ -1388,7 +1388,7 @@ async fn ann_filter_partition_key_text_gt() {
             (pk_column.clone(), NativeType::Text),
             (ck_column.clone(), NativeType::Int),
         ],
-        Some(db_basic::scan_fn(
+        Some(db_basic::scan_fn_vectors(
             ["a", "b", "c", "d", "e"].iter().enumerate().map(|(i, pk)| {
                 (
                     [CqlValue::Text(pk.to_string()), CqlValue::Int(i as i32)].into(),
@@ -1476,7 +1476,7 @@ async fn http_server_is_responsive_when_index_add_hangs() {
             ("pk".to_string().into(), NativeType::Int),
             ("ck".to_string().into(), NativeType::Text),
         ],
-        Some(db_basic::scan_fn([(
+        Some(db_basic::scan_fn_vectors([(
             [CqlValue::Int(1), CqlValue::Text("one".to_string())].into(),
             Some(vec![1., 1., 1.].into()),
             Timestamp::from_unix_timestamp(10),
@@ -1504,7 +1504,7 @@ async fn null_vector_is_not_indexed() {
         ["pk".into()],
         1,
         [("pk".to_string().into(), NativeType::Int)],
-        Some(db_basic::scan_fn([
+        Some(db_basic::scan_fn_vectors([
             (
                 [CqlValue::Int(1)].into(),
                 Some(vec![1., 1., 1.].into()),
@@ -1592,7 +1592,7 @@ async fn similarity_scores_are_decreasing_and_correctly_converted() {
     // scores (using 1/(1+d)) are 1/(1+0)=1.0, 1/(1+1)=0.5, 1/(1+9)=0.1.
     db.add_index(
         index.clone(),
-        Some(db_basic::scan_fn([
+        Some(db_basic::scan_fn_vectors([
             (
                 [CqlValue::Int(1)].into(),
                 Some(vec![0.0_f32].into()),

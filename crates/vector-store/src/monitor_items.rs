@@ -8,11 +8,16 @@ use crate::DbIndexedRow;
 use crate::DbIndexedValue;
 use crate::IndexKey;
 use crate::Metrics;
-use crate::index::Index;
-use crate::index::IndexExt;
+use crate::fts_index::FtsIndex;
+use crate::fts_index::FtsIndexExt;
 use crate::perf;
 use crate::table::Operation;
+use crate::table::PartitionId;
+use crate::table::PrimaryId;
 use crate::table::TableAdd;
+use crate::vs_index::VsIndex;
+use crate::vs_index::VsIndexExt;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::mpsc;
@@ -23,15 +28,102 @@ use tracing::debug;
 use tracing::error;
 use tracing::error_span;
 
+pub(crate) trait IndexDispatch {
+    fn add_value(
+        &self,
+        partition_id: PartitionId,
+        primary_id: PrimaryId,
+        value: DbIndexedValue,
+        in_progress: Option<AsyncInProgress>,
+    ) -> impl Future<Output = ()> + Send;
+
+    fn remove_value(
+        &self,
+        partition_id: PartitionId,
+        primary_id: PrimaryId,
+        in_progress: Option<AsyncInProgress>,
+    ) -> impl Future<Output = ()> + Send;
+
+    fn remove_partition(&self, partition_id: PartitionId) -> impl Future<Output = ()> + Send;
+}
+
+impl IndexDispatch for mpsc::Sender<VsIndex> {
+    async fn add_value(
+        &self,
+        partition_id: PartitionId,
+        primary_id: PrimaryId,
+        value: DbIndexedValue,
+        in_progress: Option<AsyncInProgress>,
+    ) {
+        match value {
+            DbIndexedValue::Vector(vector) => {
+                self.add_vector(partition_id, primary_id, vector, in_progress)
+                    .await;
+            }
+            DbIndexedValue::Document(_) => {
+                error!("received document for vector-search index, ignoring");
+            }
+        }
+    }
+
+    async fn remove_value(
+        &self,
+        partition_id: PartitionId,
+        primary_id: PrimaryId,
+        in_progress: Option<AsyncInProgress>,
+    ) {
+        self.remove_vector(partition_id, primary_id, in_progress)
+            .await;
+    }
+
+    async fn remove_partition(&self, partition_id: PartitionId) {
+        VsIndexExt::remove_partition(self, partition_id).await;
+    }
+}
+
+impl IndexDispatch for mpsc::Sender<FtsIndex> {
+    async fn add_value(
+        &self,
+        _partition_id: PartitionId,
+        primary_id: PrimaryId,
+        value: DbIndexedValue,
+        in_progress: Option<AsyncInProgress>,
+    ) {
+        match value {
+            DbIndexedValue::Document(document) => {
+                self.add_document(primary_id, document, in_progress).await;
+            }
+            DbIndexedValue::Vector(_) => {
+                error!("received vector for full-text-search index, ignoring");
+            }
+        }
+    }
+
+    async fn remove_value(
+        &self,
+        _partition_id: PartitionId,
+        primary_id: PrimaryId,
+        in_progress: Option<AsyncInProgress>,
+    ) {
+        self.remove_document(primary_id, in_progress).await;
+    }
+
+    async fn remove_partition(&self, _partition_id: PartitionId) {}
+}
+
 pub(crate) enum MonitorItems {}
 
-pub(crate) async fn new(
+pub(crate) async fn new<T>(
     key: IndexKey,
     table: Arc<RwLock<impl TableAdd + Send + Sync + 'static>>,
     mut embeddings: Receiver<(DbIndexedRow, Option<AsyncInProgress>)>,
-    index: Sender<Index>,
+    index: mpsc::Sender<T>,
     metrics: Arc<Metrics>,
-) -> anyhow::Result<Sender<MonitorItems>> {
+) -> anyhow::Result<Sender<MonitorItems>>
+where
+    T: Send + 'static,
+    mpsc::Sender<T>: IndexDispatch,
+{
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
     let key_for_span = key.clone();
 
@@ -58,9 +150,9 @@ pub(crate) async fn new(
     Ok(tx)
 }
 
-async fn add(
+async fn add<I: IndexDispatch>(
     table: &Arc<RwLock<impl TableAdd>>,
-    index: &Sender<Index>,
+    index: &I,
     embedding: DbIndexedRow,
     mut in_progress: Option<AsyncInProgress>,
     metrics: &Metrics,
@@ -86,16 +178,9 @@ async fn add(
                 is_update,
             } => {
                 let op_label = if is_update { "update" } else { "insert" };
-                match value {
-                    DbIndexedValue::Vector(vector) => {
-                        index
-                            .add_vector(partition_id, primary_id, vector, in_progress.take())
-                            .await;
-                    }
-                    DbIndexedValue::Document(_document) => {
-                        error!("FTS document indexing not yet implemented");
-                    }
-                }
+                index
+                    .add_value(partition_id, primary_id, value, in_progress.take())
+                    .await;
                 metrics
                     .modified
                     .with_label_values(&[key.keyspace().as_ref(), key.index().as_ref(), op_label])
@@ -105,14 +190,14 @@ async fn add(
                 primary_id,
                 partition_id,
             } => {
-                index.remove_vector(partition_id, primary_id, None).await;
+                index.remove_value(partition_id, primary_id, None).await;
             }
             Operation::RemoveValue {
                 primary_id,
                 partition_id,
             } => {
                 index
-                    .remove_vector(partition_id, primary_id, in_progress.take())
+                    .remove_value(partition_id, primary_id, in_progress.take())
                     .await;
                 metrics
                     .modified
@@ -131,9 +216,11 @@ async fn add(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DbIndexedValue;
     use crate::Timestamp;
     use crate::metrics::Metrics;
     use crate::table::MockTableAdd;
+    use crate::vs_index::VsIndex;
     use anyhow::anyhow;
     use mockall::predicate::*;
     use scylla::value::CqlValue;
@@ -166,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn do_nothing_on_error() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -201,7 +288,7 @@ mod tests {
     #[tokio::test]
     async fn add_vector_with_progress() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -239,7 +326,7 @@ mod tests {
             .send((embedding, Some(AsyncInProgress(tx_progress))))
             .await
             .unwrap();
-        let Index::AddVector {
+        let VsIndex::AddVector {
             primary_id,
             partition_id,
             embedding,
@@ -261,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn add_vector_without_progress() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -295,7 +382,7 @@ mod tests {
                 }])
             });
         tx_embeddings.send((embedding, None)).await.unwrap();
-        let Some(Index::AddVector {
+        let Some(VsIndex::AddVector {
             partition_id,
             primary_id,
             embedding,
@@ -317,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn update_vector() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -358,7 +445,7 @@ mod tests {
             });
         tx_embeddings.send((embedding, None)).await.unwrap();
 
-        let Some(Index::RemoveVector {
+        let Some(VsIndex::RemoveVector {
             partition_id,
             primary_id,
             in_progress: None,
@@ -369,7 +456,7 @@ mod tests {
         assert_eq!(primary_id, 2.into());
         assert_eq!(partition_id, 3.into());
 
-        let Some(Index::AddVector {
+        let Some(VsIndex::AddVector {
             partition_id,
             primary_id,
             embedding,
@@ -390,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn insert_and_update_in_single_batch() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -440,7 +527,7 @@ mod tests {
         tx_embeddings.send((embedding, None)).await.unwrap();
 
         // First: plain insert
-        let Some(Index::AddVector {
+        let Some(VsIndex::AddVector {
             partition_id,
             primary_id,
             embedding,
@@ -455,7 +542,7 @@ mod tests {
         assert!(in_progress.is_none());
 
         // Second: remove half of the update
-        let Some(Index::RemoveVector {
+        let Some(VsIndex::RemoveVector {
             partition_id,
             primary_id,
             in_progress: None,
@@ -467,7 +554,7 @@ mod tests {
         assert_eq!(partition_id, 4.into());
 
         // Third: add half of the update
-        let Some(Index::AddVector {
+        let Some(VsIndex::AddVector {
             partition_id,
             primary_id,
             embedding,
@@ -488,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn remove_vector() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -521,7 +608,7 @@ mod tests {
             });
         tx_embeddings.send((embedding, None)).await.unwrap();
 
-        let Some(Index::RemoveVector {
+        let Some(VsIndex::RemoveVector {
             partition_id,
             primary_id,
             in_progress: None,
@@ -540,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn remove_partition() {
         let (tx_embeddings, rx_embeddings) = mpsc::channel(10);
-        let (tx_index, mut rx_index) = mpsc::channel(10);
+        let (tx_index, mut rx_index) = mpsc::channel::<VsIndex>(10);
         let metrics: Arc<Metrics> = Arc::new(Metrics::new());
         let table = Arc::new(RwLock::new(MockTableAdd::new()));
         let index_key = IndexKey::new(&"vector".to_string().into(), &"store".to_string().into());
@@ -572,7 +659,7 @@ mod tests {
             });
         tx_embeddings.send((embedding, None)).await.unwrap();
 
-        let Some(Index::RemovePartition { partition_id }) = rx_index.recv().await else {
+        let Some(VsIndex::RemovePartition { partition_id }) = rx_index.recv().await else {
             unreachable!();
         };
         assert_eq!(partition_id, 6.into());

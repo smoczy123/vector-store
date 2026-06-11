@@ -11,9 +11,9 @@ mod db_index_backend;
 mod distance;
 mod engine;
 mod file_monitor;
+mod fts_index;
 mod httproutes;
 mod httpserver;
-mod index;
 mod index_key;
 mod indexes;
 mod info;
@@ -32,6 +32,7 @@ mod table;
 mod timestamp;
 pub mod tls;
 mod vector;
+mod vs_index;
 mod worker;
 
 pub use crate::config_manager::ConfigManager;
@@ -54,8 +55,6 @@ pub use crate::table::PartitionId;
 pub use crate::table::PrimaryId;
 pub use crate::timestamp::Timestamp;
 use db::Db;
-use index::factory;
-pub use index::factory::IndexFactory;
 use scylla::cluster::metadata::ColumnType;
 use scylla::serialize::SerializationError;
 use scylla::serialize::value::SerializeValue;
@@ -79,6 +78,7 @@ use tokio::sync::watch;
 use utoipa::openapi::OpenApi;
 use uuid::Uuid;
 pub use vector::Vector;
+pub use vs_index::factory::VsIndexFactory;
 
 /// A CQL string literal that is always properly single-quoted when formatted
 /// for use in CQL statements.
@@ -688,16 +688,20 @@ pub async fn run(
     node_state: Sender<NodeState>,
     db_actor: Sender<Db>,
     internals: Sender<Internals>,
-    index_factory: Box<dyn IndexFactory + Send + Sync>,
+    index_factory: Box<dyn VsIndexFactory + Send + Sync>,
     receivers: ConfigReceivers,
 ) -> anyhow::Result<(Sender<HttpServer>, Sender<HttpServer>)> {
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
     let indexes = Arc::new(RwLock::new(Indexes::new()));
-
+    let fts_index_factory: Box<dyn fts_index::FtsIndexFactory + Send + Sync> =
+        Box::new(fts_index::TantivyIndexFactory);
     let engine = engine::new(
         db_actor,
-        index_factory,
+        engine::IndexFactories {
+            vs: index_factory,
+            fts: fts_index_factory,
+        },
         node_state.clone(),
         metrics.clone(),
         Arc::clone(&indexes),
@@ -749,15 +753,15 @@ pub fn new_internals() -> Sender<Internals> {
 
 pub fn new_index_factory_usearch(
     config_tx: watch::Receiver<Arc<Config>>,
-) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::usearch::new_usearch(config_tx)?))
+) -> anyhow::Result<Box<dyn VsIndexFactory + Send + Sync>> {
+    Ok(Box::new(vs_index::usearch::new_usearch(config_tx)?))
 }
 
 pub fn new_index_factory_opensearch(
     addr: String,
     config_rx: watch::Receiver<Arc<Config>>,
-) -> anyhow::Result<Box<dyn IndexFactory + Send + Sync>> {
-    Ok(Box::new(index::opensearch::new_opensearch(
+) -> anyhow::Result<Box<dyn VsIndexFactory + Send + Sync>> {
+    Ok(Box::new(vs_index::opensearch::new_opensearch(
         &addr, config_rx,
     )?))
 }

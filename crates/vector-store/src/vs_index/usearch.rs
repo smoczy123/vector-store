@@ -7,16 +7,12 @@ use crate::Config;
 use crate::Dimensions;
 use crate::Distance;
 use crate::Filter;
-use crate::IndexFactory;
 use crate::IndexKey;
 use crate::Limit;
 use crate::Quantization;
 use crate::SpaceType;
 use crate::Vector;
-use crate::index::actor::AnnR;
-use crate::index::actor::Index;
-use crate::index::factory::IndexConfiguration;
-use crate::index::validator;
+use crate::VsIndexFactory;
 use crate::memory::Allocate;
 use crate::memory::Memory;
 use crate::memory::MemoryExt;
@@ -26,6 +22,10 @@ use crate::table::PartitionId;
 use crate::table::PrimaryId;
 use crate::table::Table;
 use crate::table::TableSearch;
+use crate::vs_index::actor::AnnR;
+use crate::vs_index::actor::VsIndex;
+use crate::vs_index::factory::VsIndexConfiguration;
+use crate::vs_index::validator;
 use crate::worker;
 use crate::worker::Worker;
 use crate::worker::WorkerExt;
@@ -60,13 +60,13 @@ pub struct UsearchIndexFactory {
     mode: Mode,
 }
 
-impl IndexFactory for UsearchIndexFactory {
+impl VsIndexFactory for UsearchIndexFactory {
     fn create_index(
         &self,
-        index: IndexConfiguration,
+        index: VsIndexConfiguration,
         table: Arc<RwLock<Table>>,
         memory: mpsc::Sender<Memory>,
-    ) -> anyhow::Result<mpsc::Sender<Index>> {
+    ) -> anyhow::Result<mpsc::Sender<VsIndex>> {
         match &self.mode {
             Mode::Usearch => {
                 let options = IndexOptions {
@@ -508,7 +508,7 @@ impl From<Quantization> for ScalarKind {
 }
 
 mod operation {
-    use super::Index;
+    use super::VsIndex;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -522,14 +522,14 @@ mod operation {
         Search,
     }
 
-    impl From<&Index> for Mode {
-        fn from(msg: &Index) -> Self {
+    impl From<&VsIndex> for Mode {
+        fn from(msg: &VsIndex) -> Self {
             match msg {
-                Index::AddVector { .. } => Mode::Insert,
-                Index::RemoveVector { .. } => Mode::Remove,
-                Index::Ann { .. } | Index::FilteredAnn { .. } => Mode::Search,
-                Index::RemovePartition { .. } => todo!(),
-                Index::Count { .. } => unreachable!(),
+                VsIndex::AddVector { .. } => Mode::Insert,
+                VsIndex::RemoveVector { .. } => Mode::Remove,
+                VsIndex::Ann { .. } | VsIndex::FilteredAnn { .. } => Mode::Search,
+                VsIndex::RemovePartition { .. } => todo!(),
+                VsIndex::Count { .. } => unreachable!(),
             }
         }
     }
@@ -604,7 +604,7 @@ mod operation {
         }
 
         #[hotpath::measure]
-        pub(super) async fn permit_for_message(&mut self, msg: &Index) -> Permit {
+        pub(super) async fn permit_for_message(&mut self, msg: &VsIndex) -> Permit {
             self.permit(msg.into()).await
         }
 
@@ -684,7 +684,7 @@ fn new<I: UsearchIndex + Send + Sync + 'static>(
     table: Arc<RwLock<impl TableSearch + Send + Sync + 'static>>,
     worker: async_channel::Sender<Worker>,
     memory: mpsc::Sender<Memory>,
-) -> anyhow::Result<mpsc::Sender<Index>> {
+) -> anyhow::Result<mpsc::Sender<VsIndex>> {
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
 
     tokio::spawn(perf::hotpath_async(
@@ -739,14 +739,14 @@ fn preprocess<'a, I, T>(
     partitions: &mut BTreeMap<PartitionId, Arc<PartitionState<I>>>,
     table: &RwLock<T>,
     dimensions: Dimensions,
-    msg: Index,
-) -> Option<(&'a mut IndexState, Arc<PartitionState<I>>, Index)>
+    msg: VsIndex,
+) -> Option<(&'a mut IndexState, Arc<PartitionState<I>>, VsIndex)>
 where
     I: UsearchIndex + Send + Sync + 'static,
     T: TableSearch + Send + Sync + 'static,
 {
     match msg {
-        Index::AddVector { partition_id, .. } => {
+        VsIndex::AddVector { partition_id, .. } => {
             let index_id = partition_id.index_id();
             if let Some(partition) = partitions.get(&partition_id) {
                 let Some(state) = states.get_mut(&index_id) else {
@@ -770,7 +770,7 @@ where
             Some((state, partition, msg))
         }
 
-        Index::Ann {
+        VsIndex::Ann {
             index_key,
             embedding,
             limit,
@@ -795,7 +795,7 @@ where
             Some((
                 state,
                 partition,
-                Index::Ann {
+                VsIndex::Ann {
                     embedding,
                     limit,
                     tx,
@@ -804,7 +804,7 @@ where
             ))
         }
 
-        Index::FilteredAnn {
+        VsIndex::FilteredAnn {
             index_key,
             embedding,
             filter,
@@ -834,7 +834,7 @@ where
                 return None;
             };
             let msg = if let Some(restrictions) = restrictions {
-                Index::FilteredAnn {
+                VsIndex::FilteredAnn {
                     embedding,
                     limit,
                     filter: Filter {
@@ -845,7 +845,7 @@ where
                     index_key,
                 }
             } else {
-                Index::Ann {
+                VsIndex::Ann {
                     embedding,
                     limit,
                     tx,
@@ -855,7 +855,7 @@ where
             Some((state, partition, msg))
         }
 
-        Index::Count { index_key, tx } => {
+        VsIndex::Count { index_key, tx } => {
             let Some(index_id) = table.read().unwrap().index_id(&index_key) else {
                 let err = anyhow!("index id not found for index key {index_key:?}");
                 warn!("index count: {err}");
@@ -869,7 +869,7 @@ where
             None
         }
 
-        Index::RemoveVector { partition_id, .. } => {
+        VsIndex::RemoveVector { partition_id, .. } => {
             let index_id = partition_id.index_id();
             states
                 .get_mut(&index_id)
@@ -877,7 +877,7 @@ where
                 .map(|(state, partition)| (state, Arc::clone(partition), msg))
         }
 
-        Index::RemovePartition { partition_id } => {
+        VsIndex::RemovePartition { partition_id } => {
             if let Some(idx) = partitions.remove(&partition_id) {
                 idx.stop();
             };
@@ -892,12 +892,12 @@ async fn dispatch_task<I, T>(
     partition: Arc<PartitionState<I>>,
     table: &Arc<RwLock<T>>,
     worker: &async_channel::Sender<Worker>,
-    msg: Index,
+    msg: VsIndex,
 ) where
     I: UsearchIndex + Send + Sync + 'static,
     T: TableSearch + Send + Sync + 'static,
 {
-    if let Index::AddVector { .. } = &msg
+    if let VsIndex::AddVector { .. } = &msg
         && partition.needs_more_capacity().is_some()
     {
         let operation_permit = state.operation.permit_for_reserve().await;
@@ -935,8 +935,8 @@ async fn dispatch_task<I, T>(
 }
 
 #[hotpath::measure]
-fn is_non_blocking(msg: &Index) -> bool {
-    matches!(msg, Index::Ann { .. })
+fn is_non_blocking(msg: &VsIndex) -> bool {
+    matches!(msg, VsIndex::Ann { .. })
 }
 
 #[hotpath::measure]
@@ -945,20 +945,20 @@ fn process<I, T>(
     table: Arc<RwLock<T>>,
     dimensions: Dimensions,
     size: Arc<AtomicUsize>,
-    msg: Index,
+    msg: VsIndex,
 ) where
     I: UsearchIndex + Send + Sync + 'static,
     T: TableSearch + Send + Sync + 'static,
 {
     match msg {
-        Index::AddVector {
+        VsIndex::AddVector {
             primary_id,
             embedding,
             in_progress: _in_progress,
             ..
         } => add(partition, primary_id, &embedding, &size),
 
-        Index::Ann {
+        VsIndex::Ann {
             embedding,
             limit,
             tx,
@@ -969,7 +969,7 @@ fn process<I, T>(
             }
         }
 
-        Index::FilteredAnn {
+        VsIndex::FilteredAnn {
             embedding,
             limit,
             filter,
@@ -981,15 +981,15 @@ fn process<I, T>(
             }
         }
 
-        Index::Count { .. } => unreachable!(),
+        VsIndex::Count { .. } => unreachable!(),
 
-        Index::RemoveVector {
+        VsIndex::RemoveVector {
             primary_id,
             in_progress: _in_progress,
             ..
         } => remove(partition, primary_id, &size),
 
-        Index::RemovePartition { .. } => unreachable!(),
+        VsIndex::RemovePartition { .. } => unreachable!(),
     }
 }
 
@@ -1147,12 +1147,12 @@ fn filtered_ann<I>(
 
 #[hotpath::measure]
 fn check_memory_allocation(
-    msg: &Index,
+    msg: &VsIndex,
     rx_allocate: &watch::Receiver<Allocate>,
     allocate_prev: &mut Allocate,
     key: &IndexKey,
 ) -> bool {
-    if !matches!(msg, Index::AddVector { .. }) {
+    if !matches!(msg, VsIndex::AddVector { .. }) {
         return true;
     }
 
@@ -1201,10 +1201,10 @@ mod tests {
     use super::*;
     use crate::Config;
     use crate::IndexKey;
-    use crate::index::IndexExt;
     use crate::memory;
     use crate::table::IndexIdGenerator;
     use crate::table::MockTableSearch;
+    use crate::vs_index::VsIndexExt;
     use mockall::predicate::*;
     use scylla::value::CqlValue;
     use std::num::NonZeroUsize;
@@ -1217,7 +1217,7 @@ mod tests {
 
     fn add_concurrently(
         partition_id: PartitionId,
-        index: mpsc::Sender<Index>,
+        index: mpsc::Sender<VsIndex>,
         threads: usize,
         adds_per_worker: usize,
         dimensions: NonZeroUsize,
@@ -1244,7 +1244,7 @@ mod tests {
 
     fn search_concurrently(
         index_key: IndexKey,
-        index: mpsc::Sender<Index>,
+        index: mpsc::Sender<VsIndex>,
         threads: usize,
         searches_per_worker: usize,
         dimensions: NonZeroUsize,

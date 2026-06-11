@@ -4,6 +4,7 @@
  */
 
 mod db_basic;
+mod fts;
 mod https;
 mod info;
 mod memory_limit;

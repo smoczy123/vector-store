@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 pub(crate) type AnnR = anyhow::Result<(Vec<PrimaryKey>, Vec<Distance>)>;
 pub(crate) type CountR = anyhow::Result<usize>;
 
-pub enum Index {
+pub enum VsIndex {
     AddVector {
         partition_id: PartitionId,
         primary_id: PrimaryId,
@@ -51,7 +51,7 @@ pub enum Index {
     },
 }
 
-pub(crate) trait IndexExt {
+pub(crate) trait VsIndexExt {
     async fn add_vector(
         &self,
         partition_id: PartitionId,
@@ -77,7 +77,7 @@ pub(crate) trait IndexExt {
     async fn count(&self, index_key: IndexKey) -> CountR;
 }
 
-impl IndexExt for mpsc::Sender<Index> {
+impl VsIndexExt for mpsc::Sender<VsIndex> {
     #[hotpath::measure]
     async fn add_vector(
         &self,
@@ -86,7 +86,7 @@ impl IndexExt for mpsc::Sender<Index> {
         embedding: Vector,
         in_progress: Option<AsyncInProgress>,
     ) {
-        self.send(Index::AddVector {
+        self.send(VsIndex::AddVector {
             partition_id,
             primary_id,
             embedding,
@@ -103,7 +103,7 @@ impl IndexExt for mpsc::Sender<Index> {
         primary_id: PrimaryId,
         in_progress: Option<AsyncInProgress>,
     ) {
-        self.send(Index::RemoveVector {
+        self.send(VsIndex::RemoveVector {
             partition_id,
             primary_id,
             in_progress,
@@ -114,7 +114,7 @@ impl IndexExt for mpsc::Sender<Index> {
 
     #[hotpath::measure]
     async fn remove_partition(&self, partition_id: PartitionId) {
-        self.send(Index::RemovePartition { partition_id })
+        self.send(VsIndex::RemovePartition { partition_id })
             .await
             .expect("internal actor should receive request");
     }
@@ -122,7 +122,7 @@ impl IndexExt for mpsc::Sender<Index> {
     #[hotpath::measure]
     async fn ann(&self, index_key: IndexKey, embedding: Vector, limit: Limit) -> AnnR {
         let (tx, rx) = oneshot::channel();
-        self.send(Index::Ann {
+        self.send(VsIndex::Ann {
             index_key,
             embedding,
             limit,
@@ -141,7 +141,7 @@ impl IndexExt for mpsc::Sender<Index> {
         limit: Limit,
     ) -> AnnR {
         let (tx, rx) = oneshot::channel();
-        self.send(Index::FilteredAnn {
+        self.send(VsIndex::FilteredAnn {
             index_key,
             embedding,
             filter,
@@ -155,7 +155,7 @@ impl IndexExt for mpsc::Sender<Index> {
     #[hotpath::measure]
     async fn count(&self, index_key: IndexKey) -> CountR {
         let (tx, rx) = oneshot::channel();
-        self.send(Index::Count { index_key, tx }).await?;
+        self.send(VsIndex::Count { index_key, tx }).await?;
         rx.await?
     }
 }

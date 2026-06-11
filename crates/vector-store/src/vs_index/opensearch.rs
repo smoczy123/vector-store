@@ -8,21 +8,21 @@ use crate::Dimensions;
 use crate::Distance;
 use crate::ExpansionAdd;
 use crate::ExpansionSearch;
-use crate::IndexFactory;
 use crate::IndexKey;
 use crate::Limit;
 use crate::PartitionId;
 use crate::SpaceType;
 use crate::Vector;
-use crate::index::actor::Index;
-use crate::index::factory::IndexConfiguration;
-use crate::index::validator;
+use crate::VsIndexFactory;
 use crate::memory::Memory;
 use crate::perf;
 use crate::table::IndexIdGenerator;
 use crate::table::PrimaryId;
 use crate::table::Table;
 use crate::table::TableSearch;
+use crate::vs_index::actor::VsIndex;
+use crate::vs_index::factory::VsIndexConfiguration;
+use crate::vs_index::validator;
 use anyhow::anyhow;
 use opensearch::DeleteParts;
 use opensearch::IndexParts;
@@ -84,13 +84,13 @@ impl Display for SpaceType {
     }
 }
 
-impl IndexFactory for OpenSearchIndexFactory {
+impl VsIndexFactory for OpenSearchIndexFactory {
     fn create_index(
         &self,
-        index: IndexConfiguration,
+        index: VsIndexConfiguration,
         table: Arc<RwLock<Table>>,
         _: mpsc::Sender<Memory>,
-    ) -> anyhow::Result<mpsc::Sender<Index>> {
+    ) -> anyhow::Result<mpsc::Sender<VsIndex>> {
         new(
             index.key,
             index.dimensions,
@@ -218,7 +218,7 @@ pub fn new(
     space_type: SpaceType,
     table: Arc<RwLock<impl TableSearch + Send + Sync + 'static>>,
     client: Arc<OpenSearch>,
-) -> anyhow::Result<mpsc::Sender<Index>> {
+) -> anyhow::Result<mpsc::Sender<VsIndex>> {
     info!("Creating new index with key: {key}");
     let (tx, mut rx) = mpsc::channel(perf::channel_size().into());
 
@@ -273,7 +273,7 @@ pub fn new(
 }
 
 async fn process(
-    msg: Index,
+    msg: VsIndex,
     dimensions: Dimensions,
     space_type: SpaceType,
     index_key: Arc<IndexKey>,
@@ -281,18 +281,18 @@ async fn process(
     client: Arc<OpenSearch>,
 ) {
     match msg {
-        Index::AddVector {
+        VsIndex::AddVector {
             primary_id,
             embedding,
             in_progress: _in_progress,
             ..
         } => add(index_key, primary_id, &embedding, client).await,
-        Index::RemoveVector {
+        VsIndex::RemoveVector {
             primary_id,
             in_progress: _in_progress,
             ..
         } => remove(index_key, primary_id, client).await,
-        Index::Ann {
+        VsIndex::Ann {
             embedding,
             limit,
             tx,
@@ -303,8 +303,8 @@ async fn process(
             )
             .await
         }
-        Index::FilteredAnn { tx, .. } => filtered_ann(tx).await,
-        Index::Count { tx, .. } => count(index_key, tx, client).await,
+        VsIndex::FilteredAnn { tx, .. } => filtered_ann(tx).await,
+        VsIndex::Count { tx, .. } => count(index_key, tx, client).await,
 
         _ => todo!(),
     }
