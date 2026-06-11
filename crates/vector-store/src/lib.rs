@@ -11,6 +11,7 @@ mod db_index_backend;
 mod distance;
 mod engine;
 mod file_monitor;
+mod fts_index;
 mod httproutes;
 mod httpserver;
 mod index_key;
@@ -54,8 +55,6 @@ pub use crate::table::PartitionId;
 pub use crate::table::PrimaryId;
 pub use crate::timestamp::Timestamp;
 use db::Db;
-use vs_index::factory;
-pub use vs_index::factory::VsIndexFactory;
 use scylla::cluster::metadata::ColumnType;
 use scylla::serialize::SerializationError;
 use scylla::serialize::value::SerializeValue;
@@ -79,6 +78,7 @@ use tokio::sync::watch;
 use utoipa::openapi::OpenApi;
 use uuid::Uuid;
 pub use vector::Vector;
+pub use vs_index::factory::VsIndexFactory;
 
 /// A CQL string literal that is always properly single-quoted when formatted
 /// for use in CQL statements.
@@ -694,10 +694,14 @@ pub async fn run(
     let metrics: Arc<Metrics> = Arc::new(metrics::Metrics::new());
     let index_engine_version = index_factory.index_engine_version();
     let indexes = Arc::new(RwLock::new(Indexes::new()));
-
+    let fts_index_factory: Box<dyn fts_index::FtsIndexFactory + Send + Sync> =
+        Box::new(fts_index::TantivyIndexFactory);
     let engine = engine::new(
         db_actor,
-        index_factory,
+        engine::IndexFactories {
+            vs: index_factory,
+            fts: fts_index_factory,
+        },
         node_state.clone(),
         metrics.clone(),
         Arc::clone(&indexes),

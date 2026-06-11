@@ -12,8 +12,7 @@ use crate::SimilarityScore;
 use crate::distance;
 use crate::engine::Engine;
 use crate::engine::EngineExt;
-use crate::vs_index::VsIndexExt;
-use crate::vs_index::validator;
+use crate::fts_index::FtsIndexExt;
 use crate::indexes;
 use crate::indexes::Indexes;
 use crate::info::Info;
@@ -24,6 +23,8 @@ use crate::node_state::NodeState;
 use crate::node_state::NodeStateExt;
 use crate::perf;
 use crate::vector;
+use crate::vs_index;
+use crate::vs_index::VsIndexExt;
 use anyhow::anyhow;
 use anyhow::bail;
 use axum::Router;
@@ -252,16 +253,13 @@ impl From<crate::SimilarityScore> for httpapi::SimilarityScore {
 async fn get_indexes(State(state): State<RoutesInnerState>) -> Response {
     let indexes: Vec<_> = state
         .engine
-        .get_index_keys()
+        .get_vs_index_keys()
         .await
         .iter()
-        .filter_map(|(key, options)| {
-            let vs = options.as_vs()?;
-            Some(IndexInfo {
-                keyspace: key.keyspace().into(),
-                index: key.index().into(),
-                data_type: vs.quantization.into(),
-            })
+        .map(|(key, vs)| IndexInfo {
+            keyspace: key.keyspace().into(),
+            index: key.index().into(),
+            data_type: vs.quantization.into(),
         })
         .collect();
     (StatusCode::OK, response::Json(indexes)).into_response()
@@ -325,18 +323,30 @@ async fn get_index_status(
     let keyspace_name: crate::KeyspaceName = keyspace_name.into();
     let index_name: crate::IndexName = index_name.into();
     let index_key = IndexKey::new(&keyspace_name, &index_name);
-    let Some((index, status)) = state
-        .indexes
-        .read()
-        .unwrap()
-        .get(&index_key)
-        .map(|index| (index.index(), index.status()))
-    else {
-        let msg = format!("missing index: {keyspace_name}.{index_name}");
-        debug!("get_index_status: {msg}");
-        return (StatusCode::NOT_FOUND, msg).into_response();
+
+    enum IndexSender {
+        Vs(Sender<crate::vs_index::VsIndex>),
+        Fts(Sender<crate::fts_index::FtsIndex>),
+    }
+
+    let (index, status) = {
+        let indexes = state.indexes.read().unwrap();
+        if let Some(entry) = indexes.get_vs(&index_key) {
+            (IndexSender::Vs(entry.index().clone()), entry.status())
+        } else if let Some(entry) = indexes.get_fts(&index_key) {
+            (IndexSender::Fts(entry.index().clone()), entry.status())
+        } else {
+            let msg = format!("missing index: {keyspace_name}.{index_name}");
+            debug!("get_index_status: {msg}");
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        }
     };
-    match index.count(index_key).await {
+
+    let count_result = match index {
+        IndexSender::Vs(s) => s.count(index_key).await,
+        IndexSender::Fts(s) => s.count(index_key).await,
+    };
+    match count_result {
         Err(err) => {
             let msg = format!("index.count request error: {err}");
             debug!("get_index_status: {msg}");
@@ -361,7 +371,7 @@ async fn get_metrics(
         let keyspace = crate::KeyspaceName::from(keyspace_str);
         let index_name = crate::IndexName::from(index_name_str);
         let key = IndexKey::new(&keyspace, &index_name);
-        if let Some((index, _)) = state.engine.get_index(key.clone()).await
+        if let Some((index, _)) = state.engine.get_vs_index(key.clone()).await
             && let Ok(count) = index.count(key).await
         {
             state
@@ -626,7 +636,7 @@ async fn post_index_ann(
         timer.observe_duration();
 
         match search_result {
-            Err(err) => match err.downcast_ref::<validator::Error>() {
+            Err(err) => match err.downcast_ref::<vs_index::Error>() {
                 Some(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
                 None => {
                     let msg = format!("index.ann request error: {err}");
