@@ -1,0 +1,324 @@
+/*
+ * Copyright 2026-present ScyllaDB
+ * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
+ */
+
+use crate::PrimaryKey;
+use crate::Timestamp;
+use crate::table::ColumnVec;
+use crate::table::PrimaryId;
+use crate::table::TValue;
+use anyhow::bail;
+use scylla::cluster::metadata::NativeType;
+use scylla::value::CqlDate;
+use scylla::value::CqlDecimal;
+use scylla::value::CqlTime;
+use scylla::value::CqlTimestamp;
+use scylla::value::CqlTimeuuid;
+use scylla::value::CqlValue;
+use scylla::value::CqlVarint;
+use std::net::IpAddr;
+use uuid::Uuid;
+
+/// A newtype for defining the offset of the key column.
+#[derive(Clone, Copy, Debug, derive_more::From, derive_more::Into)]
+pub(super) struct KeyOffset(usize);
+
+/// An enum that represents a column in the table. It can be a column with values of a specific
+/// type or a primary key column (as an offset in the primary key columns).
+#[derive(Debug)]
+pub(super) enum Column {
+    Ascii(ColumnVec<PrimaryId, TValue<String>>),
+    BigInt(ColumnVec<PrimaryId, TValue<i64>>),
+    Blob(ColumnVec<PrimaryId, TValue<Vec<u8>>>),
+    Boolean(ColumnVec<PrimaryId, TValue<bool>>),
+    Date(ColumnVec<PrimaryId, TValue<CqlDate>>),
+    Decimal(ColumnVec<PrimaryId, TValue<CqlDecimal>>),
+    Double(ColumnVec<PrimaryId, TValue<f64>>),
+    Float(ColumnVec<PrimaryId, TValue<f32>>),
+    Inet(ColumnVec<PrimaryId, TValue<IpAddr>>),
+    Int(ColumnVec<PrimaryId, TValue<i32>>),
+    SmallInt(ColumnVec<PrimaryId, TValue<i16>>),
+    Text(ColumnVec<PrimaryId, TValue<String>>),
+    Time(ColumnVec<PrimaryId, TValue<CqlTime>>),
+    Timestamp(ColumnVec<PrimaryId, TValue<CqlTimestamp>>),
+    Timeuuid(ColumnVec<PrimaryId, TValue<CqlTimeuuid>>),
+    TinyInt(ColumnVec<PrimaryId, TValue<i8>>),
+    Uuid(ColumnVec<PrimaryId, TValue<Uuid>>),
+    Varint(ColumnVec<PrimaryId, TValue<CqlVarint>>),
+    PrimaryKey(KeyOffset),
+}
+
+impl Column {
+    pub(super) fn new(native_type: &NativeType) -> anyhow::Result<Self> {
+        Ok(match native_type {
+            NativeType::Ascii => Self::Ascii(ColumnVec::new()),
+            NativeType::BigInt => Self::BigInt(ColumnVec::new()),
+            NativeType::Blob => Self::Blob(ColumnVec::new()),
+            NativeType::Boolean => Self::Boolean(ColumnVec::new()),
+            NativeType::Date => Self::Date(ColumnVec::new()),
+            NativeType::Decimal => Self::Decimal(ColumnVec::new()),
+            NativeType::Double => Self::Double(ColumnVec::new()),
+            NativeType::Float => Self::Float(ColumnVec::new()),
+            NativeType::Inet => Self::Inet(ColumnVec::new()),
+            NativeType::Int => Self::Int(ColumnVec::new()),
+            NativeType::SmallInt => Self::SmallInt(ColumnVec::new()),
+            NativeType::Text => Self::Text(ColumnVec::new()),
+            NativeType::Time => Self::Time(ColumnVec::new()),
+            NativeType::Timestamp => Self::Timestamp(ColumnVec::new()),
+            NativeType::Timeuuid => Self::Timeuuid(ColumnVec::new()),
+            NativeType::TinyInt => Self::TinyInt(ColumnVec::new()),
+            NativeType::Uuid => Self::Uuid(ColumnVec::new()),
+            NativeType::Varint => Self::Varint(ColumnVec::new()),
+            _ => bail!("Unsupported native type: {native_type:?}"),
+        })
+    }
+
+    pub(super) fn resize_with(&mut self, size: usize) {
+        let timestamp = Timestamp::UNIX_EPOCH;
+        match self {
+            Self::Ascii(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::BigInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Blob(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Boolean(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Date(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Decimal(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Double(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Float(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Inet(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Int(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::SmallInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Text(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Time(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Timestamp(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Timeuuid(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::TinyInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Uuid(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::Varint(vec) => vec.resize_with(size, || TValue::None(timestamp)),
+            Self::PrimaryKey(_) => {}
+        }
+    }
+
+    #[allow(dead_code)]
+    fn insert_cqlvalue(
+        &mut self,
+        primary_id: PrimaryId,
+        timestamp: Timestamp,
+        value: CqlValue,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Ascii(vec) => {
+                let CqlValue::Ascii(value) = value else {
+                    bail!("Failed to convert value to Ascii");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::BigInt(vec) => {
+                let CqlValue::BigInt(value) = value else {
+                    bail!("Failed to convert value to BigInt");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Blob(vec) => {
+                let CqlValue::Blob(value) = value else {
+                    bail!("Failed to convert value to Blob");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Boolean(vec) => {
+                let CqlValue::Boolean(value) = value else {
+                    bail!("Failed to convert value to Boolean");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Date(vec) => {
+                let CqlValue::Date(value) = value else {
+                    bail!("Failed to convert value to Date");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Decimal(vec) => {
+                let CqlValue::Decimal(value) = value else {
+                    bail!("Failed to convert value to Decimal");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Double(vec) => {
+                let CqlValue::Double(value) = value else {
+                    bail!("Failed to convert value to Double");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Float(vec) => {
+                let CqlValue::Float(value) = value else {
+                    bail!("Failed to convert value to Float");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Inet(vec) => {
+                let CqlValue::Inet(value) = value else {
+                    bail!("Failed to convert value to Inet");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Int(vec) => {
+                let CqlValue::Int(value) = value else {
+                    bail!("Failed to convert value to Int");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::SmallInt(vec) => {
+                let CqlValue::SmallInt(value) = value else {
+                    bail!("Failed to convert value to SmallInt");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Text(vec) => {
+                let CqlValue::Text(value) = value else {
+                    bail!("Failed to convert value to Text");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Time(vec) => {
+                let CqlValue::Time(value) = value else {
+                    bail!("Failed to convert value to Time");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Timestamp(vec) => {
+                let CqlValue::Timestamp(value) = value else {
+                    bail!("Failed to convert value to Timestamp");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Timeuuid(vec) => {
+                let CqlValue::Timeuuid(value) = value else {
+                    bail!("Failed to convert value to Timeuuid");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::TinyInt(vec) => {
+                let CqlValue::TinyInt(value) = value else {
+                    bail!("Failed to convert value to TinyInt");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Uuid(vec) => {
+                let CqlValue::Uuid(value) = value else {
+                    bail!("Failed to convert value to Uuid");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::Varint(vec) => {
+                let CqlValue::Varint(value) = value else {
+                    bail!("Failed to convert value to Varint");
+                };
+                vec.update(primary_id, TValue::Some(timestamp, value))
+            }
+            Self::PrimaryKey(_) => bail!("Cannot insert value into PrimaryKey column"),
+        }
+    }
+
+    pub(super) fn get(
+        &self,
+        primary_id: PrimaryId,
+        primary_keys: &ColumnVec<PrimaryId, Option<PrimaryKey>>,
+    ) -> Option<CqlValue> {
+        match self {
+            Self::Ascii(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Ascii),
+            Self::BigInt(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::BigInt),
+            Self::Blob(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Blob),
+            Self::Boolean(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Boolean),
+            Self::Date(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Date),
+            Self::Decimal(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Decimal),
+            Self::Double(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Double),
+            Self::Float(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Float),
+            Self::Inet(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Inet),
+            Self::Int(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Int),
+            Self::SmallInt(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::SmallInt),
+            Self::Text(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Text),
+            Self::Time(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Time),
+            Self::Timestamp(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Timestamp),
+            Self::Timeuuid(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Timeuuid),
+            Self::TinyInt(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::TinyInt),
+            Self::Uuid(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Uuid),
+            Self::Varint(vec) => vec
+                .get(primary_id)
+                .and_then(|val| val.get())
+                .cloned()
+                .map(CqlValue::Varint),
+            Self::PrimaryKey(key_offset) => primary_keys
+                .get(primary_id)
+                .and_then(|opt_key| opt_key.as_ref())
+                .and_then(|key| key.get((*key_offset).into())),
+        }
+    }
+}
