@@ -24,7 +24,7 @@ jobs:
       run: cat scylla-nightly-digest
 
     - name: Upload scylla-nightly digest as artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: daily-scylla-nightly-digest
         path: scylla-nightly-digest
@@ -42,7 +42,7 @@ jobs:
             arch: arm64
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
         fetch-depth: 0
         fetch-tags: true
@@ -50,7 +50,7 @@ jobs:
     - name: Try to download vector-store artifact
       id: download-vector-store
       continue-on-error: true
-      uses: dawidd6/action-download-artifact@v17
+      uses: dawidd6/action-download-artifact@09f2f74827fd3a8607589e5ad7f9398816f540fe # v3.1.4
       with:
         workflow: daily.yml
         name: daily-vector-store-${{matrix.arch}}-${{github.sha}}
@@ -60,7 +60,7 @@ jobs:
     - name: Try to download vector-search-validator artifact
       id: download-vector-search-validator
       continue-on-error: true
-      uses: dawidd6/action-download-artifact@v17
+      uses: dawidd6/action-download-artifact@09f2f74827fd3a8607589e5ad7f9398816f540fe # v3.1.4
       with:
         workflow: daily.yml
         name: daily-vector-search-validator-${{matrix.arch}}-${{github.sha}}
@@ -108,13 +108,13 @@ jobs:
       run: cp target/${{matrix.arch}}/release/vector-search-validator vector-search-validator-${{matrix.arch}}
 
     - name: Upload vector-store as artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: daily-vector-store-${{matrix.arch}}-${{github.sha}}
         path: vector-store-${{matrix.arch}}
 
     - name: Upload vector-search-validator as artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: daily-vector-search-validator-${{matrix.arch}}-${{github.sha}}
         path: vector-search-validator-${{matrix.arch}}
@@ -124,7 +124,7 @@ jobs:
 
     - name: Upload run-validator-with-scylla-docker as artifact
       if: matrix.arch == 'amd64' # Only upload the script once since it's architecture agnostic
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: run-validator-with-scylla-docker
         path: run-validator-with-scylla-docker
@@ -137,7 +137,7 @@ jobs:
 
     steps:
     - name: Download vector-search-validator artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: daily-vector-search-validator-amd64-${{github.sha}}
 
@@ -164,22 +164,22 @@ jobs:
             arch: arm64
     steps:
     - name: Download scylla-nightly digest artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: daily-scylla-nightly-digest
 
     - name: Download vector-store artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: daily-vector-store-${{matrix.arch}}-${{github.sha}}
 
     - name: Download vector-search-validator artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: daily-vector-search-validator-${{matrix.arch}}-${{github.sha}}
 
     - name: Download run-validator-with-scylla-docker artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: run-validator-with-scylla-docker
 
@@ -198,7 +198,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Download scylla-nightly digest artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: daily-scylla-nightly-digest
 
@@ -206,7 +206,7 @@ jobs:
       run: cat scylla-nightly-digest
 
     - name: Upload scylla-nightly digest artifact as artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: scylla-nightly-digest
         path: scylla-nightly-digest
