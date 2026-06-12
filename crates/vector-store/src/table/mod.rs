@@ -3,6 +3,11 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+mod column;
+mod column_vec;
+mod partition_id;
+mod primary_id;
+
 use crate::ColumnName;
 use crate::DbIndexedRow;
 use crate::DbIndexedValue;
@@ -15,17 +20,18 @@ use crate::primary_key::normalize;
 use anyhow::anyhow;
 use anyhow::bail;
 use bigdecimal::BigDecimal;
+use column::Column;
+use column_vec::ColumnVec;
 use itertools::Itertools;
 use num_bigint::BigInt;
+pub(crate) use partition_id::IndexId;
+pub(crate) use partition_id::IndexIdGenerator;
+pub use partition_id::PartitionId;
+use primary_id::Epoch;
+pub use primary_id::PrimaryId;
 use scylla::cluster::metadata::NativeType;
-use scylla::value::CqlDate;
-use scylla::value::CqlDecimal;
 use scylla::value::CqlDecimalBorrowed;
-use scylla::value::CqlTime;
-use scylla::value::CqlTimestamp;
-use scylla::value::CqlTimeuuid;
 use scylla::value::CqlValue;
-use scylla::value::CqlVarint;
 use scylla::value::CqlVarintBorrowed;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -34,263 +40,18 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::btree_map::Entry;
 use std::mem;
-use std::net::IpAddr;
 use std::sync::Arc;
 use tap::Pipe;
-use tracing::info;
 use tracing::warn;
-use uuid::Uuid;
 
 /// Idx is a trait for types that can be used as an index in the column vectors.
 trait Idx {
     fn idx(&self) -> usize;
 }
 
-mod primary_id {
-    use super::*;
-
-    /// PrimaryId is a unique identifier for a row in the table. It consists of an index and an
-    /// epoch. The index is used to access the row in the column vectors, while the epoch is used
-    /// to determine if the row has been updated.
-    #[derive(
-        Copy,
-        Clone,
-        Debug,
-        PartialEq,
-        Eq,
-        PartialOrd,
-        Ord,
-        Hash,
-        derive_more::AsRef,
-        derive_more::From,
-        derive_more::Into,
-    )]
-    pub struct PrimaryId(u64);
-
-    const _: () = assert!(
-        mem::size_of::<PrimaryId>() == mem::size_of::<usize>(),
-        "PrimaryId should be the same size as usize"
-    );
-
-    impl PrimaryId {
-        const EPOCH_SHIFT: usize = (mem::size_of::<u64>() - mem::size_of::<Epoch>()) * 8;
-        const MAX: u64 = !((Epoch::MAX as u64) << Self::EPOCH_SHIFT);
-
-        pub(super) fn try_new(idx: usize, epoch: Epoch) -> anyhow::Result<Self> {
-            if idx as u64 > Self::MAX {
-                bail!("PrimaryId is too large: {idx}");
-            }
-            Ok(Self(
-                (*epoch.as_ref() as u64) << Self::EPOCH_SHIFT | idx as u64,
-            ))
-        }
-
-        pub(super) fn new_epoch(mut self, epoch: Epoch) -> Self {
-            self.0 &= Self::MAX;
-            self.0 |= (epoch.0 as u64) << Self::EPOCH_SHIFT;
-            self
-        }
-
-        pub(super) fn next_epoch(self) -> Self {
-            self.new_epoch(self.epoch().next())
-        }
-
-        pub(super) fn epoch(&self) -> Epoch {
-            Epoch((self.0 >> Self::EPOCH_SHIFT) as u16)
-        }
-    }
-
-    impl Idx for PrimaryId {
-        fn idx(&self) -> usize {
-            (self.0 & Self::MAX) as usize
-        }
-    }
-
-    /// Epoch is a counter that is incremented every time a row is updated. New values are
-    /// cyclically assigned epochs, so we can have at most Epoch::MAX updates (around 65k), so
-    /// assuming one change per millisecond, we have around 65 seconds for unique epochs.
-    /// Vectors with old epochs must be updated within that time (it seems reasonable).
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, derive_more::AsRef)]
-    pub(super) struct Epoch(u16);
-
-    impl Epoch {
-        const MIN: u16 = 0;
-        const MAX: u16 = u16::MAX;
-
-        pub(super) fn new() -> Self {
-            Self(Self::MIN)
-        }
-
-        pub(super) fn next(self) -> Self {
-            if self.0 == Self::MAX {
-                info!("Epoch overflow: all epochs are used, starting from the minimum epoch");
-                Self(Self::MIN)
-            } else {
-                Self(self.0 + 1)
-            }
-        }
-    }
-}
-use primary_id::Epoch;
-pub use primary_id::PrimaryId;
-
-mod partition_id {
-    use super::*;
-
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, derive_more::From)]
-    pub struct PartitionId(u64);
-
-    const _: () = assert!(
-        mem::size_of::<PartitionId>() == mem::size_of::<usize>(),
-        "PartitionId should be the same size as usize"
-    );
-
-    impl PartitionId {
-        const INDEX_ID_SHIFT: usize = (mem::size_of::<u64>() - mem::size_of::<IndexId>()) * 8;
-        const MAX: u64 = !((IndexId::MASK as u64) << Self::INDEX_ID_SHIFT);
-
-        pub(crate) fn try_new(idx: usize, index_id: IndexId) -> anyhow::Result<Self> {
-            if idx as u64 > Self::MAX {
-                bail!("PartitionId is too large: {idx}");
-            }
-            Ok(Self(
-                (*index_id.as_ref() as u64) << Self::INDEX_ID_SHIFT | idx as u64,
-            ))
-        }
-
-        pub(crate) fn global(index_id: IndexId) -> Self {
-            Self((*index_id.as_ref() as u64) << Self::INDEX_ID_SHIFT)
-        }
-
-        pub(crate) fn index_id(&self) -> IndexId {
-            IndexId((self.0 >> Self::INDEX_ID_SHIFT) as u16)
-        }
-    }
-
-    impl Idx for PartitionId {
-        fn idx(&self) -> usize {
-            (self.0 & Self::MAX) as usize
-        }
-    }
-
-    /// IndexId provides unique IndexIds for indexes in the table. We can have up to
-    /// IndexId::MAX indexes (0x7fff), which seems reasonable for a single table.
-    /// IndexId::MAX is used as a sentinel to mark that there are no more IndexIds
-    /// available. IndexId::GLOBAL_BIT is used to mark that the index is global.
-    #[derive(
-        Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, derive_more::AsRef, derive_more::From,
-    )]
-    pub(crate) struct IndexId(u16);
-
-    impl IndexId {
-        const MASK: u16 = u16::MAX;
-        const GLOBAL_BIT: u16 = 1 << (u16::BITS - 1);
-        const MAX: u16 = Self::MASK & !Self::GLOBAL_BIT;
-
-        fn local(id: u16) -> anyhow::Result<Self> {
-            if id > Self::MAX {
-                bail!("Base value {id} is too large for local IndexId");
-            }
-            Ok(Self(id))
-        }
-
-        fn global(id: u16) -> anyhow::Result<Self> {
-            if id > Self::MAX {
-                bail!("Base value {id} is too large for global IndexId");
-            }
-            Ok(Self(id | Self::GLOBAL_BIT))
-        }
-
-        pub(crate) fn is_global(&self) -> bool {
-            self.0 & IndexId::GLOBAL_BIT != 0
-        }
-    }
-
-    #[derive(Debug)]
-    pub(crate) struct IndexIdGenerator {
-        next: u16,
-    }
-
-    impl IndexIdGenerator {
-        pub(crate) fn new() -> Self {
-            Self { next: 0 }
-        }
-
-        pub(crate) fn next(&mut self, global: bool) -> anyhow::Result<IndexId> {
-            if self.next == IndexId::MAX {
-                bail!("No more IndexIds available");
-            }
-            let index_id = if global {
-                IndexId::global(self.next)?
-            } else {
-                IndexId::local(self.next)?
-            };
-            self.next += 1;
-            Ok(index_id)
-        }
-    }
-}
-pub(crate) use partition_id::IndexId;
-pub(crate) use partition_id::IndexIdGenerator;
-pub use partition_id::PartitionId;
-
 /// A newtype for partition size
 #[derive(Clone, Copy, Debug, derive_more::From, derive_more::Into, derive_more::AsRef)]
 struct PartitionSize(usize);
-
-mod column_vec {
-    use super::*;
-
-    /// ColumnVec is a wrapper around Vec and generic index type. It is used to safely access columns by specific index types.
-    #[derive(Debug)]
-    pub(super) struct ColumnVec<I, T> {
-        vec: Vec<T>,
-        _index: std::marker::PhantomData<I>,
-    }
-
-    impl<I: Idx, T> ColumnVec<I, T> {
-        pub(super) fn new() -> Self {
-            Self {
-                vec: Vec::new(),
-                _index: std::marker::PhantomData,
-            }
-        }
-
-        pub(super) fn resize_with(&mut self, size: usize, f: impl FnMut() -> T) {
-            self.vec.resize_with(size, f);
-        }
-
-        pub(super) fn get(&self, idx: I) -> Option<&T> {
-            self.vec.get(idx.idx())
-        }
-
-        pub(super) fn get_mut(&mut self, idx: I) -> Option<&mut T> {
-            self.vec.get_mut(idx.idx())
-        }
-
-        pub(super) fn update(&mut self, idx: I, value: T) -> anyhow::Result<()> {
-            *self
-                .get_mut(idx)
-                .ok_or_else(|| anyhow!("Index out of ColumnVec bounds"))? = value;
-            Ok(())
-        }
-    }
-
-    impl<T> ColumnVec<PrimaryId, ETValue<T>> {
-        pub(super) fn update_epoch_timestamp(
-            &mut self,
-            primary_id: PrimaryId,
-            timestamp: Timestamp,
-        ) -> anyhow::Result<()> {
-            self.get_mut(primary_id)
-                .map(|value| {
-                    value.update_epoch_timestamp(primary_id.epoch(), timestamp);
-                })
-                .ok_or_else(|| anyhow!("Index out of ColumnVec bounds"))
-        }
-    }
-}
-use column_vec::ColumnVec;
 
 /// An enum that can store Epoch, Timestamp and optionally a value
 #[derive(Debug)]
@@ -329,309 +90,6 @@ impl<T> TValue<T> {
         match self {
             Self::None(_) => None,
             Self::Some(_, value) => Some(value),
-        }
-    }
-}
-
-/// A newtype for defining the offset of the key column.
-#[derive(Clone, Copy, Debug, derive_more::From, derive_more::Into)]
-struct KeyOffset(usize);
-
-/// An enum that represents a column in the table. It can be a column with values of a specific
-/// type or a primary key column (as an offset in the primary key columns).
-#[derive(Debug)]
-enum Column {
-    Ascii(ColumnVec<PrimaryId, TValue<String>>),
-    BigInt(ColumnVec<PrimaryId, TValue<i64>>),
-    Blob(ColumnVec<PrimaryId, TValue<Vec<u8>>>),
-    Boolean(ColumnVec<PrimaryId, TValue<bool>>),
-    Date(ColumnVec<PrimaryId, TValue<CqlDate>>),
-    Decimal(ColumnVec<PrimaryId, TValue<CqlDecimal>>),
-    Double(ColumnVec<PrimaryId, TValue<f64>>),
-    Float(ColumnVec<PrimaryId, TValue<f32>>),
-    Inet(ColumnVec<PrimaryId, TValue<IpAddr>>),
-    Int(ColumnVec<PrimaryId, TValue<i32>>),
-    SmallInt(ColumnVec<PrimaryId, TValue<i16>>),
-    Text(ColumnVec<PrimaryId, TValue<String>>),
-    Time(ColumnVec<PrimaryId, TValue<CqlTime>>),
-    Timestamp(ColumnVec<PrimaryId, TValue<CqlTimestamp>>),
-    Timeuuid(ColumnVec<PrimaryId, TValue<CqlTimeuuid>>),
-    TinyInt(ColumnVec<PrimaryId, TValue<i8>>),
-    Uuid(ColumnVec<PrimaryId, TValue<Uuid>>),
-    Varint(ColumnVec<PrimaryId, TValue<CqlVarint>>),
-    PrimaryKey(KeyOffset),
-}
-
-impl Column {
-    fn new(native_type: &NativeType) -> anyhow::Result<Self> {
-        Ok(match native_type {
-            NativeType::Ascii => Self::Ascii(ColumnVec::new()),
-            NativeType::BigInt => Self::BigInt(ColumnVec::new()),
-            NativeType::Blob => Self::Blob(ColumnVec::new()),
-            NativeType::Boolean => Self::Boolean(ColumnVec::new()),
-            NativeType::Date => Self::Date(ColumnVec::new()),
-            NativeType::Decimal => Self::Decimal(ColumnVec::new()),
-            NativeType::Double => Self::Double(ColumnVec::new()),
-            NativeType::Float => Self::Float(ColumnVec::new()),
-            NativeType::Inet => Self::Inet(ColumnVec::new()),
-            NativeType::Int => Self::Int(ColumnVec::new()),
-            NativeType::SmallInt => Self::SmallInt(ColumnVec::new()),
-            NativeType::Text => Self::Text(ColumnVec::new()),
-            NativeType::Time => Self::Time(ColumnVec::new()),
-            NativeType::Timestamp => Self::Timestamp(ColumnVec::new()),
-            NativeType::Timeuuid => Self::Timeuuid(ColumnVec::new()),
-            NativeType::TinyInt => Self::TinyInt(ColumnVec::new()),
-            NativeType::Uuid => Self::Uuid(ColumnVec::new()),
-            NativeType::Varint => Self::Varint(ColumnVec::new()),
-            _ => bail!("Unsupported native type: {native_type:?}"),
-        })
-    }
-
-    fn resize_with(&mut self, size: usize) {
-        let timestamp = Timestamp::UNIX_EPOCH;
-        match self {
-            Self::Ascii(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::BigInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Blob(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Boolean(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Date(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Decimal(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Double(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Float(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Inet(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Int(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::SmallInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Text(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Time(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Timestamp(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Timeuuid(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::TinyInt(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Uuid(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::Varint(vec) => vec.resize_with(size, || TValue::None(timestamp)),
-            Self::PrimaryKey(_) => {}
-        }
-    }
-
-    #[allow(dead_code)]
-    fn insert_cqlvalue(
-        &mut self,
-        primary_id: PrimaryId,
-        timestamp: Timestamp,
-        value: CqlValue,
-    ) -> anyhow::Result<()> {
-        match self {
-            Self::Ascii(vec) => {
-                let CqlValue::Ascii(value) = value else {
-                    bail!("Failed to convert value to Ascii");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::BigInt(vec) => {
-                let CqlValue::BigInt(value) = value else {
-                    bail!("Failed to convert value to BigInt");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Blob(vec) => {
-                let CqlValue::Blob(value) = value else {
-                    bail!("Failed to convert value to Blob");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Boolean(vec) => {
-                let CqlValue::Boolean(value) = value else {
-                    bail!("Failed to convert value to Boolean");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Date(vec) => {
-                let CqlValue::Date(value) = value else {
-                    bail!("Failed to convert value to Date");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Decimal(vec) => {
-                let CqlValue::Decimal(value) = value else {
-                    bail!("Failed to convert value to Decimal");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Double(vec) => {
-                let CqlValue::Double(value) = value else {
-                    bail!("Failed to convert value to Double");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Float(vec) => {
-                let CqlValue::Float(value) = value else {
-                    bail!("Failed to convert value to Float");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Inet(vec) => {
-                let CqlValue::Inet(value) = value else {
-                    bail!("Failed to convert value to Inet");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Int(vec) => {
-                let CqlValue::Int(value) = value else {
-                    bail!("Failed to convert value to Int");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::SmallInt(vec) => {
-                let CqlValue::SmallInt(value) = value else {
-                    bail!("Failed to convert value to SmallInt");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Text(vec) => {
-                let CqlValue::Text(value) = value else {
-                    bail!("Failed to convert value to Text");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Time(vec) => {
-                let CqlValue::Time(value) = value else {
-                    bail!("Failed to convert value to Time");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Timestamp(vec) => {
-                let CqlValue::Timestamp(value) = value else {
-                    bail!("Failed to convert value to Timestamp");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Timeuuid(vec) => {
-                let CqlValue::Timeuuid(value) = value else {
-                    bail!("Failed to convert value to Timeuuid");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::TinyInt(vec) => {
-                let CqlValue::TinyInt(value) = value else {
-                    bail!("Failed to convert value to TinyInt");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Uuid(vec) => {
-                let CqlValue::Uuid(value) = value else {
-                    bail!("Failed to convert value to Uuid");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::Varint(vec) => {
-                let CqlValue::Varint(value) = value else {
-                    bail!("Failed to convert value to Varint");
-                };
-                vec.update(primary_id, TValue::Some(timestamp, value))
-            }
-            Self::PrimaryKey(_) => bail!("Cannot insert value into PrimaryKey column"),
-        }
-    }
-
-    fn get(
-        &self,
-        primary_id: PrimaryId,
-        primary_keys: &ColumnVec<PrimaryId, Option<PrimaryKey>>,
-    ) -> Option<CqlValue> {
-        match self {
-            Self::Ascii(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Ascii),
-            Self::BigInt(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::BigInt),
-            Self::Blob(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Blob),
-            Self::Boolean(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Boolean),
-            Self::Date(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Date),
-            Self::Decimal(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Decimal),
-            Self::Double(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Double),
-            Self::Float(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Float),
-            Self::Inet(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Inet),
-            Self::Int(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Int),
-            Self::SmallInt(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::SmallInt),
-            Self::Text(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Text),
-            Self::Time(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Time),
-            Self::Timestamp(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Timestamp),
-            Self::Timeuuid(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Timeuuid),
-            Self::TinyInt(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::TinyInt),
-            Self::Uuid(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Uuid),
-            Self::Varint(vec) => vec
-                .get(primary_id)
-                .and_then(|val| val.get())
-                .cloned()
-                .map(CqlValue::Varint),
-            Self::PrimaryKey(key_offset) => primary_keys
-                .get(primary_id)
-                .and_then(|opt_key| opt_key.as_ref())
-                .and_then(|key| key.get((*key_offset).into())),
         }
     }
 }
@@ -1488,6 +946,7 @@ pub(crate) enum Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scylla::value::CqlDecimal;
 
     #[test]
     fn flow() {
