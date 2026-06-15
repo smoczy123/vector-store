@@ -15,6 +15,8 @@ use httpapi::NodeStatus;
 use httpapi::PostIndexAnnFilter;
 use httpapi::PostIndexAnnRequest;
 use httpapi::PostIndexAnnResponse;
+use httpapi::PostIndexBm25Request;
+use httpapi::PostIndexBm25Response;
 use httpapi::SimilarityScore;
 use httpapi::Vector;
 use reqwest::Client;
@@ -105,6 +107,41 @@ impl HttpClient {
                 self.url_api, keyspace_name, index_name
             ))
             .json(data)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    pub async fn bm25(
+        &self,
+        keyspace_name: &KeyspaceName,
+        index_name: &IndexName,
+        query: String,
+        limit: Limit,
+    ) -> (HashMap<ColumnName, Vec<Value>>, Vec<f32>) {
+        let resp = self
+            .post_bm25(keyspace_name, index_name, query, limit)
+            .await
+            .json::<PostIndexBm25Response>()
+            .await
+            .unwrap();
+        (resp.primary_keys, resp.scores)
+    }
+
+    pub async fn post_bm25(
+        &self,
+        keyspace_name: &KeyspaceName,
+        index_name: &IndexName,
+        query: String,
+        limit: Limit,
+    ) -> reqwest::Response {
+        let request = PostIndexBm25Request { query, limit };
+        self.client
+            .post(format!(
+                "{}/indexes/{}/{}/bm25",
+                self.url_api, keyspace_name, index_name
+            ))
+            .json(&request)
             .send()
             .await
             .unwrap()

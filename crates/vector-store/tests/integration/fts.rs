@@ -11,10 +11,12 @@ use crate::db_basic::Table;
 use crate::wait_for;
 use httpapi::IndexStatus;
 use httpclient::HttpClient;
+use reqwest::StatusCode;
 use scylla::cluster::metadata::NativeType;
 use scylla::value::CqlValue;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
@@ -137,4 +139,205 @@ async fn fts_index_returns_proper_count() {
         "Waiting for FTS index to be serving with count == 2",
     )
     .await;
+}
+
+async fn setup_fts_and_wait(
+    documents: impl IntoIterator<Item = (Vec<CqlValue>, &str, u64)>,
+    expected_count: usize,
+) -> (
+    HttpClient,
+    httpapi::KeyspaceName,
+    httpapi::IndexName,
+    impl Sized,
+) {
+    let docs: Vec<_> = documents
+        .into_iter()
+        .map(|(pk, doc, ts)| {
+            (
+                pk.into_iter().collect(),
+                Some(doc.to_string()),
+                Timestamp::from_unix_timestamp(ts),
+            )
+        })
+        .collect();
+
+    let (run, index, db, node_state) = setup_fts_store(
+        ["pk".into()],
+        1,
+        [("pk".to_string().into(), NativeType::Int)],
+        Some(db_basic::scan_fn_documents(docs)),
+        None,
+    )
+    .await;
+
+    let (client, server, config_tx) = run.await;
+    let keyspace_name = index.keyspace_name.clone().into();
+    let index_name = index.index_name.clone().into();
+
+    wait_for(
+        || async {
+            client
+                .index_status(&keyspace_name, &index_name)
+                .await
+                .is_ok_and(|status| {
+                    status.status == IndexStatus::Serving && status.count == expected_count
+                })
+        },
+        "Waiting for FTS index to be serving",
+    )
+    .await;
+
+    (
+        client,
+        keyspace_name,
+        index_name,
+        (server, config_tx, db, node_state),
+    )
+}
+
+#[tokio::test]
+async fn fts_bm25_search_returns_matching_docs() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) = setup_fts_and_wait(
+        [
+            (vec![CqlValue::Int(1)], "the quick brown fox", 10),
+            (vec![CqlValue::Int(2)], "lazy dog sleeps all day", 20),
+        ],
+        2,
+    )
+    .await;
+
+    let (primary_keys, scores) = client
+        .bm25(
+            &keyspace_name,
+            &index_name,
+            "fox".into(),
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert_eq!(primary_keys.get(&"pk".into()).unwrap().len(), 1);
+    assert_eq!(scores.len(), 1);
+    assert!(scores[0] > 0.0);
+    assert_eq!(
+        primary_keys.get(&"pk".into()).unwrap()[0].as_i64().unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn fts_bm25_search_returns_empty_for_no_match() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) =
+        setup_fts_and_wait([(vec![CqlValue::Int(1)], "hello world", 10)], 1).await;
+
+    let (primary_keys, scores) = client
+        .bm25(
+            &keyspace_name,
+            &index_name,
+            "nonexistentterm".into(),
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert!(primary_keys.get(&"pk".into()).unwrap().is_empty());
+    assert!(scores.is_empty());
+}
+
+#[tokio::test]
+async fn fts_bm25_search_respects_limit() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) = setup_fts_and_wait(
+        [
+            (vec![CqlValue::Int(1)], "rust programming language", 10),
+            (vec![CqlValue::Int(2)], "rust systems programming", 20),
+            (vec![CqlValue::Int(3)], "rust is fast and safe", 30),
+            (vec![CqlValue::Int(4)], "rust memory safety", 40),
+            (vec![CqlValue::Int(5)], "rust concurrency model", 50),
+        ],
+        5,
+    )
+    .await;
+
+    let (primary_keys, scores) = client
+        .bm25(
+            &keyspace_name,
+            &index_name,
+            "rust".into(),
+            NonZeroUsize::new(2).unwrap().into(),
+        )
+        .await;
+
+    assert_eq!(primary_keys.get(&"pk".into()).unwrap().len(), 2);
+    assert_eq!(scores.len(), 2);
+}
+
+#[tokio::test]
+async fn fts_bm25_search_not_found_returns_404() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) =
+        setup_fts_and_wait([(vec![CqlValue::Int(1)], "hello world", 10)], 1).await;
+
+    let _ = (keyspace_name, index_name);
+    let response = client
+        .post_bm25(
+            &"nonexistent_ks".into(),
+            &"nonexistent_idx".into(),
+            "hello".into(),
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn fts_bm25_search_not_serving_returns_503() {
+    crate::enable_tracing();
+
+    let fullscan_fn = |_| {
+        use futures::FutureExt;
+        async move {
+            // wait indefinitely to simulate a long-running indexing operation (Bootstrapping)
+            std::future::pending::<()>().await;
+        }
+        .boxed()
+    };
+    let (run, index, _db, _node_state) = setup_fts_store(
+        ["pk".into()],
+        1,
+        [("pk".to_string().into(), NativeType::Int)],
+        Some(Box::new(fullscan_fn)),
+        None,
+    )
+    .await;
+    let (client, _server, _config_tx) = run.await;
+    let keyspace_name: httpapi::KeyspaceName = index.keyspace_name.clone().into();
+    let index_name: httpapi::IndexName = index.index_name.clone().into();
+
+    wait_for(
+        || async {
+            client
+                .index_status(&keyspace_name, &index_name)
+                .await
+                .is_ok_and(|status| status.status == IndexStatus::Bootstrapping)
+        },
+        "Waiting for FTS index to be bootstrapping",
+    )
+    .await;
+
+    let response = client
+        .post_bm25(
+            &keyspace_name,
+            &index_name,
+            "hello".into(),
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
