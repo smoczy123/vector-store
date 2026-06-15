@@ -20,6 +20,7 @@ pub struct Metrics {
     pub latency: HistogramVec,
     pub size: GaugeVec,
     pub modified: CounterVec,
+    pub indexing_lag: HistogramVec,
     dirty_indexes: Arc<DashSet<(String, String)>>,
 }
 
@@ -69,18 +70,49 @@ impl Metrics {
         )
         .unwrap();
 
+        // Custom buckets spanning the realtime (sub-second) and consistent
+        // (tens of seconds) CDC reader regimes, up to a few minutes to surface
+        // stalled indexing.
+        let lag_buckets = vec![
+            0.05,  // 50 ms
+            0.1,   // 0.1 second
+            0.25,  // 0.25 seconds
+            0.5,   // 0.5 seconds
+            1.0,   // 1 second
+            2.5,   // 2.5 seconds
+            5.0,   // 5 seconds
+            10.0,  // 10 seconds
+            30.0,  // 30 seconds
+            60.0,  // 1 minute
+            120.0, // 2 minutes
+            300.0, // 5 minutes
+        ];
+
+        let indexing_lag = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "indexing_lag_seconds",
+                "Time in seconds between a CDC-recorded change in ScyllaDB and its indexing in the vector store",
+            )
+            .buckets(lag_buckets),
+            &["keyspace", "index_name"],
+        )
+        .unwrap();
+
         registry.register(Box::new(latency.clone())).unwrap();
         registry.register(Box::new(size.clone())).unwrap();
         registry.register(Box::new(modified.clone())).unwrap();
+        registry.register(Box::new(indexing_lag.clone())).unwrap();
 
         Self {
             registry,
             latency,
             size,
             modified,
+            indexing_lag,
             dirty_indexes: Arc::new(DashSet::new()),
         }
     }
+
     pub fn mark_dirty(&self, keyspace: &str, index_name: &str) {
         self.dirty_indexes
             .insert((keyspace.to_owned(), index_name.to_owned()));
