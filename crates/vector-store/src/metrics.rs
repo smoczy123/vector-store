@@ -217,4 +217,53 @@ mod tests {
         metrics.remove_index_labels("ks", "idx");
         assert!(metrics.dirty_indexes.is_empty());
     }
+
+    #[test]
+    fn indexing_lag_is_observed_and_exported() {
+        use crate::AsyncInProgress;
+        use crate::Timestamp;
+
+        let metrics = Metrics::new();
+
+        // Create and immediately drop a Cdc marker to trigger observation.
+        let histogram = metrics.indexing_lag.with_label_values(&["ks", "idx"]);
+        drop(AsyncInProgress::cdc(
+            histogram.clone(),
+            Timestamp::from_unix_timestamp(0),
+        ));
+
+        assert_eq!(histogram.get_sample_count(), 1);
+        assert!(histogram.get_sample_sum() > 0.0);
+
+        // The metric must be exported through the same registry the `/metrics`
+        // endpoint scrapes, with the expected name, type, and labels.
+        let output = metric_families_text(&metrics);
+        assert!(
+            output.contains("# TYPE indexing_lag_seconds histogram"),
+            "indexing_lag_seconds histogram missing from export:\n{output}"
+        );
+        assert!(
+            output.contains(r#"keyspace="ks""#) && output.contains(r#"index_name="idx""#),
+            "expected keyspace/index_name labels in export:\n{output}"
+        );
+        assert!(
+            output.contains(r#"indexing_lag_seconds_count{index_name="idx",keyspace="ks"} 1"#),
+            "expected a single observed sample in export:\n{output}"
+        );
+    }
+
+    #[test]
+    fn indexing_lag_not_exported_until_observed() {
+        let metrics = Metrics::new();
+
+        // A histogram with no observations is still registered, but reports a
+        // zero sample count for any label set.
+        assert_eq!(
+            metrics
+                .indexing_lag
+                .with_label_values(&["ks", "idx"])
+                .get_sample_count(),
+            0
+        );
+    }
 }
