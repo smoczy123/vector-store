@@ -839,6 +839,73 @@ async fn local_index_filter_returns_no_results_when_nothing_matches(actors: Arc<
     info!("finished");
 }
 
+/// Regression test for VECTOR-609: a global ANN query (one without a full
+/// partition key equality restriction) issued against a column whose only
+/// vector index is local must fail rather than silently returning empty or
+/// incorrect results.
+///
+/// A local index can only be searched within a single partition, so the
+/// routing layer cannot serve a global ANN query with it. The query must be
+/// rejected end-to-end instead of returning no rows.
+#[e2etest::test(group = filtering)]
+async fn global_ann_query_on_local_only_index_fails(actors: Arc<TestActors>) {
+    info!("started");
+
+    let (session, clients) = prepare_connection(&actors).await;
+
+    let keyspace = create_keyspace(&session).await;
+    let table = create_table(
+        &session,
+        "pk INT, ck INT, v VECTOR<FLOAT, 3>, PRIMARY KEY (pk, ck)",
+        None,
+    )
+    .await;
+
+    for pk in 0..4 {
+        for ck in 0..5 {
+            session
+                .query_unpaged(
+                    format!("INSERT INTO {table} (pk, ck, v) VALUES (?, ?, ?)"),
+                    (pk, ck, &vec![pk as f32, ck as f32, 0.0]),
+                )
+                .await
+                .expect("failed to insert data");
+        }
+    }
+
+    let index = create_index(
+        CreateIndexQuery::new(&session, &clients, &table, "v").partition_columns(["pk"]),
+    )
+    .await;
+
+    for client in &clients {
+        let index_status = wait_for_index(client, &index).await;
+        assert_eq!(index_status.count, 20, "Expected 20 vectors to be indexed");
+    }
+
+    let err = session
+        .query_unpaged(
+            format!("SELECT pk, ck FROM {table} ORDER BY v ANN OF [1.0, 0.0, 0.0] LIMIT 20"),
+            (),
+        )
+        .await
+        .expect_err("global ANN query on a local-only vector index should fail");
+
+    assert!(
+        err.to_string().contains(
+            "Global ANN query is not supported when only a local vector index is available"
+        ),
+        "unexpected error message: {err}"
+    );
+
+    session
+        .query_unpaged(format!("DROP KEYSPACE {keyspace}"), ())
+        .await
+        .expect("failed to drop a keyspace");
+
+    info!("finished");
+}
+
 /// Reproducer for VECTOR-593: ANN query with global index and a timestamp
 /// equality filter using a space-separated CQL timestamp must not fail.
 #[e2etest::test(group = filtering)]
