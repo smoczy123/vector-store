@@ -10,6 +10,9 @@ use crate::IndexKey;
 use crate::Metrics;
 use crate::fts_index::FtsIndex;
 use crate::fts_index::FtsIndexExt;
+use crate::metrics::OP_INSERT;
+use crate::metrics::OP_REMOVE;
+use crate::metrics::OP_UPDATE;
 use crate::perf;
 use crate::table::Operation;
 use crate::table::PartitionId;
@@ -177,7 +180,7 @@ async fn add<I: IndexDispatch>(
                 value,
                 is_update,
             } => {
-                let op_label = if is_update { "update" } else { "insert" };
+                let op_label = if is_update { OP_UPDATE } else { OP_INSERT };
                 index
                     .add_value(partition_id, primary_id, value, in_progress.take())
                     .await;
@@ -201,7 +204,7 @@ async fn add<I: IndexDispatch>(
                     .await;
                 metrics
                     .modified
-                    .with_label_values(&[key.keyspace().as_ref(), key.index().as_ref(), "remove"])
+                    .with_label_values(&[key.keyspace().as_ref(), key.index().as_ref(), OP_REMOVE])
                     .inc();
             }
             Operation::RemovePartition { partition_id } => {
@@ -230,21 +233,21 @@ mod tests {
         assert_eq!(
             metrics
                 .modified
-                .with_label_values(&["vector", "store", "insert"])
+                .with_label_values(&["vector", "store", OP_INSERT])
                 .get(),
             insert,
         );
         assert_eq!(
             metrics
                 .modified
-                .with_label_values(&["vector", "store", "update"])
+                .with_label_values(&["vector", "store", OP_UPDATE])
                 .get(),
             update,
         );
         assert_eq!(
             metrics
                 .modified
-                .with_label_values(&["vector", "store", "remove"])
+                .with_label_values(&["vector", "store", OP_REMOVE])
                 .get(),
             remove,
         );

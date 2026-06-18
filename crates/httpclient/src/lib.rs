@@ -189,4 +189,18 @@ impl HttpClient {
             .json()
             .await?)
     }
+
+    pub async fn get_metrics_text(&self) -> String {
+        self.client
+            .get(format!(
+                "{}/metrics",
+                self.url_api.trim_end_matches("/api/v1")
+            ))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    }
 }

@@ -160,7 +160,7 @@ pub(crate) async fn new(
                                 .await
                             }
 
-                            Engine::DelIndex { key } => del_index(key, &indexes).await,
+                            Engine::DelIndex { key } => del_index(key, &indexes, &metrics).await,
 
                             Engine::GetVsIndex { key, tx } => get_vs_index(key, tx, &indexes).await,
 
@@ -340,9 +340,10 @@ async fn add_index_fts(ctx: AddIndexContext<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn del_index(key: IndexKey, indexes: &RwLock<Indexes>) {
+async fn del_index(key: IndexKey, indexes: &RwLock<Indexes>, metrics: &Metrics) {
     if indexes.write().unwrap().remove(&key) {
         info!("removed the index {key}");
+        metrics.remove_index_labels(key.keyspace().as_ref(), key.index().as_ref());
     }
 }
 
