@@ -536,22 +536,16 @@ impl Consumer for CdcConsumer {
             .transpose()?
             .flatten();
 
-        let primary_key = self
+        let Some(primary_key) = self
             .0
             .primary_key_columns
             .iter()
-            .map(|column| {
-                if !row.column_exists(column.as_ref()) {
-                    bail!("CDC error: primary key column {column} should exist");
-                }
-                if row.column_deletable(column.as_ref()) {
-                    bail!("CDC error: primary key column {column} should not be deletable");
-                }
-                row.take_value(column.as_ref()).ok_or(anyhow!(
-                    "CDC error: primary key column {column} value should exist"
-                ))
-            })
-            .collect::<anyhow::Result<_>>()?;
+            .map(|column| row.take_value(column.as_ref()))
+            .collect()
+        else {
+            // If any primary key column is missing skip this row.
+            return Ok(());
+        };
 
         const HUNDREDS_NANOS_TO_MICROS: u64 = 10;
         let timestamp = (self.0.gregorian_epoch

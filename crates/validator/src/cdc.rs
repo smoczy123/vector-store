@@ -5,6 +5,9 @@
 
 use crate::TestActors;
 use crate::common::*;
+use itertools::Itertools;
+use std::array;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -639,6 +642,88 @@ async fn cql_per_row_ttl_expires_from_index(actors: Arc<TestActors>) {
         .query_unpaged(format!("DROP KEYSPACE {keyspace}"), ())
         .await
         .expect("failed to drop a keyspace");
+
+    info!("finished");
+}
+
+/// Check if null clustering keys are skipped by the index.
+///
+/// Use static columns as updating a static column gives a CDC's row with null clustering key.
+///
+/// Steps:
+/// 1. Create a table with a clustering key and a static column.
+/// 2. Create an index on the vector column.
+/// 3. Insert rows with a clustering key and a static column value.
+/// 4. Verify that the index count is correct and the ANN query returns the inserted rows.
+/// 5. Drop the keyspace and verify that the index is dropped.
+#[e2etest::test(group = cdc)]
+async fn skip_null_ck(actors: Arc<TestActors>) {
+    info!("started");
+
+    let (session, clients) = prepare_connection_single_vs(&actors).await;
+    let client = clients.first().unwrap();
+    let keyspace = create_keyspace(&session).await;
+    let table = create_table(
+        &session,
+        "pk INT, ck INT, v VECTOR<FLOAT, 3>, s INT STATIC, PRIMARY KEY (pk, ck)",
+        None,
+    )
+    .await;
+    let index = create_index(CreateIndexQuery::new(&session, &clients, &table, "v")).await;
+
+    let status = wait_for_index(client, &index).await;
+    assert_eq!(status.count, 0, "Index should start empty");
+
+    info!("Insert data to the table for CDC");
+    let pks: BTreeSet<_> = array::from_fn::<i32, 10, _>(|i| i as i32)
+        .into_iter()
+        .collect();
+    for pk in &pks {
+        session
+            .query_unpaged(
+                format!("INSERT INTO {table} (pk, ck, v, s) VALUES ({pk}, 2, [1.0, 2.0, 3.0], 3)"),
+                (),
+            )
+            .await
+            .expect("failed to insert data");
+    }
+
+    wait_for(
+        || async {
+            let status = client.index_status(&index.keyspace, &index.index).await;
+            matches!(status, Ok(s) if s.count == pks.len())
+        },
+        "Waiting for all rows to be indexed",
+        DEFAULT_OPERATION_TIMEOUT,
+    )
+    .await;
+
+    // Verify ANN query returns the inserted row
+    let rows = wait_for_value(
+        || async {
+            let result = get_opt_query_results(
+                format!("SELECT pk FROM {table} ORDER BY v ANN OF [1.0, 2.0, 3.0] LIMIT 100"),
+                &session,
+            )
+            .await?;
+            let rows = result
+                .rows::<(i32,)>()
+                .ok()?
+                .map_ok(|row| row.0)
+                .collect::<Result<BTreeSet<_>, _>>()
+                .ok()?;
+            (rows.len() == pks.len()).then_some(rows)
+        },
+        "Waiting for ANN query after CDC insert",
+        DEFAULT_OPERATION_TIMEOUT,
+    )
+    .await;
+    assert_eq!(rows, pks);
+
+    session
+        .query_unpaged(format!("DROP KEYSPACE {keyspace}"), ())
+        .await
+        .expect("failed to drop keyspace");
 
     info!("finished");
 }
