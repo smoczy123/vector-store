@@ -9,6 +9,11 @@ use prometheus::HistogramVec;
 use prometheus::Registry;
 use std::sync::Arc;
 
+pub const OP_INSERT: &str = "insert";
+pub const OP_UPDATE: &str = "update";
+pub const OP_REMOVE: &str = "remove";
+pub const OPERATIONS: &[&str] = &[OP_INSERT, OP_UPDATE, OP_REMOVE];
+
 #[derive(Clone)]
 pub struct Metrics {
     pub registry: Registry,
@@ -91,5 +96,93 @@ impl Metrics {
             self.dirty_indexes.remove(k);
         }
         keys
+    }
+
+    pub fn remove_index_labels(&self, keyspace: &str, index_name: &str) {
+        let _ = self.latency.remove_label_values(&[keyspace, index_name]);
+        let _ = self.size.remove_label_values(&[keyspace, index_name]);
+        for op in OPERATIONS {
+            let _ = self
+                .modified
+                .remove_label_values(&[keyspace, index_name, op]);
+        }
+        self.dirty_indexes
+            .remove(&(keyspace.to_owned(), index_name.to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prometheus::Encoder;
+    use prometheus::TextEncoder;
+
+    fn metric_families_text(metrics: &Metrics) -> String {
+        let mut buf = Vec::new();
+        TextEncoder::new()
+            .encode(&metrics.registry.gather(), &mut buf)
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn remove_index_labels_clears_all_metric_series_for_index() {
+        let metrics = Metrics::new();
+
+        metrics.size.with_label_values(&["ks", "idx"]).set(10.0);
+        metrics
+            .modified
+            .with_label_values(&["ks", "idx", OP_INSERT])
+            .inc();
+        metrics
+            .latency
+            .with_label_values(&["ks", "idx"])
+            .observe(0.001);
+
+        metrics.remove_index_labels("ks", "idx");
+
+        let output = metric_families_text(&metrics);
+        assert!(
+            !output.contains(r#"keyspace="ks""#),
+            "metric output should not contain labels for deleted index, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn remove_index_labels_is_noop_when_index_has_no_metrics() {
+        let metrics = Metrics::new();
+        metrics.remove_index_labels("ks", "nonexistent");
+        assert!(metric_families_text(&metrics).is_empty());
+    }
+
+    #[test]
+    fn remove_index_labels_only_removes_target_index() {
+        let metrics = Metrics::new();
+
+        metrics.size.with_label_values(&["ks", "idx1"]).set(1.0);
+        metrics.size.with_label_values(&["ks", "idx2"]).set(2.0);
+
+        metrics.remove_index_labels("ks", "idx1");
+
+        let output = metric_families_text(&metrics);
+        assert!(
+            !output.contains(r#"index_name="idx1""#),
+            "idx1 labels should be removed"
+        );
+        assert!(
+            output.contains(r#"index_name="idx2""#),
+            "idx2 labels should remain"
+        );
+    }
+
+    #[test]
+    fn remove_index_labels_clears_dirty_index_entry() {
+        let metrics = Metrics::new();
+
+        metrics.mark_dirty("ks", "idx");
+        assert_eq!(metrics.dirty_indexes.len(), 1);
+
+        metrics.remove_index_labels("ks", "idx");
+        assert!(metrics.dirty_indexes.is_empty());
     }
 }

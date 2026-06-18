@@ -8,6 +8,7 @@ mod fts;
 mod https;
 mod info;
 mod memory_limit;
+mod metrics;
 mod mock_opensearch;
 mod mtls;
 mod openapi;
