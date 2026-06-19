@@ -695,7 +695,7 @@ pub async fn run(
     let index_engine_version = index_factory.index_engine_version();
     let indexes = Arc::new(RwLock::new(Indexes::new()));
     let fts_index_factory: Box<dyn fts_index::FtsIndexFactory + Send + Sync> =
-        Box::new(fts_index::TantivyIndexFactory);
+        Box::new(fts_index::TantivyIndexFactory::new());
     let engine = engine::new(
         db_actor,
         engine::IndexFactories {
