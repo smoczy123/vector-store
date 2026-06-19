@@ -30,7 +30,7 @@ async fn query_with_key_type(
     let ctx = TableContext::create_with_data(actors, shape, initial).await;
 
     for item in extra {
-        ctx.put(item).await;
+        ctx.put(item).send().await.expect("PutItem should succeed");
     }
     ctx.wait_for_count(initial.len() + extra.len()).await;
 

@@ -6,6 +6,7 @@
 mod batch_write_item;
 mod create_table;
 mod delete_item;
+mod lwt;
 mod put_item;
 mod query;
 mod ttl;
@@ -24,6 +25,7 @@ use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableError;
 use aws_sdk_dynamodb::operation::create_table::CreateTableOutput;
 use aws_sdk_dynamodb::operation::delete_table::DeleteTableError;
+use aws_sdk_dynamodb::operation::put_item::builders::PutItemFluentBuilder;
 use aws_sdk_dynamodb::primitives::Blob;
 use aws_sdk_dynamodb::types::AttributeDefinition;
 use aws_sdk_dynamodb::types::AttributeValue;
@@ -38,6 +40,7 @@ use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::base64;
 use aws_smithy_types::body::SdkBody;
 use aws_smithy_types::config_bag::ConfigBag;
+use e2etest_scylla_cluster::ScyllaNodeConfig;
 use http::HeaderValue;
 use http::header::CONTENT_LENGTH;
 use httpapi::ColumnName;
@@ -614,11 +617,13 @@ where
     );
 }
 
-/// Standard test init: starts ScyllaDB with the Alternator endpoint enabled on
-/// each node's own IP, alongside the Vector Store.
-#[framed]
-pub async fn init(actors: &TestActors) {
-    info!("started");
+/// Applies the standard alternator base arguments plus `extra_args` overrides
+/// to default scylla node configs.
+async fn get_scylla_configs(
+    actors: &TestActors,
+    extra_args: impl IntoIterator<Item = (&str, &str)>,
+) -> Vec<ScyllaNodeConfig> {
+    let args: Vec<(&str, &str)> = extra_args.into_iter().collect();
 
     let mut scylla_configs = common::get_default_scylla_node_configs(actors).await;
 
@@ -632,15 +637,36 @@ pub async fn init(actors: &TestActors) {
             // NOTE: --alternator-ttl-period-in-seconds is already set in
             // DEFAULT_SCYLLA_ARGS (0.5s). ScyllaDB rejects duplicate flags.
         ]);
+
+        for (name, value) in &args {
+            config.args.retain(|arg| !arg.starts_with(name));
+            config.args.push(format!("{name}={value}"));
+        }
     }
+    scylla_configs
+}
+
+/// Starts ScyllaDB with the Alternator endpoint enabled alongside the Vector
+/// Store. `extra_args` is a list of `(name, value)` pairs that override or
+/// extend the default alternator arguments.
+async fn init_with_args(actors: &TestActors, extra_args: impl IntoIterator<Item = (&str, &str)>) {
+    info!("started");
+    let scylla_configs = get_scylla_configs(actors, extra_args).await;
+    let vs_configs = common::get_default_vs_node_configs(actors).await;
 
     // Capture db_ip before actors is moved into init_with_config.
     let db_ip = actors.services_subnet.ip(common::DB_OCTET_1);
-    let vs_configs = common::get_default_vs_node_configs(actors).await;
     common::init_with_config(actors, scylla_configs, vs_configs).await;
 
     wait_for_alternator(db_ip).await;
     info!("finished");
+}
+
+/// Standard test init: starts ScyllaDB with the Alternator endpoint enabled on
+/// each node's own IP, alongside the Vector Store.
+#[framed]
+pub async fn init(actors: &TestActors) {
+    init_with_args(actors, []).await;
 }
 
 /// Describes the key schema, attribute names, and name prefixes for a test
@@ -848,21 +874,12 @@ impl TableContext {
         }
     }
 
-    async fn put(&self, item: &Item) {
+    fn put(&self, item: &Item) -> PutItemFluentBuilder {
         let mut req = self.client.put_item().table_name(&self.table_name);
         for (attr_name, attr_val) in &item.0 {
             req = req.item(attr_name, attr_val.clone());
         }
-        req.send().await.expect("PutItem should succeed");
-    }
-
-    /// Inserts an item, asserting that Scylla rejects it with `expected_err`.
-    async fn put_expecting_error(&self, item: &Item, expected_err: &str) {
-        let mut req = self.client.put_item().table_name(&self.table_name);
-        for (attr_name, attr_val) in &item.0 {
-            req = req.item(attr_name, attr_val.clone());
-        }
-        assert_service_error(req.send().await, expected_err);
+        req
     }
 
     /// Creates a table, inserts items, and adds a vector index via
@@ -890,7 +907,7 @@ impl TableContext {
         let ctx = Self::create(actors, &no_vec_shape).await;
 
         for item in items.iter().chain(invalid_items.iter()) {
-            ctx.put(item).await;
+            ctx.put(item).send().await.expect("PutItem should succeed");
         }
 
         let vec_attr = match &shape.vec_name {
