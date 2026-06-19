@@ -31,6 +31,7 @@ use scylla_cdc::consumer::Consumer;
 use scylla_cdc::consumer::ConsumerFactory;
 use scylla_cdc::consumer::OperationType;
 use scylla_cdc::log_reader::CDCLogReaderBuilder;
+use std::future;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -56,12 +57,8 @@ const DEFAULT_CONSISTENT_SLEEP_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_REALTIME_SAFETY_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_REALTIME_SLEEP_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Maximum consecutive errors before a CDC reader with Backoff policy escalates to session teardown.
-const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
-
-/// Base backoff duration for CDC reader restarts after errors.
-/// The actual backoff is `DEFAULT_BACKOFF_BASE * consecutive_error_count`.
-const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(5);
+/// Default backoff duration for CDC reader restarts after errors.
+const DEFAULT_BACKOFF_DURATION: Duration = Duration::from_secs(5);
 
 /// Parameters for a CDC reader instance.
 #[derive(Clone, Debug)]
@@ -109,14 +106,8 @@ pub(crate) enum CdcReaderConfig {
 impl From<CdcReaderConfig> for CdcReaderState {
     fn from(config: CdcReaderConfig) -> Self {
         match config {
-            CdcReaderConfig::Wide => {
-                Self::new("wide", CdcErrorPolicy::Propagate, CdcReaderParams::wide)
-            }
-            CdcReaderConfig::Fine => Self::new(
-                "fine",
-                CdcErrorPolicy::backoff_and_retry(),
-                CdcReaderParams::fine,
-            ),
+            CdcReaderConfig::Wide => Self::new("wide", CdcReaderParams::wide),
+            CdcReaderConfig::Fine => Self::new("fine", CdcReaderParams::fine),
         }
     }
 }
@@ -146,6 +137,9 @@ pub(crate) fn new(
                 .increment_counter(format!("{actor_key}-{name}-cdc-actor-started"))
                 .await;
 
+            let mut backoff_duration = None;
+            let mut err_counter = 0usize;
+
             loop {
                 tokio::select! {
                     // Shut down when all senders are dropped
@@ -162,15 +156,21 @@ pub(crate) fn new(
                             session_opt, &config_rx, &metadata,
                             &tx_embeddings, &internals,
                         ).await;
+                        err_counter = 0;
+                        backoff_duration = None;
                     }
 
                     _ = reader.error_notify.notified() => {
-                        if reader.handle_error() {
-                            break;
-                        }
+                        err_counter += 1;
+                        backoff_duration = Some(DEFAULT_BACKOFF_DURATION);
+                        warn!(
+                            "{name} CDC reader error {err_counter}, restarting after {duration:?} backoff",
+                            name = reader.name,
+                            duration = backoff_duration.unwrap(),
+                        );
                     }
 
-                    Some(()) = select_backoff(reader.backoff_deadline) => {
+                    _ = sleep_for_retry(backoff_duration.take()) => {
                         reader.restart_after_backoff(
                             &session_rx, &config_rx, &metadata,
                             &tx_embeddings, &internals,
@@ -193,57 +193,26 @@ pub(crate) fn new(
     tx
 }
 
-/// Defines how a CDC reader handles errors from its handler task.
-enum CdcErrorPolicy {
-    /// Propagate errors immediately by closing the channel.
-    Propagate,
-    /// Handle errors locally with backoff and retry.
-    /// After `max_consecutive_errors` consecutive failures, close the channel.
-    BackoffAndRetry {
-        max_consecutive_errors: u32,
-        backoff_base: Duration,
-        consecutive_errors: u32,
-    },
-}
-
-impl CdcErrorPolicy {
-    fn backoff_and_retry() -> Self {
-        Self::BackoffAndRetry {
-            max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
-            backoff_base: DEFAULT_BACKOFF_BASE,
-            consecutive_errors: 0,
-        }
-    }
-}
-
 /// State for managing a CDC reader's lifecycle.
 struct CdcReaderState {
     reader: Option<scylla_cdc::log_reader::CDCLogReader>,
     handler_task: Option<tokio::task::JoinHandle<Duration>>,
     shutdown_notify: Arc<Notify>,
-    backoff_deadline: Option<time::Instant>,
     error_notify: Arc<Notify>,
     start: Duration,
     name: &'static str,
-    error_policy: CdcErrorPolicy,
     params_fn: fn(&Config) -> CdcReaderParams,
 }
 
 impl CdcReaderState {
-    fn new(
-        name: &'static str,
-        error_policy: CdcErrorPolicy,
-        params_fn: fn(&Config) -> CdcReaderParams,
-    ) -> Self {
+    fn new(name: &'static str, params_fn: fn(&Config) -> CdcReaderParams) -> Self {
         Self {
             reader: None,
             handler_task: None,
             shutdown_notify: Arc::new(Notify::new()),
             error_notify: Arc::new(Notify::new()),
-            backoff_deadline: None,
             start: cdc_now(),
             name,
-            error_policy,
             params_fn,
         }
     }
@@ -256,19 +225,6 @@ impl CdcReaderState {
         if let Some(task) = self.handler_task.take() {
             self.shutdown_notify.notify_one();
             self.start = task.await.unwrap_or(cdc_now());
-        }
-    }
-
-    /// Drains stale error notifications, cancels any pending backoff,
-    /// and resets the consecutive error counter.
-    fn reset_on_session_change(&mut self) {
-        drain_pending_notifications(&self.error_notify);
-        self.backoff_deadline = None;
-        if let CdcErrorPolicy::BackoffAndRetry {
-            consecutive_errors, ..
-        } = &mut self.error_policy
-        {
-            *consecutive_errors = 0;
         }
     }
 
@@ -315,6 +271,7 @@ impl CdcReaderState {
             }
             Err(e) => {
                 error!("Failed to create {} CDC reader: {e}", self.name);
+                self.error_notify.notify_one();
             }
         }
     }
@@ -338,7 +295,7 @@ impl CdcReaderState {
 
                 let config = config_rx.borrow().clone();
 
-                self.reset_on_session_change();
+                drain_pending_notifications(&self.error_notify);
                 let params = (self.params_fn)(&config);
                 self.restart(params, &session, metadata, tx_embeddings, internals)
                     .await;
@@ -355,39 +312,6 @@ impl CdcReaderState {
         }
     }
 
-    /// Handles an error according to the reader's [`CdcErrorPolicy`].
-    /// Returns `true` if the error should be propagated by closing the channel.
-    fn handle_error(&mut self) -> bool {
-        match &mut self.error_policy {
-            CdcErrorPolicy::Propagate => true,
-            CdcErrorPolicy::BackoffAndRetry {
-                max_consecutive_errors,
-                backoff_base,
-                consecutive_errors,
-            } => {
-                *consecutive_errors += 1;
-                let count = *consecutive_errors;
-                let limit = *max_consecutive_errors;
-
-                if count >= limit {
-                    warn!(
-                        "{} CDC reader failed {count} consecutive times, closing channel",
-                        self.name
-                    );
-                    true
-                } else {
-                    let backoff = *backoff_base * count;
-                    warn!(
-                        "{} CDC reader error ({count}/{limit}), restarting after {backoff:?} backoff",
-                        self.name,
-                    );
-                    self.backoff_deadline = Some(time::Instant::now() + backoff);
-                    false
-                }
-            }
-        }
-    }
-
     /// Completes a pending backoff by restarting the CDC reader.
     async fn restart_after_backoff(
         &mut self,
@@ -397,7 +321,6 @@ impl CdcReaderState {
         tx_embeddings: &mpsc::Sender<(DbIndexedRow, Option<AsyncInProgress>)>,
         internals: &Sender<Internals>,
     ) {
-        self.backoff_deadline = None;
         let session = session_rx.borrow().clone();
         if let Some(session) = session {
             let config = config_rx.borrow().clone();
@@ -414,10 +337,13 @@ fn cdc_now() -> Duration {
         .unwrap()
 }
 
-/// Waits for the backoff deadline to expire, returning `None` if no deadline is set.
-async fn select_backoff(deadline: Option<time::Instant>) -> Option<()> {
-    time::sleep_until(deadline?).await;
-    Some(())
+/// Sleep for the specified duration, or indefinitely if None, to implement backoff.
+async fn sleep_for_retry(duration: Option<Duration>) {
+    if let Some(duration) = duration {
+        time::sleep(duration).await;
+    } else {
+        future::pending::<()>().await;
+    }
 }
 
 /// Drains any pending shutdown notifications to avoid stale wakeups.
@@ -470,15 +396,18 @@ fn spawn_handler_task(
 ) -> tokio::task::JoinHandle<Duration> {
     let handler_key = metadata.key();
     let span_name = format!("{reader_name}_cdc_handler");
-    let counter_name = format!("{handler_key}-{reader_name}-cdc-handler-errors");
+    let started_counter_name = format!("{handler_key}-{reader_name}-cdc-handler-started");
+    let stopped_counter_name = format!("{handler_key}-{reader_name}-cdc-handler-stopped");
+    let errors_counter_name = format!("{handler_key}-{reader_name}-cdc-handler-errors");
 
     tokio::spawn(
         async move {
+            internals.increment_counter(started_counter_name).await;
             tokio::select! {
                 result = handler => {
                     if let Err(err) = result {
                         warn!("CDC handler error: {err}");
-                        internals.increment_counter(counter_name).await;
+                        internals.increment_counter(errors_counter_name).await;
                         cdc_error_notify.notify_one();
                     }
                 }
@@ -486,6 +415,7 @@ fn spawn_handler_task(
                     debug!("CDC handler: shutdown requested");
                 }
             }
+            internals.increment_counter(stopped_counter_name).await;
             debug!("CDC handler finished");
             cdc_now()
         }
