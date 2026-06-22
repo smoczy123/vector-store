@@ -20,12 +20,16 @@ use tantivy::schema::Schema;
 use tantivy::schema::TEXT;
 use tantivy::schema::Value;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::debug;
 use tracing::error;
 
 use crate::IndexKey;
 use crate::Limit;
 use crate::fts_index::factory::FtsIndexFactory;
+use crate::memory::Allocate;
+use crate::memory::Memory;
+use crate::memory::MemoryExt;
 use crate::perf;
 use crate::table::IndexId;
 use crate::table::PrimaryId;
@@ -51,8 +55,13 @@ impl TantivyIndexFactory {
 }
 
 impl FtsIndexFactory for TantivyIndexFactory {
-    fn create_index(&self, key: IndexKey, table: Arc<RwLock<Table>>) -> mpsc::Sender<FtsIndex> {
-        new(key, table, self.worker.clone())
+    fn create_index(
+        &self,
+        key: IndexKey,
+        table: Arc<RwLock<Table>>,
+        memory: mpsc::Sender<Memory>,
+    ) -> mpsc::Sender<FtsIndex> {
+        new(key, table, self.worker.clone(), memory)
     }
 }
 
@@ -236,15 +245,36 @@ fn get_state<T: TableSearch>(
     states.get(&index_id).cloned()
 }
 
+fn can_allocate_memory(
+    rx_allocate: &watch::Receiver<Allocate>,
+    allocate_prev: &mut Allocate,
+    key: &IndexKey,
+) -> bool {
+    let allocate = *rx_allocate.borrow();
+    if allocate == Allocate::Cannot {
+        if *allocate_prev == Allocate::Can {
+            error!("Unable to add document for index {key}: not enough memory");
+        }
+        *allocate_prev = allocate;
+        return false;
+    }
+    *allocate_prev = allocate;
+    true
+}
+
 pub(crate) fn new(
     key: IndexKey,
     table: Arc<RwLock<impl TableSearch + Send + Sync + 'static>>,
     worker: async_channel::Sender<Worker>,
+    memory: mpsc::Sender<Memory>,
 ) -> mpsc::Sender<FtsIndex> {
     let (tx, mut rx) = mpsc::channel::<FtsIndex>(perf::channel_size().into());
     tokio::spawn(async move {
         debug!("fts index actor starting for {key}");
         let mut states: BTreeMap<IndexId, Arc<IndexState>> = BTreeMap::new();
+
+        let mut allocate_prev = Allocate::Can;
+        let allocate_rx = memory.subscribe_allocate().await;
 
         while let Some(msg) = rx.recv().await {
             match msg {
@@ -256,6 +286,9 @@ pub(crate) fn new(
                     let Some(state) = get_or_create_state(&mut states, table.as_ref(), &key) else {
                         continue;
                     };
+                    if !can_allocate_memory(&allocate_rx, &mut allocate_prev, &key) {
+                        continue;
+                    }
                     let key = key.clone();
                     worker
                         .spawn_blocking(move || {
@@ -343,9 +376,25 @@ mod tests {
         IndexKey::new(&"ks".into(), &"idx".into())
     }
 
+    fn make_memory_actor() -> mpsc::Sender<Memory> {
+        let (tx, mut rx) = mpsc::channel::<Memory>(1);
+        tokio::spawn(async move {
+            let (watch_tx, _) = watch::channel(Allocate::Can);
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    Memory::SubscribeAllocate { tx } => {
+                        let _ = tx.send(watch_tx.subscribe());
+                    }
+                }
+            }
+        });
+        tx
+    }
+
     fn make_sender(table: Arc<RwLock<MockTableSearch>>) -> mpsc::Sender<FtsIndex> {
         let key = make_index_key();
-        new(key, table, worker::new())
+        let memory = make_memory_actor();
+        new(key, table, worker::new(), memory)
     }
 
     async fn add_doc(sender: &mpsc::Sender<FtsIndex>, primary: u64, content: &str) {
@@ -362,6 +411,21 @@ mod tests {
             .remove_document(primary.into(), Some(tx.into()))
             .await;
         rx.recv().await;
+    }
+
+    fn make_memory_actor_cannot_allocate() -> mpsc::Sender<Memory> {
+        let (tx, mut rx) = mpsc::channel::<Memory>(1);
+        tokio::spawn(async move {
+            let (watch_tx, _) = watch::channel(Allocate::Cannot);
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    Memory::SubscribeAllocate { tx } => {
+                        let _ = tx.send(watch_tx.subscribe());
+                    }
+                }
+            }
+        });
+        tx
     }
 
     #[tokio::test]
@@ -483,5 +547,19 @@ mod tests {
 
         assert_eq!(keys.len(), 1);
         assert_eq!(scores.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn add_document_rejected_when_memory_exhausted() {
+        let table = make_table_with_keys();
+        let key = make_index_key();
+        let memory = make_memory_actor_cannot_allocate();
+        let sender = new(key, table, worker::new(), memory);
+
+        add_doc(&sender, 1, "should not be indexed").await;
+
+        let key = make_index_key();
+        let count = sender.count(key).await.unwrap();
+        assert_eq!(count, 0);
     }
 }
