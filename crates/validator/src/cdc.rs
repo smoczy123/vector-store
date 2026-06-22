@@ -727,3 +727,124 @@ async fn skip_null_ck(actors: Arc<TestActors>) {
 
     info!("finished");
 }
+
+/// Check if null target columns are skipped by the index.
+///
+/// Steps:
+/// 1. Create a table with a non-vector column.
+/// 2. Create an index on the vector column.
+/// 3. Insert rows.
+/// 4. Update non-vector column to trigger CDC with null vector value.
+/// 5. Insert new rows to wait for the CDC reader to process the update with null vector value.
+/// 6. Verify that the index count after index and the ANN query returns the updated and inserted
+///    rows.
+/// 7. Drop the keyspace and verify that the index is dropped.
+#[e2etest::test(group = cdc)]
+async fn skip_null_target(actors: Arc<TestActors>) {
+    info!("started");
+
+    let (session, clients) = prepare_connection_single_vs(&actors).await;
+    let client = clients.first().unwrap();
+    let keyspace = create_keyspace(&session).await;
+    let table = create_table(
+        &session,
+        "pk INT PRIMARY KEY, v VECTOR<FLOAT, 3>, i INT",
+        None,
+    )
+    .await;
+    let index = create_index(CreateIndexQuery::new(&session, &clients, &table, "v")).await;
+
+    let status = wait_for_index(client, &index).await;
+    assert_eq!(status.count, 0, "Index should start empty");
+
+    info!("Insert data to the table for CDC");
+    let pks: BTreeSet<_> = array::from_fn::<i32, 10, _>(|i| i as i32 + 1)
+        .into_iter()
+        .collect();
+    for pk in &pks {
+        session
+            .query_unpaged(
+                format!("INSERT INTO {table} (pk, v, i) VALUES ({pk}, [1.0, 2.0, 3.0], {pk})"),
+                (),
+            )
+            .await
+            .expect("failed to insert data");
+    }
+
+    wait_for(
+        || async {
+            let status = client.index_status(&index.keyspace, &index.index).await;
+            matches!(status, Ok(s) if s.count == pks.len())
+        },
+        "Waiting for all rows to be indexed",
+        DEFAULT_OPERATION_TIMEOUT,
+    )
+    .await;
+
+    for pk in &pks {
+        session
+            .query_unpaged(
+                format!("UPDATE {table} SET i = {i} WHERE pk = {pk}", i = pk + 10),
+                (),
+            )
+            .await
+            .expect("failed to insert data");
+    }
+
+    for pk in &pks {
+        session
+            .query_unpaged(
+                format!(
+                    "INSERT INTO {table} (pk, v, i) VALUES ({pk}, [1.0, 2.0, 3.0], {i})",
+                    pk = pk + 100,
+                    i = pk,
+                ),
+                (),
+            )
+            .await
+            .expect("failed to insert data");
+    }
+
+    wait_for(
+        || async {
+            let status = client.index_status(&index.keyspace, &index.index).await;
+            matches!(status, Ok(s) if s.count == pks.len() * 2)
+        },
+        "Waiting for all rows to be indexed after updates and inserts",
+        DEFAULT_OPERATION_TIMEOUT,
+    )
+    .await;
+
+    // Verify ANN query returns the inserted and updated rows
+    let expected: BTreeSet<_> = pks
+        .into_iter()
+        .flat_map(|pk| [pk, pk + 10].into_iter())
+        .collect();
+    let rows = wait_for_value(
+        || async {
+            let result = get_opt_query_results(
+                format!("SELECT pk, i FROM {table} ORDER BY v ANN OF [1.0, 2.0, 3.0] LIMIT 100"),
+                &session,
+            )
+            .await?;
+            let rows = result
+                .rows::<(i32, i32)>()
+                .ok()?
+                .map_ok(|row| row.1)
+                .collect::<Result<BTreeSet<_>, _>>()
+                .ok()?;
+            (rows.len() == expected.len()).then_some(rows)
+        },
+        "Waiting for ANN query after CDC insert",
+        DEFAULT_OPERATION_TIMEOUT,
+    )
+    .await;
+    assert_eq!(rows, expected);
+
+    session
+        .query_unpaged(format!("DROP KEYSPACE {keyspace}"), ())
+        .await
+        .expect("failed to drop keyspace");
+
+    info!("finished");
+}

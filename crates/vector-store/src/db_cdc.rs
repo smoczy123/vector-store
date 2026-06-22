@@ -29,6 +29,7 @@ use scylla::value::CqlValue;
 use scylla_cdc::consumer::CDCRow;
 use scylla_cdc::consumer::Consumer;
 use scylla_cdc::consumer::ConsumerFactory;
+use scylla_cdc::consumer::OperationType;
 use scylla_cdc::log_reader::CDCLogReaderBuilder;
 use std::sync::Arc;
 use std::time::Duration;
@@ -530,11 +531,31 @@ impl Consumer for CdcConsumer {
         if !row.column_deletable(column) {
             bail!("CDC error: column {column} should be deletable");
         }
-        let value = row
-            .take_value(column)
-            .map(|v| extract_indexed_value(source, v, &self.0.kind))
-            .transpose()?
-            .flatten();
+
+        let value = match row.operation {
+            OperationType::PartitionDelete | OperationType::RowDelete => None,
+
+            OperationType::RowUpdate | OperationType::RowInsert | OperationType::PostImage => {
+                if row.is_value_deleted(column) {
+                    None
+                } else {
+                    let Some(value) = row.take_value(column) else {
+                        // If the column is not deleted but also has no value, skip this row.
+                        return Ok(());
+                    };
+                    extract_indexed_value(source, value, &self.0.kind)?
+                }
+            }
+
+            OperationType::PreImage
+            | OperationType::RowRangeDelInclLeft
+            | OperationType::RowRangeDelExclLeft
+            | OperationType::RowRangeDelInclRight
+            | OperationType::RowRangeDelExclRight => {
+                // These operations are unspported by our CDC reader, skip them.
+                return Ok(());
+            }
+        };
 
         let Some(primary_key) = self
             .0
