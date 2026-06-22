@@ -97,3 +97,13 @@ secrecy = "0.10.3"
 [patch.crates-io]
 # Currently, axum-server-dual-protocol doesn't have a published version that supports axum 0.8, so we need to use the git version from the PR.
 axum-server-dual-protocol = { git = "https://github.com/vinchona/axum-server-dual-protocol", rev = "ca6db055254255b74238673ce4135698e347d71c" }
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3
