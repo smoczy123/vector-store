@@ -324,10 +324,10 @@ async fn add_index_vs(ctx: AddIndexContext<'_>) -> anyhow::Result<()> {
 }
 
 async fn add_index_fts(ctx: AddIndexContext<'_>) -> anyhow::Result<()> {
-    let fts_sender = ctx
-        .index_factories
-        .fts
-        .create_index(ctx.key.clone(), Arc::clone(&ctx.table));
+    let fts_sender =
+        ctx.index_factories
+            .fts
+            .create_index(ctx.key.clone(), Arc::clone(&ctx.table), ctx.memory);
 
     let monitor_actor = monitor_items::new(
         ctx.key.clone(),
