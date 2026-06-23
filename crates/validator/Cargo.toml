@@ -15,6 +15,7 @@ aws-sdk-dynamodb.workspace = true
 aws-smithy-runtime-api.workspace = true
 aws-smithy-types.workspace = true
 bcrypt.workspace = true
+bytes.workspace = true
 clap.workspace = true
 derive_more.workspace = true
 e2etest.workspace = true
