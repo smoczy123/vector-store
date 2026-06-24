@@ -1679,3 +1679,59 @@ async fn similarity_scores_are_decreasing_and_correctly_converted() {
         scores[2]
     );
 }
+
+#[tokio::test]
+async fn empty_index_has_zero_count() {
+    crate::enable_tracing();
+
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        DbIndexPartitioning::Global,
+        ["pk".into()],
+        1,
+        [("pk".to_string().into(), NativeType::Int)],
+        Some(db_basic::scan_fn_vectors(std::iter::empty())),
+        None,
+        Some(0),
+    )
+    .await;
+
+    let status = client
+        .index_status(
+            &index.keyspace_name.clone().into(),
+            &index.index_name.clone().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status, IndexStatus::Serving);
+    assert_eq!(status.count, 0);
+}
+
+#[tokio::test]
+async fn empty_index_returns_empty_ann_results() {
+    crate::enable_tracing();
+
+    let (index, client, _db, _server, _node_state) = setup_store_and_wait_for_index(
+        DbIndexPartitioning::Global,
+        ["pk".into()],
+        1,
+        [("pk".to_string().into(), NativeType::Int)],
+        Some(db_basic::scan_fn_vectors(std::iter::empty())),
+        None,
+        Some(0),
+    )
+    .await;
+
+    let (primary_keys, distances, similarity_scores) = client
+        .ann(
+            &index.keyspace_name.clone().into(),
+            &index.index_name.clone().into(),
+            vec![1.0, 1.0, 1.0].into(),
+            None,
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert!(primary_keys.get(&"pk".into()).unwrap().is_empty());
+    assert!(distances.is_empty());
+    assert!(similarity_scores.is_empty());
+}

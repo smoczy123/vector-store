@@ -341,3 +341,37 @@ async fn fts_bm25_search_not_serving_returns_503() {
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn fts_empty_index_has_zero_count() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) = setup_fts_and_wait([], 0).await;
+
+    let status = client
+        .index_status(&keyspace_name, &index_name)
+        .await
+        .unwrap();
+
+    assert_eq!(status.status, IndexStatus::Serving);
+    assert_eq!(status.count, 0);
+}
+
+#[tokio::test]
+async fn fts_empty_index_returns_empty_bm25_results() {
+    crate::enable_tracing();
+
+    let (client, keyspace_name, index_name, _hold) = setup_fts_and_wait([], 0).await;
+
+    let (primary_keys, scores) = client
+        .bm25(
+            &keyspace_name,
+            &index_name,
+            "anyterm".into(),
+            NonZeroUsize::new(10).unwrap().into(),
+        )
+        .await;
+
+    assert!(primary_keys.get(&"pk".into()).unwrap().is_empty());
+    assert!(scores.is_empty());
+}
