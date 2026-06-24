@@ -315,8 +315,8 @@ pub(crate) fn new(
                 FtsIndex::Count { tx, index_key, .. } => {
                     let result = get_state(&states, table.as_ref(), &index_key)
                         .map(|s| s.reader.searcher().num_docs() as usize)
-                        .ok_or_else(|| anyhow!("fts: index not found for {index_key:?}"));
-                    let _ = tx.send(result);
+                        .unwrap_or(0);
+                    _ = tx.send(Ok(result));
                 }
                 FtsIndex::Search {
                     index_key,
@@ -325,7 +325,7 @@ pub(crate) fn new(
                     tx,
                 } => {
                     let Some(state) = get_state(&states, table.as_ref(), &index_key) else {
-                        let _ = tx.send(Err(anyhow!("fts: index not found for {index_key:?}")));
+                        _ = tx.send(Ok((vec![], vec![])));
                         continue;
                     };
                     let table = Arc::clone(&table);
@@ -333,7 +333,7 @@ pub(crate) fn new(
                         .spawn_blocking(move || {
                             let result =
                                 handle_search(&state, table.as_ref(), &index_key, &query, limit);
-                            let _ = tx.send(result);
+                            _ = tx.send(result);
                         })
                         .await;
                 }

@@ -518,16 +518,8 @@ async fn post_index_ann(
     perf::hotpath_async(async move {
         let keyspace: crate::KeyspaceName = keyspace.into();
         let index_name: crate::IndexName = index_name.into();
-        if state.use_tls
-            && extensions
-                .get::<Protocol>()
-                .is_some_and(|protocol| *protocol == Protocol::Plain)
-        {
-            let msg = "TLS is required, but the request \
-            was made over an insecure connection."
-                .to_string();
-            debug!("post_index_ann: {msg}");
-            return (StatusCode::FORBIDDEN, msg).into_response();
+        if let Some(resp) = check_insecure_tls(state.use_tls, &extensions, "post_index_ann") {
+            return resp;
         }
 
         // Start timing
@@ -662,34 +654,8 @@ async fn post_index_ann(
                         .map(httpapi::SimilarityScore::from)
                         .collect();
 
-                    let primary_keys: anyhow::Result<_> = primary_key_columns
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .map(|(idx_column, column)| {
-                            let primary_keys: anyhow::Result<_> = primary_keys
-                                .iter()
-                                .map(|primary_key| {
-                                    if primary_key.len() != primary_key_columns.len() {
-                                        bail!(
-                                            "wrong size of a primary key: {}, {}",
-                                            primary_key_columns.len(),
-                                            primary_key.len()
-                                        );
-                                    }
-                                    Ok(primary_key)
-                                })
-                                .map_ok(|primary_key| {
-                                    primary_key.get(idx_column).expect(
-                                        "primary key index out of bounds after length check",
-                                    )
-                                })
-                                .map_ok(try_to_json)
-                                .map(|primary_key| primary_key.flatten())
-                                .collect();
-                            primary_keys.map(|primary_keys| (column.into(), primary_keys))
-                        })
-                        .collect();
+                    let primary_keys =
+                        try_collect_primary_keys(&primary_key_columns, &primary_keys);
 
                     match primary_keys {
                         Err(err) => {
@@ -765,13 +731,91 @@ If TLS is enabled on the server, clients must connect using a HTTPS protocol.",
     )
 )]
 async fn post_index_bm25(
-    Path((_keyspace, _index_name)): Path<(httpapi::KeyspaceName, httpapi::IndexName)>,
+    State(state): State<RoutesInnerState>,
+    extensions: Extensions,
+    Path((keyspace, index_name)): Path<(httpapi::KeyspaceName, httpapi::IndexName)>,
+    extract::Json(request): extract::Json<httpapi::PostIndexBm25Request>,
 ) -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        "Full-text search is not yet implemented",
-    )
-        .into_response()
+    let keyspace: crate::KeyspaceName = keyspace.into();
+    let index_name: crate::IndexName = index_name.into();
+    if let Some(resp) = check_insecure_tls(state.use_tls, &extensions, "post_index_bm25") {
+        return resp;
+    }
+
+    let index_key = IndexKey::new(&keyspace, &index_name);
+
+    let (fts_sender, primary_key_columns) = {
+        let indexes = state.indexes.read().unwrap();
+        let Some(entry) = indexes.get_fts(&index_key) else {
+            let msg = format!("missing index: {keyspace}.{index_name}");
+            debug!("post_index_bm25: {msg}");
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        };
+        if entry.status() != crate::node_state::IndexStatus::Serving {
+            match entry.progress() {
+                Progress::InProgress(percentage) => {
+                    let msg = format!(
+                        "Index {keyspace}.{index_name} is not available yet as it is still being constructed, progress: {:.3}%",
+                        percentage.get()
+                    );
+                    debug!("post_index_bm25: {msg}");
+                    return (StatusCode::SERVICE_UNAVAILABLE, msg).into_response();
+                }
+                Progress::Done => {
+                    let msg = format!(
+                        "Index {keyspace}.{index_name} is not serving, but full scan did finish."
+                    );
+                    debug!("post_index_bm25: {msg}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+                }
+            }
+        }
+        (
+            entry.index().clone(),
+            Arc::clone(entry.primary_key_columns()),
+        )
+    };
+
+    let search_result = fts_sender
+        .search(index_key, request.query, request.limit.into())
+        .await;
+
+    match search_result {
+        Err(err) => {
+            let msg = format!("index.bm25 request error: {err}");
+            debug!("post_index_bm25: {msg}");
+            (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+        }
+        Ok((primary_keys, scores)) => {
+            if primary_keys.len() != scores.len() {
+                let msg = format!(
+                    "wrong size of a bm25 response: \
+                    number of primary_keys = {}, number of scores = {}",
+                    primary_keys.len(),
+                    scores.len()
+                );
+                debug!("post_index_bm25: {msg}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+            }
+
+            let primary_keys = try_collect_primary_keys(&primary_key_columns, &primary_keys);
+
+            match primary_keys {
+                Err(err) => {
+                    debug!("post_index_bm25: {err}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                }
+                Ok(primary_keys) => (
+                    StatusCode::OK,
+                    response::Json(httpapi::PostIndexBm25Response {
+                        primary_keys,
+                        scores,
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+    }
 }
 
 fn try_from_post_index_ann_filter(
@@ -932,6 +976,59 @@ fn try_from_post_index_ann_filter(
             .collect::<anyhow::Result<_>>()?,
         allow_filtering: json_filter.allow_filtering,
     })
+}
+
+fn check_insecure_tls(
+    use_tls: bool,
+    extensions: &Extensions,
+    route_name: &str,
+) -> Option<Response> {
+    if use_tls
+        && extensions
+            .get::<Protocol>()
+            .is_some_and(|protocol| *protocol == Protocol::Plain)
+    {
+        let msg = "TLS is required, but the request \
+            was made over an insecure connection."
+            .to_string();
+        debug!("{route_name}: {msg}");
+        return Some((StatusCode::FORBIDDEN, msg).into_response());
+    }
+    None
+}
+
+fn try_collect_primary_keys(
+    primary_key_columns: &[crate::ColumnName],
+    primary_keys: &[crate::PrimaryKey],
+) -> anyhow::Result<HashMap<httpapi::ColumnName, Vec<Value>>> {
+    primary_key_columns
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(idx_column, column)| {
+            let primary_keys: anyhow::Result<_> = primary_keys
+                .iter()
+                .map(|primary_key| {
+                    if primary_key.len() != primary_key_columns.len() {
+                        bail!(
+                            "wrong size of a primary key: {}, {}",
+                            primary_key_columns.len(),
+                            primary_key.len()
+                        );
+                    }
+                    Ok(primary_key)
+                })
+                .map_ok(|primary_key| {
+                    primary_key
+                        .get(idx_column)
+                        .expect("primary key index out of bounds after length check")
+                })
+                .map_ok(try_to_json)
+                .map(|primary_key| primary_key.flatten())
+                .collect();
+            primary_keys.map(|primary_keys| (column.into(), primary_keys))
+        })
+        .collect()
 }
 
 fn try_to_json(value: CqlValue) -> anyhow::Result<Value> {

@@ -81,6 +81,7 @@ pub(crate) struct IndexEntry<I, D = ()> {
     db_index: mpsc::Sender<DbIndex>,
     status: IndexStatus,
     progress: Progress,
+    primary_key_columns: Arc<Vec<ColumnName>>,
     data: D,
 }
 
@@ -101,7 +102,6 @@ pub(crate) type FtsIndexEntry = IndexEntry<FtsIndex>;
 pub(crate) struct VsIndexData {
     routing_group: RoutingGroupKey,
     partitioning: DbIndexPartitioning,
-    primary_key_columns: Arc<Vec<ColumnName>>,
     filtering_columns: Arc<Vec<ColumnName>>,
     table_columns: Arc<HashMap<ColumnName, NativeType>>,
     version: IndexVersion,
@@ -131,6 +131,10 @@ impl<I, D> IndexEntry<I, D> {
 
     pub(crate) fn set_status(&mut self, status: IndexStatus) {
         self.status = status;
+    }
+
+    pub(crate) fn primary_key_columns(&self) -> &Arc<Vec<ColumnName>> {
+        &self.primary_key_columns
     }
 }
 
@@ -165,10 +169,10 @@ impl VsIndexEntry {
             db_index,
             status: IndexStatus::Initializing,
             progress,
+            primary_key_columns,
             data: VsIndexData {
                 routing_group,
                 partitioning: metadata.partitioning,
-                primary_key_columns,
                 filtering_columns,
                 table_columns,
                 version: metadata.version,
@@ -233,6 +237,7 @@ impl FtsIndexEntry {
         monitor: mpsc::Sender<MonitorItems>,
         db_index: mpsc::Sender<DbIndex>,
     ) -> Self {
+        let primary_key_columns = db_index.get_primary_key_columns().await;
         let progress = db_index.full_scan_progress().await;
         Self {
             index,
@@ -240,6 +245,7 @@ impl FtsIndexEntry {
             db_index,
             status: IndexStatus::Initializing,
             progress,
+            primary_key_columns,
             data: (),
         }
     }
@@ -383,7 +389,7 @@ impl Indexes {
                 BestIndexState::Serving {
                     key: routed_key.clone(),
                     index: routed_entry.index.clone(),
-                    primary_key_columns: Arc::clone(&routed_entry.data.primary_key_columns),
+                    primary_key_columns: Arc::clone(&routed_entry.primary_key_columns),
                     table_columns: Arc::clone(&routed_entry.data.table_columns),
                     needs_filtering: needs_filtering.clone(),
                 }
